@@ -1,0 +1,70 @@
+{
+  "model": "hr.attendance",
+  "title": "Attendance & Rosters",
+  "fields": {
+    "id": { "type": "integer", "label": "ID", "readonly": true },
+    "employee_name": { "type": "string", "label": "Employee", "required": true },
+    "department": { "type": "string", "label": "Department" },
+    "check_in": { "type": "datetime", "label": "Check In", "required": true },
+    "check_out": { "type": "datetime", "label": "Check Out" },
+    "duration_hours": { "type": "float", "label": "Hours Worked" },
+    "status": {
+      "type": "selection",
+      "label": "Status",
+      "options": [
+        { "value": "draft", "label": "Draft" },
+        { "value": "verified", "label": "Verified" },
+        { "value": "synced", "label": "Synced" }
+      ]
+    }
+  },
+  "views": {
+    "list": {
+      "columns": ["id", "employee_name", "department", "check_in", "duration_hours", "status"]
+    },
+    "form": {
+      "statusbar": {
+        "field": "status",
+        "buttons": [
+          { "id": "btn_verify", "label": "Verify", "target": "verified", "style": "primary" },
+          { "id": "btn_sync", "label": "Push to Payroll", "target": "synced", "style": "secondary" }
+        ]
+      },
+      "sections": [
+        {
+          "title": "General",
+          "columns": 12,
+          "fields": [
+            { "name": "employee_name", "span": 6, "label_placement": "inline" },
+            { "name": "department", "span": 6, "label_placement": "inline" },
+            { "name": "duration_hours", "span": 6, "label_placement": "inline", "suffix": "Hours" },
+            { "name": "status", "span": 6, "label_placement": "inline" }
+          ]
+        }
+      ]
+    },
+    "graph": {
+      "default_chart": "bar",
+      "dimension": "department",
+      "measure": "duration_hours",
+      "aggregator": "sum"
+    },
+    "calendar": {
+      "date_start": "check_in",
+      "date_stop": "check_out",
+      "event_title": "employee_name",
+      "color_field": "status"
+    },
+    "pivot": {
+      "row_groupby": ["department"],
+      "col_groupby": ["status"],
+      "measures": ["duration_hours"]
+    },
+    "gantt": {
+      "date_start": "check_in",
+      "date_stop": "check_out",
+      "title": "employee_name",
+      "group_by": "department"
+    }
+  }
+}

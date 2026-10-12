@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --primary-color: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-light: #eff6ff;
+  --primary-border: #bfdbfe;
+  --primary-ring: rgba(37, 99, 235, 0.25);
+  --app-font-scale: 1;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Cairo', 'Helvetica Neue', Arial, sans-serif;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+/* WCAG 2.1 AA Focus Rings - Universal Accessible Keyboard Indicator */
+:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+/* Dynamic Brand Accent Utilities */
+.btn-primary-dynamic {
+  background-color: var(--primary-color);
+  color: #ffffff;
+}
+.btn-primary-dynamic:hover {
+  background-color: var(--primary-hover);
+}
+.border-primary-dynamic {
+  border-color: var(--primary-color);
+}
+.text-primary-dynamic {
+  color: var(--primary-color);
+}
+.bg-primary-light-dynamic {
+  background-color: var(--primary-light);
+}
+
+/* User-level UI font scaling */
+.app-scalable-root {
+  font-size: calc(1rem * var(--app-font-scale, 1));
+}
+
+/* Print / Export Report isolation: user UI font scaling NEVER affects reports */
+@media print {
+  :root, html, body, .app-scalable-root, .printable-report {
+    --app-font-scale: 1 !important;
+    font-size: 12px !important;
+    zoom: 1 !important;
+    transform: none !important;
+  }
+}
+
+.report-export-unscaled {
+  --app-font-scale: 1 !important;
+  font-size: 12px !important;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.18s ease-out forwards;
+}
