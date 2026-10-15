@@ -1,72 +1,121 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Minus, X, Send, Paperclip, FileText, Image as ImageIcon, Users, User, ArrowDown } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  Minus,
+  X,
+  Send,
+  Paperclip,
+  FileText,
+  Image as ImageIcon,
+  Users,
+  User,
+  Hash,
+  ShieldAlert,
+  Building2,
+  Lock,
+  ArrowDown,
+  Loader2,
+  AtSign,
+  Maximize2
+} from 'lucide-react';
 import { useChat } from '../../context/ChatContext';
 import { useAuth } from '../../context/AuthContext';
 
 export default function ChatDock() {
-  const { openDocks, minimizedDockIds, closeDock, minimizeDock, restoreDock } = useChat();
+  const {
+    openDocks,
+    minimizedDockIds,
+    activeDockId,
+    setActiveDockId,
+    closeDock,
+    minimizeDock,
+    restoreDock,
+    channels
+  } = useChat();
 
   if (!openDocks.length) return null;
 
+  // Active dock is either activeDockId, or the last non-minimized dock
+  const activeChannel =
+    openDocks.find((d) => d.id === activeDockId && !minimizedDockIds.has(d.id)) ||
+    openDocks.slice().reverse().find((d) => !minimizedDockIds.has(d.id));
+
   return (
     <div className="fixed bottom-0 right-4 z-50 flex items-end gap-2.5 pointer-events-none select-none">
-      {openDocks.map((channel) => {
-        const isMinimized = minimizedDockIds.has(channel.id);
-        if (isMinimized) {
-          return (
+      {/* Minimized Pills Tray (for minimized channels) */}
+      <div className="flex items-center gap-1.5 pointer-events-auto">
+        {openDocks
+          .filter((ch) => minimizedDockIds.has(ch.id))
+          .map((ch) => (
             <MinimizedPill
-              key={channel.id}
-              channel={channel}
-              onRestore={() => restoreDock(channel.id)}
-              onClose={() => closeDock(channel.id)}
+              key={ch.id}
+              channel={ch}
+              onRestore={() => restoreDock(ch.id)}
+              onClose={() => closeDock(ch.id)}
             />
-          );
-        }
-        return (
-          <FloatingChatWindow
-            key={channel.id}
-            channel={channel}
-            onMinimize={() => minimizeDock(channel.id)}
-            onClose={() => closeDock(channel.id)}
-          />
-        );
-      })}
+          ))}
+      </div>
+
+      {/* Floating Active Dock Window (Width: 340px, Height: 440px) */}
+      {activeChannel && (
+        <FloatingChatWindow
+          key={activeChannel.id}
+          channel={activeChannel}
+          openChannels={openDocks}
+          allChannels={channels}
+          minimizedDockIds={minimizedDockIds}
+          onSwitchTab={(chanId) => setActiveDockId(chanId)}
+          onMinimize={() => minimizeDock(activeChannel.id)}
+          onClose={() => closeDock(activeChannel.id)}
+        />
+      )}
     </div>
   );
 }
 
 // ==============================================================================
-// 1. MINIMIZED PILL (Pinned to bottom dock)
+// 1. MINIMIZED PILL (Pinned to bottom dock tray)
 // ==============================================================================
 
 function MinimizedPill({ channel, onRestore, onClose }) {
   const { onlineUsers } = useChat();
+  const isDirect = channel.channel_type === 'direct';
   const otherUid = channel.other_user?.id;
   const isOnline = otherUid ? onlineUsers.has(otherUid) : false;
   const hasUnread = (channel.unread_count || 0) > 0;
+  const isDept = channel.channel_type === 'department_auto';
 
   return (
     <div
       onClick={onRestore}
-      className={`pointer-events-auto h-9 px-3 rounded-t-lg border border-b-0 flex items-center gap-2 cursor-pointer transition-all shadow-xl ${
+      title={`Restore ${channel.name}`}
+      className={`h-9 px-3 rounded-t-xl border border-b-0 flex items-center gap-2 cursor-pointer transition-all shadow-xl ${
         hasUnread
           ? 'bg-emerald-950/90 border-emerald-500/60 text-emerald-200 animate-bounce'
           : 'bg-slate-900 border-slate-700/80 text-slate-200 hover:bg-slate-800'
       }`}
     >
-      <span
-        className={`w-2 h-2 rounded-full ${
-          isOnline ? 'bg-emerald-500' : 'bg-slate-500'
-        }`}
-      />
-      <span className="text-xs font-medium truncate max-w-[130px]">
-        {channel.name}
+      {isDirect ? (
+        <span
+          className={`w-2 h-2 rounded-full ${
+            isOnline ? 'bg-emerald-500 shadow-xs shadow-emerald-500' : 'bg-slate-500'
+          }`}
+        />
+      ) : isDept ? (
+        <Building2 className="w-3.5 h-3.5 text-amber-400" />
+      ) : (
+        <Hash className="w-3.5 h-3.5 text-emerald-400" />
+      )}
+
+      <span className="text-xs font-medium truncate max-w-[120px]">
+        {isDirect ? channel.name : `#${channel.channel_slug || channel.name}`}
       </span>
+
       {hasUnread && (
         <span className="bg-emerald-500 text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full">
           {channel.unread_count}
         </span>
       )}
+
       <button
         type="button"
         onClick={(e) => {
@@ -83,30 +132,59 @@ function MinimizedPill({ channel, onRestore, onClose }) {
 }
 
 // ==============================================================================
-// 2. EXPANDED FLOATING CHAT WINDOW (Width: 320px, Height: 420px)
+// 2. EXPANDED FLOATING CHAT WINDOW (Width: 340px, Height: 440px)
 // ==============================================================================
 
-function FloatingChatWindow({ channel, onMinimize, onClose }) {
+function FloatingChatWindow({
+  channel,
+  openChannels,
+  allChannels,
+  minimizedDockIds,
+  onSwitchTab,
+  onMinimize,
+  onClose
+}) {
   const { token, session } = useAuth();
-  const { sendMessage, sendTyping, onlineUsers, typingMap, markChannelAsRead } = useChat();
+  const {
+    sendMessage,
+    sendTyping,
+    onlineUsers,
+    typingMap,
+    markChannelAsRead
+  } = useChat();
 
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(true);
+  const [channelMembers, setChannelMembers] = useState([]);
+
+  // Autocomplete Popover state for @ and #
+  const [autocomplete, setAutocomplete] = useState({
+    active: false,
+    type: null, // '@' or '#'
+    query: '',
+    cursorIndex: 0
+  });
 
   const messagesEndRef = useRef(null);
   const typingTimerRef = useRef(null);
   const fileInputRef = useRef(null);
+  const textareaRef = useRef(null);
   const windowRef = useRef(null);
 
   const currentUserId = session?.id || session?.user_id;
+  const isDirect = channel.channel_type === 'direct';
   const otherUid = channel.other_user?.id;
   const isOnline = otherUid ? onlineUsers.has(otherUid) : false;
+  const isDept = channel.channel_type === 'department_auto';
+  const isPrivate = channel.channel_type === 'private_group';
+  const isAnnouncementOnly = Boolean(channel.is_announcement_only);
+  const canPost = channel.can_post !== false; // defaults true unless restricted
   const currentlyTyping = typingMap[channel.id] || [];
 
-  // Listen to Escape key to minimize window
+  // Esc key minimizes or dismisses active floating window
   useEffect(() => {
     function handleKeyDown(e) {
       if (e.key === 'Escape') {
@@ -117,7 +195,7 @@ function FloatingChatWindow({ channel, onMinimize, onClose }) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onMinimize]);
 
-  // Load message history on mount
+  // Load message history for active channel
   useEffect(() => {
     if (!token || !channel.id) return;
     let isMounted = true;
@@ -134,70 +212,166 @@ function FloatingChatWindow({ channel, onMinimize, onClose }) {
           markChannelAsRead(channel.id);
         }
       })
-      .catch((err) => {
+      .catch(() => {
         if (isMounted) setIsLoadingMessages(false);
       });
+
+    // Load channel members for @ autocomplete and member count
+    fetch(`/api/v1/chat/channels/${channel.id}/members`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (isMounted && data.members) {
+          setChannelMembers(data.members);
+        }
+      })
+      .catch(() => {});
 
     return () => {
       isMounted = false;
     };
   }, [token, channel.id, markChannelAsRead]);
 
-  // Scroll to bottom on new messages
+  // Real-time message receiver sync
+  useEffect(() => {
+    const handleCustomMsg = (event) => {
+      const msg = event.detail;
+      if (msg && (msg.channel_id === channel.id || msg.channelId === channel.id)) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === msg.id)) return prev;
+          return [...prev, msg];
+        });
+      }
+    };
+    window.addEventListener('chat_message_received', handleCustomMsg);
+    return () => window.removeEventListener('chat_message_received', handleCustomMsg);
+  }, [channel.id]);
+
+  // Auto-scroll on new message
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, currentlyTyping]);
 
-  // Handle typing debounce
+  // Handle textarea auto-grow up to 100px
   const handleInputChange = (e) => {
     const val = e.target.value;
     setInputText(val);
 
+    // Auto-grow height
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      const newHeight = Math.min(100, Math.max(36, textareaRef.current.scrollHeight));
+      textareaRef.current.style.height = `${newHeight}px`;
+    }
+
+    // Typing notification over WebSocket
     sendTyping(channel.id, true);
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     typingTimerRef.current = setTimeout(() => {
       sendTyping(channel.id, false);
-    }, 1500);
-  };
+    }, 2000);
 
-  // Send message
-  const handleSend = () => {
-    if (!inputText.trim() && !attachments.length) return;
+    // Autocomplete detection (@ or #)
+    const cursor = e.target.selectionStart;
+    const textBeforeCursor = val.slice(0, cursor);
+    const lastWordMatch = textBeforeCursor.match(/(?:^|\s)([@#])([a-zA-Z0-9_-]*)$/);
 
-    sendMessage(channel.id, inputText.trim(), attachments);
-
-    // Optimistic local append
-    const localMsg = {
-      id: `local_${Date.now()}`,
-      channel_id: channel.id,
-      sender_id: currentUserId,
-      sender_name: session?.full_name || 'Me',
-      message_text: inputText.trim(),
-      attachments: [...attachments],
-      created_at: new Date().toISOString()
-    };
-    setMessages((prev) => [...prev, localMsg]);
-
-    setInputText('');
-    setAttachments([]);
-    sendTyping(channel.id, false);
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+    if (lastWordMatch) {
+      setAutocomplete({
+        active: true,
+        type: lastWordMatch[1],
+        query: lastWordMatch[2].toLowerCase(),
+        cursorIndex: cursor - lastWordMatch[2].length
+      });
+    } else {
+      setAutocomplete({ active: false, type: null, query: '', cursorIndex: 0 });
     }
   };
 
-  // Handle file attachment upload
+  // Insert mention or channel slug
+  const handleSelectAutocomplete = (item) => {
+    if (!autocomplete.active) return;
+    const text = inputText;
+    const prefix = text.slice(0, autocomplete.cursorIndex);
+    const suffix = text.slice(autocomplete.cursorIndex + autocomplete.query.length);
+
+    let replacement = '';
+    if (autocomplete.type === '@') {
+      replacement = item.token || item.username || item.full_name;
+    } else if (autocomplete.type === '#') {
+      replacement = item.channel_slug || item.name;
+    }
+
+    const nextText = `${prefix}${replacement} ${suffix}`;
+    setInputText(nextText);
+    setAutocomplete({ active: false, type: null, query: '', cursorIndex: 0 });
+
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  };
+
+  // Submit message
+  const handleSendMessage = async (e) => {
+    if (e) e.preventDefault();
+    if (!canPost) return;
+
+    const trimmed = inputText.trim();
+    if (!trimmed && !attachments.length) return;
+
+    const payloadText = trimmed;
+    const payloadAttachments = attachments;
+
+    // Reset input
+    setInputText('');
+    setAttachments([]);
+    setAutocomplete({ active: false, type: null, query: '', cursorIndex: 0 });
+    if (textareaRef.current) {
+      textareaRef.current.style.height = '36px';
+    }
+
+    // Local optimistic append
+    const localId = `local-${Date.now()}`;
+    const optimisticMsg = {
+      id: localId,
+      channel_id: channel.id,
+      sender_id: currentUserId,
+      sender_name: session?.full_name || 'You',
+      message_text: payloadText,
+      attachments: payloadAttachments,
+      is_system_event: false,
+      created_at: new Date().toISOString()
+    };
+    setMessages((prev) => [...prev, optimisticMsg]);
+
+    // Dispatch via WebSocket or REST
+    await sendMessage(channel.id, payloadText, payloadAttachments);
+  };
+
+  // Handle enter key (Enter sends, Shift+Enter newlines)
+  const handleKeyDown = (e) => {
+    if (autocomplete.active && (e.key === 'Tab' || e.key === 'Enter')) {
+      // Handled in autocomplete list
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
+
+  // File upload strictly to disk (/storage/chat_attachments/{YYYY}/{MM}/)
   const handleFileUpload = async (e) => {
-    const files = e.target.files;
-    if (!files || !files[0] || !token) return;
+    const file = e.target.files?.[0];
+    if (!file || !token) return;
 
-    const file = files[0];
+    if (file.size > 25 * 1024 * 1024) {
+      alert('File size exceeds the 25MB limit.');
+      return;
+    }
+
     setIsUploading(true);
-
     const formData = new FormData();
     formData.append('file', file);
 
@@ -210,6 +384,8 @@ function FloatingChatWindow({ channel, onMinimize, onClose }) {
       if (res.ok) {
         const data = await res.json();
         setAttachments((prev) => [...prev, data.attachment]);
+      } else {
+        alert('File upload failed.');
       }
     } catch (err) {
       console.error('File upload error:', err);
@@ -219,107 +395,211 @@ function FloatingChatWindow({ channel, onMinimize, onClose }) {
     }
   };
 
+  // Autocomplete suggestions filtering
+  let autocompleteItems = [];
+  if (autocomplete.active) {
+    if (autocomplete.type === '@') {
+      const mentionsSpecial = [
+        { id: 'all', token: 'all', full_name: 'all (Notify everyone)', isSpecial: true },
+        { id: 'channel', token: 'channel', full_name: 'channel (Channel broadcast)', isSpecial: true }
+      ];
+      const memberSuggestions = channelMembers.map((m) => ({
+        id: m.user_id,
+        token: m.username || m.full_name,
+        full_name: m.full_name,
+        job_title: m.job_title
+      }));
+      autocompleteItems = [...mentionsSpecial, ...memberSuggestions].filter((item) =>
+        (item.full_name || item.token).toLowerCase().includes(autocomplete.query)
+      );
+    } else if (autocomplete.type === '#') {
+      autocompleteItems = allChannels.filter(
+        (c) =>
+          c.channel_type !== 'direct' &&
+          (c.name || c.channel_slug || '').toLowerCase().includes(autocomplete.query)
+      );
+    }
+  }
+
+  const memberCountDisplay = channel.member_count || channelMembers.length || (isDirect ? 2 : 1);
+
   return (
     <div
       ref={windowRef}
-      className="pointer-events-auto w-80 h-[420px] bg-slate-900 border border-slate-700/90 rounded-t-xl shadow-2xl flex flex-col overflow-hidden select-text animate-in fade-in slide-in-from-bottom-2 duration-150"
+      className="pointer-events-auto w-[340px] h-[440px] bg-slate-900 border border-slate-700/90 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-150"
     >
-      {/* Header (Compact 38px) */}
-      <div className="h-10 px-3 bg-slate-800 border-b border-slate-700/80 flex items-center justify-between flex-shrink-0 cursor-default">
+      {/* 1. HEADER (Channel name, member count, announcement badge, controls) */}
+      <div className="px-3 py-2 bg-slate-800/95 border-b border-slate-700/80 flex items-center justify-between text-slate-200">
         <div className="flex items-center gap-2 min-w-0">
-          <span
-            className={`w-2.5 h-2.5 rounded-full ring-2 ring-slate-800 flex-shrink-0 ${
-              isOnline ? 'bg-emerald-500' : 'bg-slate-500'
-            }`}
-          />
-          <span className="text-xs font-semibold text-slate-100 truncate" title={channel.name}>
-            {channel.name}
-          </span>
-          {channel.channel_type === 'group' && (
-            <span className="text-[10px] text-sky-400 bg-sky-950/60 px-1 py-0.2 rounded border border-sky-800/40">
-              Group
-            </span>
-          )}
+          {/* Channel Type Icon */}
+          <div className="w-6 h-6 rounded-lg bg-slate-700/80 flex items-center justify-center flex-shrink-0">
+            {isDirect ? (
+              <User className="w-3.5 h-3.5 text-sky-400" />
+            ) : isDept ? (
+              <Building2 className="w-3.5 h-3.5 text-amber-400" />
+            ) : isPrivate ? (
+              <Lock className="w-3.5 h-3.5 text-rose-400" />
+            ) : (
+              <Hash className="w-3.5 h-3.5 text-emerald-400" />
+            )}
+          </div>
+
+          {/* Name & Details */}
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-bold text-white truncate max-w-[150px]">
+                {isDirect ? channel.name : `#${channel.channel_slug || channel.name}`}
+              </span>
+              {isAnnouncementOnly && (
+                <span title="Announcement Channel (Read-Only)">
+                  <ShieldAlert className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-[10px] text-slate-400">
+              {isDirect ? (
+                <span className={isOnline ? 'text-emerald-400 font-medium' : 'text-slate-500'}>
+                  {isOnline ? 'Active Online' : 'Offline'}
+                </span>
+              ) : (
+                <span title="Total Channel Members" className="flex items-center gap-0.5">
+                  <Users className="w-3 h-3 text-slate-400" />
+                  <span>{memberCountDisplay} members</span>
+                </span>
+              )}
+            </div>
+          </div>
         </div>
 
-        <div className="flex items-center gap-1 flex-shrink-0">
+        {/* Window Controls: Minimize, Close */}
+        <div className="flex items-center gap-0.5">
           <button
             type="button"
             onClick={onMinimize}
-            title="Minimize (_ or Esc)"
-            className="p-1 text-slate-400 hover:text-white hover:bg-slate-700 rounded transition-colors"
+            title="Minimize (Esc)"
+            className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 rounded transition-colors"
           >
             <Minus className="w-3.5 h-3.5" />
           </button>
           <button
             type="button"
             onClick={onClose}
-            title="Close chat"
-            className="p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-700 rounded transition-colors"
+            title="Close channel"
+            className="p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-700/60 rounded transition-colors"
           >
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Messages Feed */}
-      <div className="flex-1 p-3 overflow-y-auto space-y-2.5 bg-slate-950/40 text-xs">
+      {/* 2. COLLAPSIBLE BOTTOM TABS TRAY (Switch between #Operations, #General, DMs) */}
+      {openChannels.length > 1 && (
+        <div className="px-2 py-1 bg-slate-950/80 border-b border-slate-800/80 flex items-center gap-1 overflow-x-auto scrollbar-none">
+          {openChannels.map((oc) => {
+            const isActive = oc.id === channel.id;
+            const hasUnread = (oc.unread_count || 0) > 0;
+            const isOcDirect = oc.channel_type === 'direct';
+
+            return (
+              <button
+                key={oc.id}
+                type="button"
+                onClick={() => onSwitchTab(oc.id)}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium whitespace-nowrap transition-colors ${
+                  isActive
+                    ? 'bg-slate-800 text-emerald-400 border border-slate-700'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                }`}
+              >
+                {isOcDirect ? (
+                  <User className="w-2.5 h-2.5" />
+                ) : (
+                  <Hash className="w-2.5 h-2.5" />
+                )}
+                <span className="truncate max-w-[80px]">
+                  {isOcDirect ? oc.name : oc.channel_slug || oc.name}
+                </span>
+                {hasUnread && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 3. MESSAGE STREAM CONTAINER */}
+      <div className="flex-1 p-3 overflow-y-auto space-y-2.5 bg-slate-900/60 text-xs">
         {isLoadingMessages ? (
-          <div className="flex items-center justify-center h-full text-slate-500 text-[11px]">
-            Loading conversation...
+          <div className="flex items-center justify-center h-full text-slate-500 gap-2">
+            <Loader2 className="w-4 h-4 animate-spin text-emerald-500" />
+            <span>Loading channel stream...</span>
           </div>
         ) : messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-slate-500 text-[11px] text-center px-4">
-            <span className="font-medium text-slate-400">Direct Message</span>
-            <span>Messages are encrypted, real-time, and synced with desktop alerts.</span>
+          <div className="flex flex-col items-center justify-center h-full text-center text-slate-500 p-4">
+            <Hash className="w-8 h-8 text-slate-700 mb-1" />
+            <p className="font-semibold text-slate-400">Stream initialized</p>
+            <p className="text-[11px] text-slate-500 mt-1">
+              Welcome to #{channel.channel_slug || channel.name}. Begin the conversation below.
+            </p>
           </div>
         ) : (
-          messages.map((m, idx) => {
+          messages.map((m) => {
             const isSelf = m.sender_id === currentUserId;
+            const isSystem = Boolean(m.is_system_event);
+
+            // System event notices (e.g. "User X joined", "User Y transferred")
+            if (isSystem) {
+              return (
+                <div key={m.id} className="flex justify-center my-1.5">
+                  <div className="px-2.5 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-[10px] text-slate-400 italic">
+                    {m.message_text}
+                  </div>
+                </div>
+              );
+            }
+
             return (
               <div
-                key={m.id || idx}
+                key={m.id}
                 className={`flex flex-col ${isSelf ? 'items-end' : 'items-start'}`}
               >
-                {/* Sender Name in group */}
-                {!isSelf && channel.channel_type !== 'direct' && (
-                  <span className="text-[10px] text-slate-400 font-medium ml-1 mb-0.5">
+                {!isSelf && !isDirect && (
+                  <span className="text-[10px] font-semibold text-slate-400 mb-0.5 ml-1">
                     {m.sender_name}
                   </span>
                 )}
-
-                {/* Message Bubble */}
                 <div
-                  className={`max-w-[85%] px-3 py-2 rounded-xl text-xs leading-relaxed break-words shadow-sm ${
+                  className={`max-w-[85%] rounded-2xl px-3 py-1.5 text-xs shadow-sm break-words ${
                     isSelf
-                      ? 'bg-emerald-600 text-white rounded-tr-none'
-                      : 'bg-slate-800 border border-slate-700 text-slate-200 rounded-tl-none'
+                      ? 'bg-emerald-600 text-white rounded-br-xs'
+                      : 'bg-slate-800 border border-slate-700/70 text-slate-200 rounded-bl-xs'
                   }`}
                 >
-                  {m.message_text}
+                  <p className="whitespace-pre-wrap leading-relaxed">
+                    {renderFormattedMessage(m.message_text)}
+                  </p>
 
-                  {/* Attachments preview */}
+                  {/* Attachments rendering */}
                   {m.attachments && m.attachments.length > 0 && (
                     <div className="mt-1.5 space-y-1">
-                      {m.attachments.map((att, attIdx) => (
-                        <a
-                          key={attIdx}
-                          href={`/${att.disk_path}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="flex items-center gap-1.5 p-1.5 rounded bg-black/20 hover:bg-black/40 text-[11px] underline"
+                      {m.attachments.map((att, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-center gap-1.5 p-1 rounded bg-black/20 text-[11px]"
                         >
                           <FileText className="w-3.5 h-3.5 flex-shrink-0" />
-                          <span className="truncate">{att.name || 'Attachment'}</span>
-                        </a>
+                          <span className="truncate flex-1">{att.name || 'Attachment'}</span>
+                          <span className="text-[9px] opacity-70">
+                            {formatBytes(att.size)}
+                          </span>
+                        </div>
                       ))}
                     </div>
                   )}
                 </div>
-
-                {/* Timestamp */}
                 <span className="text-[9px] text-slate-500 mt-0.5 px-1">
-                  {formatMessageTime(m.created_at)}
+                  {formatTime(m.created_at)}
                 </span>
               </div>
             );
@@ -328,83 +608,154 @@ function FloatingChatWindow({ channel, onMinimize, onClose }) {
 
         {/* Typing indicator */}
         {currentlyTyping.length > 0 && (
-          <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-medium italic animate-pulse">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            <span>{currentlyTyping.join(', ')} is typing...</span>
+          <div className="text-[10px] text-slate-400 italic flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span>{currentlyTyping.join(', ')} typing...</span>
           </div>
         )}
 
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Attachments Preview before sending */}
-      {attachments.length > 0 && (
-        <div className="px-3 py-1.5 bg-slate-800 border-t border-slate-700/80 flex items-center gap-2 overflow-x-auto text-xs">
-          {attachments.map((att, i) => (
+      {/* 4. AUTOCOMPLETE POPOVER (@mentions or #channels) */}
+      {autocomplete.active && autocompleteItems.length > 0 && (
+        <div className="px-2 py-1 bg-slate-950 border-t border-slate-700/80 max-h-32 overflow-y-auto divide-y divide-slate-800/80 shadow-lg">
+          <p className="text-[10px] font-semibold text-slate-500 uppercase px-1 py-0.5">
+            {autocomplete.type === '@' ? 'Mention colleague or channel' : 'Link channel'}
+          </p>
+          {autocompleteItems.map((item, idx) => (
             <div
-              key={i}
-              className="flex items-center gap-1 px-2 py-0.5 bg-slate-700 rounded text-slate-200 text-[11px]"
+              key={item.id || idx}
+              onClick={() => handleSelectAutocomplete(item)}
+              className="px-2 py-1 hover:bg-slate-800/80 cursor-pointer rounded flex items-center justify-between text-xs text-slate-200"
+            >
+              <div className="flex items-center gap-1.5 truncate">
+                {autocomplete.type === '@' ? (
+                  <AtSign className="w-3 h-3 text-emerald-400" />
+                ) : (
+                  <Hash className="w-3 h-3 text-sky-400" />
+                )}
+                <span className="font-medium truncate">
+                  {autocomplete.type === '@' ? item.token : item.channel_slug || item.name}
+                </span>
+              </div>
+              <span className="text-[10px] text-slate-500 ml-2">
+                {item.full_name || item.name}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 5. ATTACHMENT CHIPS PREVIEW */}
+      {attachments.length > 0 && (
+        <div className="px-3 py-1.5 bg-slate-950/70 border-t border-slate-800/80 flex items-center gap-2 overflow-x-auto">
+          {attachments.map((att, idx) => (
+            <div
+              key={idx}
+              className="flex items-center gap-1.5 bg-slate-800 px-2 py-1 rounded-md text-[11px] text-slate-300 border border-slate-700 flex-shrink-0"
             >
               <FileText className="w-3 h-3 text-emerald-400" />
-              <span className="truncate max-w-[100px]">{att.name}</span>
+              <span className="truncate max-w-[120px]">{att.name}</span>
               <button
                 type="button"
-                onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
-                className="text-slate-400 hover:text-rose-400 ml-1"
+                onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                className="text-slate-400 hover:text-rose-400 ml-0.5"
               >
-                ✕
+                <X className="w-3 h-3" />
               </button>
             </div>
           ))}
         </div>
       )}
 
-      {/* Footer / Input */}
-      <div className="p-2 bg-slate-800/90 border-t border-slate-700/80 flex items-center gap-1.5">
-        <input
-          type="file"
-          ref={fileInputRef}
-          onChange={handleFileUpload}
-          className="hidden"
-        />
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isUploading}
-          title="Attach file"
-          className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-700 rounded-lg transition-colors flex-shrink-0"
+      {/* 6. INPUT AREA (Auto-growing textarea, paperclip, send) */}
+      {!canPost ? (
+        <div className="p-3 bg-slate-950/90 border-t border-slate-800/80 text-center text-xs text-amber-400/90 flex items-center justify-center gap-1.5">
+          <ShieldAlert className="w-4 h-4 text-amber-400 flex-shrink-0" />
+          <span>Announcement-only channel. Only moderators can post.</span>
+        </div>
+      ) : (
+        <form
+          onSubmit={handleSendMessage}
+          className="p-2.5 bg-slate-950/90 border-t border-slate-800/80 flex items-end gap-1.5"
         >
-          <Paperclip className={`w-4 h-4 ${isUploading ? 'animate-spin' : ''}`} />
-        </button>
+          {/* Paperclip attachment button */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileUpload}
+            className="hidden"
+          />
+          <button
+            type="button"
+            id="chat-attach-button"
+            disabled={isUploading}
+            onClick={() => fileInputRef.current?.click()}
+            title="Attach file (Disk storage/chat_attachments/)"
+            className="p-2 text-slate-400 hover:text-emerald-400 hover:bg-slate-800 rounded-lg transition-colors disabled:opacity-50 flex-shrink-0"
+          >
+            {isUploading ? (
+              <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+            ) : (
+              <Paperclip className="w-4 h-4" />
+            )}
+          </button>
 
-        <textarea
-          rows={1}
-          placeholder="Type a message..."
-          value={inputText}
-          onChange={handleInputChange}
-          onKeyDown={handleKeyDown}
-          className="flex-1 bg-slate-900 text-slate-100 text-xs px-2.5 py-1.5 rounded-lg border border-slate-700 focus:outline-none focus:border-emerald-500 resize-none max-h-20 transition-colors placeholder:text-slate-500"
-        />
+          {/* Auto-growing Textarea Input */}
+          <div className="flex-1 relative">
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              id="chat-message-input"
+              value={inputText}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              placeholder={`Message #${channel.channel_slug || channel.name}... (@ to mention)`}
+              className="w-full bg-slate-800/90 text-slate-200 text-xs px-3 py-2 rounded-xl border border-slate-700/80 focus:outline-none focus:border-emerald-500 placeholder:text-slate-500 resize-none max-h-[100px] leading-relaxed"
+            />
+          </div>
 
-        <button
-          type="button"
-          onClick={handleSend}
-          disabled={!inputText.trim() && !attachments.length}
-          title="Send (Enter)"
-          className={`p-1.5 rounded-lg transition-colors flex-shrink-0 ${
-            inputText.trim() || attachments.length
-              ? 'bg-emerald-600 text-white hover:bg-emerald-500'
-              : 'text-slate-600 cursor-not-allowed'
-          }`}
-        >
-          <Send className="w-4 h-4" />
-        </button>
-      </div>
+          {/* Send Button */}
+          <button
+            type="submit"
+            id="chat-send-button"
+            disabled={!inputText.trim() && !attachments.length}
+            title="Send Message (Enter)"
+            className="p-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-600 text-white rounded-xl transition-colors shadow-md flex-shrink-0"
+          >
+            <Send className="w-4 h-4" />
+          </button>
+        </form>
+      )}
     </div>
   );
 }
 
-function formatMessageTime(isoStr) {
+// ==============================================================================
+// HELPERS
+// ==============================================================================
+
+function renderFormattedMessage(text) {
+  if (!text) return '';
+  // Highlight @channel, @all, and @mentions in emerald
+  const parts = text.split(/(@[a-zA-Z0-9_\-\.]+)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith('@')) {
+      return (
+        <span
+          key={i}
+          className="bg-emerald-500/20 text-emerald-300 font-semibold px-1 py-0.2 rounded"
+        >
+          {part}
+        </span>
+      );
+    }
+    return part;
+  });
+}
+
+function formatTime(isoStr) {
   if (!isoStr) return '';
   try {
     const d = new Date(isoStr);
@@ -412,4 +763,12 @@ function formatMessageTime(isoStr) {
   } catch (e) {
     return '';
   }
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
