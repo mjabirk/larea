@@ -1,13 +1,25 @@
-// Enterprise ERP Module Registry & Scalable 2-Tier Navigation
+// src/registry/moduleRegistry.js
 export const APP_MODULES = [
   {
     id: "hr",
     name: "Human Resources",
     shortName: "HR",
     iconName: "Users",
-    description: "Biometric attendance logs, shift rosters, employee time tracking & leave management",
+    description: "Expat workforce directory, QID/Visa compliance, contracts, biometric attendance & shift rosters",
     color: "#2563eb",
     menus: [
+      {
+        id: "employees",
+        label: "Employees",
+        model: "employees",
+        required_groups: ["hr.employee_user", "hr.manager", "employee.read"]
+      },
+      {
+        id: "contracts",
+        label: "Contracts",
+        model: "employee_contracts",
+        required_groups: ["hr.contracts_read"]
+      },
       {
         id: "attendances",
         label: "Attendance Logs",
@@ -19,6 +31,80 @@ export const APP_MODULES = [
         label: "Shift Rosters",
         model: "shift_rosters",
         required_groups: ["hr.roster_manager", "hr.manager", "attendance.write"]
+      },
+      {
+        id: "leaves",
+        label: "Leave & Time Off",
+        model: "leave_requests",
+        required_groups: ["hr.employee_user", "hr.manager", "attendance.read"]
+      },
+      {
+        id: "hr_config",
+        label: "Configuration",
+        model: "hr_settings",
+        required_groups: ["hr.manager", "employee.write"]
+      }
+    ]
+  },
+  {
+    id: "payroll",
+    name: "Payroll & WPS",
+    shortName: "Payroll",
+    iconName: "Banknote",
+    description: "Qatar WPS SIF file generator, monthly salary batches, EOSB gratuity & allowance rules",
+    color: "#d97706",
+    menus: [
+      {
+        id: "batches",
+        label: "Payroll Batches & WPS",
+        model: "payroll_batches",
+        required_groups: ["payroll.batches_admin", "payroll.manager", "payroll.read"]
+      },
+      {
+        id: "payroll_adjustments",
+        label: "Variable Pay & Approvals",
+        model: "payroll_adjustments",
+        required_groups: ["payroll.read", "attendance.write", "hr.manager"]
+      },
+      {
+        id: "eosb",
+        label: "EOSB & Final Settlement",
+        model: "eosb_gratuity",
+        required_groups: ["payroll.read", "hr.contracts_read", "hr.manager"]
+      },
+      {
+        id: "salary_rules",
+        label: "Salary Rules & Allowances",
+        model: "salary_rules",
+        required_groups: ["hr.salary_manage", "payroll.manager"]
+      },
+      {
+        id: "wps_config",
+        label: "WPS Bank Configuration",
+        model: "wps_settings",
+        required_groups: ["hr.salary_manage", "payroll.manager"]
+      }
+    ]
+  },
+  {
+    id: "operations",
+    name: "Operations & Hardware",
+    shortName: "Ops",
+    iconName: "Cpu",
+    description: "Biometric ADMS terminals, ZKTeco push gateway, hardware health & API keys",
+    color: "#059669",
+    menus: [
+      {
+        id: "terminals",
+        label: "Hardware Terminals",
+        model: "terminals",
+        required_groups: ["operations.terminals_admin", "operations.hardware_operator", "hardware.read"]
+      },
+      {
+        id: "api_keys",
+        label: "ADMS API Keys",
+        model: "api_keys",
+        required_groups: ["hardware.manage", "users.manage"]
       }
     ]
   },
@@ -27,7 +113,7 @@ export const APP_MODULES = [
     name: "Security & IAM",
     shortName: "IAM",
     iconName: "Shield",
-    description: "Identity lifecycle, zero-trust sessions, RBAC permission matrices & corporate tenancy",
+    description: "Identity lifecycle, zero-trust DragonflyDB sessions, RBAC permission matrices & 2FA",
     color: "#7c3aed",
     menus: [
       {
@@ -41,44 +127,28 @@ export const APP_MODULES = [
         label: "Roles & Permissions",
         model: "roles",
         required_groups: ["iam.roles_admin", "iam.security_admin", "users.manage"]
-      },
+      }
+    ]
+  },
+  {
+    id: "settings",
+    name: "System Configuration",
+    shortName: "Settings",
+    iconName: "SlidersHorizontal",
+    description: "Organizations & branches, Qatar CR/Establishment IDs, expiry alert rules & system audit logs",
+    color: "#475569",
+    menus: [
       {
         id: "orgs",
-        label: "Organizations & Branches",
+        label: "Companies & Branches",
         model: "organizations",
-        required_groups: ["iam.tenancy_admin", "iam.security_admin", "org.read", "org.manage"]
-      }
-    ]
-  },
-  {
-    id: "operations",
-    name: "Operations & Hardware",
-    shortName: "Ops",
-    iconName: "Cpu",
-    description: "Biometric ADMS terminals, hardware health monitors & subnet policies",
-    color: "#059669",
-    menus: [
+        required_groups: ["org.read", "org.manage"]
+      },
       {
-        id: "terminals",
-        label: "Hardware Terminals",
-        model: "terminals",
-        required_groups: ["operations.terminals_admin", "operations.hardware_operator"]
-      }
-    ]
-  },
-  {
-    id: "payroll",
-    name: "Payroll Engine",
-    shortName: "Payroll",
-    iconName: "Banknote",
-    description: "Salary rules computation, automated overtime calculation & lock batches",
-    color: "#d97706",
-    menus: [
-      {
-        id: "batches",
-        label: "Payroll Batches",
-        model: "payroll_batches",
-        required_groups: ["payroll.batches_admin", "payroll.manager"]
+        id: "compliance_alerts",
+        label: "QID & Visa Alert Rules",
+        model: "compliance_settings",
+        required_groups: ["org.manage", "hr.manager"]
       }
     ]
   }

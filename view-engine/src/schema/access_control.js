@@ -61,6 +61,69 @@ export const security_groups = [
     category: "Human Resources",
     app_id: "hr",
   },
+  {
+    key: "employee.read",
+    name: "Read Employees Directory",
+    description: "Query and view international employee profiles, contracts, and residency details.",
+    category: "Human Resources",
+    app_id: "hr",
+  },
+  {
+    key: "employee.write",
+    name: "Manage Employees",
+    description: "Create and update employee records, WPS banking data, and expat compliance.",
+    category: "Human Resources",
+    app_id: "hr",
+  },
+  {
+    key: "employee.delete",
+    name: "Delete Employees",
+    description: "De-provision and archive employee personnel records.",
+    category: "Human Resources",
+    app_id: "hr",
+  },
+  {
+    key: "hr.employee_user",
+    name: "Employee Self-Service Access",
+    description: "Base workforce access to employee directory.",
+    category: "Human Resources",
+    app_id: "hr",
+  },
+  {
+    key: "hr.manager",
+    name: "HR Management Role",
+    description: "Full HR management privileges over workforce and immigration compliance.",
+    category: "Human Resources",
+    app_id: "hr",
+  },
+  {
+    key: "hr.contracts_read",
+    name: "Contract Administrator - Basic",
+    description: "Permits viewing contract existence, reference (CNT-2026-XXXX), title, start/end dates, probation, and notice periods. Strictly denies access to base wages, salary rules, benefit amounts, and net package totals.",
+    category: "Human Resources",
+    app_id: "hr",
+  },
+  {
+    key: "hr.contracts_manage",
+    name: "Contract Officer",
+    description: "Permits creating, editing, and activating contracts, modifying duration, and uploading signed agreements.",
+    category: "Human Resources",
+    app_id: "hr",
+  },
+  {
+    key: "hr.salary_read",
+    name: "Payroll / Compensation Auditor",
+    description: "Grants read access to confidential compensation fields (wage_base, currency, benefit line figures, total monthly net package).",
+    category: "Human Resources",
+    app_id: "hr",
+  },
+  {
+    key: "hr.salary_manage",
+    name: "Payroll / Compensation Director",
+    description: "Full authority to configure base wages, attach/remove dynamic benefit rules, and override rule percentages/amounts.",
+    category: "Human Resources",
+    app_id: "hr",
+  },
 
   // Security & Identity Access Management (IAM)
   {
@@ -157,6 +220,15 @@ export const app_access_profiles = [
       "attendance.delete",
       "roster.read",
       "roster.write",
+      "employee.read",
+      "employee.write",
+      "employee.delete",
+      "hr.employee_user",
+      "hr.manager",
+      "hr.contracts_read",
+      "hr.contracts_manage",
+      "hr.salary_read",
+      "hr.salary_manage",
     ],
   },
   {
@@ -169,6 +241,10 @@ export const app_access_profiles = [
       "attendance.write",
       "attendance.verify",
       "roster.read",
+      "employee.read",
+      "employee.write",
+      "hr.employee_user",
+      "hr.contracts_read",
     ],
   },
   {
@@ -179,6 +255,8 @@ export const app_access_profiles = [
     granted_groups: [
       "attendance.read",
       "roster.read",
+      "employee.read",
+      "hr.employee_user",
     ],
   },
 
@@ -199,7 +277,7 @@ export const app_access_profiles = [
   },
   {
     id: "app_iam_auditor",
-    app_id: "security_iam",
+    app_id: "iam",
     name: "IAM Compliance Auditor",
     description: "Read-only inspection of corporate directory, security profiles, and tenancy branches.",
     granted_groups: [
@@ -212,7 +290,7 @@ export const app_access_profiles = [
   // Operations & Hardware Profiles
   {
     id: "app_ops_engineer",
-    app_id: "operations_hardware",
+    app_id: "operations",
     name: "Hardware Gateway Engineer",
     description: "Full operational authority over biometric hardware devices and ADMS listener gateways.",
     granted_groups: [
@@ -222,7 +300,7 @@ export const app_access_profiles = [
   },
   {
     id: "app_ops_viewer",
-    app_id: "operations_hardware",
+    app_id: "operations",
     name: "Terminal Status Observer",
     description: "Read-only telemetry monitoring of biometric terminal connectivity and ping latency.",
     granted_groups: [
@@ -233,12 +311,15 @@ export const app_access_profiles = [
   // Payroll Engine Profiles
   {
     id: "app_payroll_officer",
-    app_id: "payroll_engine",
+    app_id: "payroll",
     name: "Payroll Operations Officer",
     description: "Reconciliation of verified shifts, batch locking, and WPS export dispatch.",
     granted_groups: [
       "payroll.read",
       "payroll.manage",
+      "hr.contracts_read",
+      "hr.salary_read",
+      "hr.salary_manage",
     ],
   },
   {
@@ -248,6 +329,8 @@ export const app_access_profiles = [
     description: "Read-only audit inspection of monthly attendance batches and verified hours.",
     granted_groups: [
       "payroll.read",
+      "hr.contracts_read",
+      "hr.salary_read",
     ],
   },
 ];
@@ -257,13 +340,24 @@ export const APP_ACCESS_PROFILES = app_access_profiles;
 
 // 3. Sub-Menu Model Permission Requirements
 export const MENU_PERMISSIONS = {
+  employees: "employee.read",
+  new_employee: "employee.write",
+  contracts: "hr.contracts_read",
   attendances: "attendance.read",
   rosters: "roster.read",
+  leaves: "attendance.read",
+  hr_config: "employee.write",
+  batches: "payroll.read",
+  payroll_adjustments: "attendance.write",
+  eosb: "hr.contracts_read",
+  salary_rules: "hr.salary_manage",
+  wps_config: "hr.salary_manage",
+  terminals: "hardware.read",
+  api_keys: "hardware.manage",
   users: "users.read",
   roles: "roles.read",
   orgs: "org.read",
-  terminals: "hardware.read",
-  batches: "payroll.read",
+  compliance_alerts: "org.manage",
 };
 
 // 4. Default Role to App Access Profile Mappings

@@ -4,6 +4,7 @@ import {
   Shield,
   Cpu,
   Banknote,
+  SlidersHorizontal,
   LayoutGrid,
   Search,
   X,
@@ -20,6 +21,7 @@ const ICON_MAP = {
   Shield,
   Cpu,
   Banknote,
+  SlidersHorizontal,
 };
 
 export function AppGridOverlay({
@@ -43,10 +45,10 @@ export function AppGridOverlay({
     if (!q) return accessibleApps;
 
     return accessibleApps.filter((app) => {
-      const matchName = app.name.toLowerCase().includes(q);
-      const matchShort = app.shortName?.toLowerCase().includes(q);
-      const matchDesc = app.description.toLowerCase().includes(q);
-      const matchMenus = app.menus?.some((m) => m.label.toLowerCase().includes(q));
+      const matchName = String(app?.name || '').toLowerCase().includes(q);
+      const matchShort = String(app?.shortName || '').toLowerCase().includes(q);
+      const matchDesc = String(app?.description || '').toLowerCase().includes(q);
+      const matchMenus = app?.menus?.some((m) => String(m?.label || '').toLowerCase().includes(q));
       return matchName || matchShort || matchDesc || matchMenus;
     });
   }, [accessibleApps, searchQuery]);
@@ -159,11 +161,10 @@ export function AppGridOverlay({
               return (
                 <div
                   key={app.id}
-                  className={`group relative rounded-2xl border transition-all duration-200 flex flex-col justify-between overflow-hidden shadow-xs hover:shadow-md ${
-                    isCurrent
-                      ? 'bg-white dark:bg-slate-900 border-blue-500 ring-2 ring-blue-500/30'
-                      : 'bg-white dark:bg-slate-900/70 border-slate-200 dark:border-slate-800/90 hover:border-slate-300 dark:hover:border-slate-700 hover:-translate-y-0.5'
-                  }`}
+                  className={`group relative rounded-2xl border transition-all duration-200 flex flex-col justify-between overflow-hidden shadow-xs hover:shadow-md ${isCurrent
+                    ? 'bg-white dark:bg-slate-900 border-blue-500 ring-2 ring-blue-500/30'
+                    : 'bg-white dark:bg-slate-900/70 border-slate-200 dark:border-slate-800/90 hover:border-slate-300 dark:hover:border-slate-700 hover:-translate-y-0.5'
+                    }`}
                 >
                   {/* Subtle top color accent bar */}
                   <div

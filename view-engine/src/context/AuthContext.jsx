@@ -43,8 +43,8 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
     } else {
       // System initialized and authenticated
       if (currentPath === '/setup' || currentPath === '/login') {
-        const query = window.location.search || '';
-        window.history.replaceState(null, '', `/${query}`);
+        const query = window.location.search;
+        window.history.replaceState(null, '', query ? `/${query}` : '/?view=launcher');
       }
     }
   }, [isSystemInitialized, isAuthenticated]);
@@ -206,7 +206,7 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
           onUserLogin(user.id);
         }
 
-        window.history.replaceState(null, '', '/');
+        window.history.replaceState(null, '', '/?view=launcher');
         return { success: true, user };
       } catch (err) {
         console.error('Login request failed:', err);
@@ -285,7 +285,7 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
           onSystemInitComplete({ newUser: user, orgData, adminData, prefData });
         }
 
-        window.history.replaceState(null, '', '/');
+        window.history.replaceState(null, '', '/?view=launcher');
         return { success: true, user };
       } catch (err) {
         console.error('Setup initialization request failed:', err);
@@ -298,12 +298,36 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
     [onSystemInitComplete]
   );
 
+  const sessionToken =
+    session?.token ||
+    (typeof window !== 'undefined'
+      ? localStorage.getItem(STORAGE_TOKEN_KEY) || sessionStorage.getItem(STORAGE_TOKEN_KEY)
+      : '') ||
+    '';
+
+  const getAuthHeaders = useCallback(
+    (additionalHeaders = {}) => {
+      const headers = { ...additionalHeaders };
+      if (!headers['Content-Type'] && !(additionalHeaders instanceof FormData)) {
+        headers['Content-Type'] = 'application/json';
+      }
+      if (sessionToken) {
+        headers['Authorization'] = `Bearer ${sessionToken}`;
+      }
+      return headers;
+    },
+    [sessionToken]
+  );
+
   const value = {
     isSystemInitialized,
     isLoading,
     isAuthenticated,
     currentUser,
     session,
+    sessionToken,
+    token: sessionToken,
+    getAuthHeaders,
     login,
     logout,
     activateSystem,

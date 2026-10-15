@@ -34,9 +34,16 @@ export function AccessControlProvider({ children }) {
   const [roles, setRoles] = useState(DEFAULT_ROLES);
   const [rolePermissions, setRolePermissions] = useState(INITIAL_ROLE_PERMISSIONS);
 
+  const getAuthHeaders = () => {
+    const token = typeof window !== 'undefined'
+      ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
+      : null;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
   const fetchRoles = useCallback(async () => {
     try {
-      const res = await fetch('/api/v1/iam/roles');
+      const res = await fetch('/api/v1/iam/roles', { headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         const loadedRoles = data.roles || [];
@@ -97,7 +104,7 @@ export function AccessControlProvider({ children }) {
     try {
       const res = await fetch('/api/v1/iam/roles', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           name,
           code,
@@ -130,7 +137,7 @@ export function AccessControlProvider({ children }) {
     try {
       const res = await fetch(`/api/v1/iam/roles/${roleId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           name: updates.name,
           description: updates.description,
@@ -172,13 +179,14 @@ export function AccessControlProvider({ children }) {
       }
 
       // Safeguard 2: Check for active assigned user identities
+      const tName = String(target?.name || '').toLowerCase();
+      const tCode = String(target?.code || '').toLowerCase();
+      const tId = String(target?.id || '').toLowerCase();
       const assignedUsers = allUsers.filter((u) => {
-        const userRole = (u.role || '').toLowerCase();
+        const userRole = String(u?.role || '').toLowerCase();
         return (
-          u.role_id === roleId ||
-          userRole === target.name.toLowerCase() ||
-          userRole === target.code?.toLowerCase() ||
-          userRole === target.id.toLowerCase()
+          Boolean(u?.role_id && u.role_id === roleId) ||
+          Boolean(userRole && (userRole === tName || (tCode && userRole === tCode) || (tId && userRole === tId)))
         );
       });
 
@@ -200,6 +208,7 @@ export function AccessControlProvider({ children }) {
       try {
         const res = await fetch(`/api/v1/iam/roles/${roleId}`, {
           method: 'DELETE',
+          headers: getAuthHeaders(),
         });
         if (!res.ok) {
           const err = await res.json();
@@ -244,10 +253,37 @@ export function AccessControlProvider({ children }) {
         },
       };
 
-      // Persist to backend PostgreSQL
+      // Persist directly to backend PostgreSQL via PATCH
       fetch(`/api/v1/iam/roles/${roleId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ permissions: updatedRolePerms }),
+      }).catch((e) => console.warn('Failed to persist permissions to backend:', e));
+
+      return {
+        ...prev,
+        [roleId]: updatedRolePerms,
+      };
+    });
+  }, []);
+
+  /**
+   * Update all CRUD permissions for an entity in a single atomic PATCH
+   */
+  const updateRoleEntityPermissions = useCallback((roleId, entityKey, entityPerms) => {
+    if (roleId === 'role_superadmin') return;
+
+    setRolePermissions((prev) => {
+      const currentRolePerms = prev[roleId] || {};
+      const updatedRolePerms = {
+        ...currentRolePerms,
+        [entityKey]: entityPerms,
+      };
+
+      // Persist directly to backend PostgreSQL via PATCH
+      fetch(`/api/v1/iam/roles/${roleId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ permissions: updatedRolePerms }),
       }).catch((e) => console.warn('Failed to persist permissions to backend:', e));
 
@@ -274,10 +310,10 @@ export function AccessControlProvider({ children }) {
           ? currentMenus.filter((m) => m !== menuId)
           : [...currentMenus, menuId];
 
-        // Persist to backend PostgreSQL
+        // Persist directly to backend PostgreSQL via PATCH
         fetch(`/api/v1/iam/roles/${roleId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ menu_access: newMenus }),
         }).catch((e) => console.warn('Failed to persist menu access to backend:', e));
 
@@ -303,10 +339,10 @@ export function AccessControlProvider({ children }) {
     // Check exact match in dynamic roles first
     const matchedRole = roles.find(
       (r) =>
-        r.id === currentUser.role_id ||
-        r.name.toLowerCase() === normalized ||
-        r.code?.toLowerCase() === normalized ||
-        r.id.toLowerCase() === normalized
+        r?.id === currentUser.role_id ||
+        (r?.name && String(r.name).toLowerCase() === normalized) ||
+        (r?.code && String(r.code).toLowerCase() === normalized) ||
+        (r?.id && String(r.id).toLowerCase() === normalized)
     );
 
     if (matchedRole) return matchedRole.id;
@@ -352,14 +388,28 @@ export function AccessControlProvider({ children }) {
       (profile.granted_groups || []).forEach((grp) => groupSet.add(grp));
     });
 
-    const activePerms = rolePermissions[activeRoleId] || {};
+    const activePerms = (activeRoleId && rolePermissions[activeRoleId]) || {};
     if (activePerms.attendance_logs?.read) groupSet.add('attendance.read');
     if (activePerms.attendance_logs?.create || activePerms.attendance_logs?.update) groupSet.add('attendance.write');
     if (activePerms.attendance_logs?.delete) groupSet.add('attendance.delete');
+    if (activePerms.employees?.read) {
+      groupSet.add('employee.read');
+      groupSet.add('hr.employee_user');
+    }
+    if (activePerms.employees?.create || activePerms.employees?.update) {
+      groupSet.add('employee.write');
+      groupSet.add('hr.manager');
+    }
+    if (activePerms.employees?.delete) groupSet.add('employee.delete');
     if (activePerms.organizations?.read) groupSet.add('org.read');
     if (activePerms.organizations?.create || activePerms.organizations?.update) groupSet.add('org.manage');
     if (activePerms.users?.read) groupSet.add('users.read');
     if (activePerms.users?.create || activePerms.users?.update) groupSet.add('users.manage');
+
+    if (activePerms['hr.contracts_read'] || activePerms.employee_contracts?.read) groupSet.add('hr.contracts_read');
+    if (activePerms['hr.contracts_manage'] || activePerms.employee_contracts?.create || activePerms.employee_contracts?.update) groupSet.add('hr.contracts_manage');
+    if (activePerms['hr.salary_read']) groupSet.add('hr.salary_read');
+    if (activePerms['hr.salary_manage']) groupSet.add('hr.salary_manage');
 
     if (Array.isArray(currentUser.security_groups)) {
       currentUser.security_groups.forEach((grp) => groupSet.add(grp));
@@ -395,7 +445,42 @@ export function AccessControlProvider({ children }) {
   );
 
   /**
-   * Check if user has access to an entire application module
+   * Check if user has permission for a specific sub-menu / model.
+   * Strict Menu Enforcement:
+   * Base menu rendering strictly on the presence of the menu ID inside the user role's
+   * menu_access list, not on model-level read permissions.
+   */
+  const hasMenuAccess = useCallback(
+    (menuId) => {
+      if (!currentUser) return false;
+      if (currentUser.is_superadmin) return true;
+      if (!menuId) return false;
+
+      // 1. If menu requires specific security group (e.g. hr.contracts_read), check permission
+      const reqPerm = MENU_PERMISSIONS[menuId];
+      if (reqPerm && hasPermission(reqPerm)) {
+        return true;
+      }
+
+      // 2. Otherwise check role menu_access list
+      const currentRole = roles.find((r) => r.id === activeRoleId);
+      const roleMenuAccess = Array.isArray(currentRole?.menu_access)
+        ? currentRole.menu_access
+        : Array.isArray(currentUser.menu_access)
+        ? currentUser.menu_access
+        : [];
+
+      return Array.isArray(roleMenuAccess) && roleMenuAccess.includes(menuId);
+    },
+    [currentUser, activeRoleId, roles, hasPermission]
+  );
+
+  /**
+   * Check if user has access to an entire application module.
+   * Workspace Launcher Filtering:
+   * An application card must appear in the Workspace Launcher if and only if:
+   * 1. The user is a Superadmin, OR
+   * 2. The user has permission for at least one sub-menu within that application workspace.
    */
   const hasAppAccess = useCallback(
     (appId) => {
@@ -404,67 +489,14 @@ export function AccessControlProvider({ children }) {
       if (!appId) return false;
 
       const normAppId = normalizeAppId(appId);
-
-      const hasMatchingProfile = userProfiles.some(
-        (p) => normalizeAppId(p.app_id) === normAppId
+      const targetMod = APP_MODULES.find(
+        (m) => normalizeAppId(m.id) === normAppId || m.id === appId
       );
-      if (hasMatchingProfile) return true;
+      if (!targetMod) return false;
 
-      const hasMatchingGroup = security_groups.some(
-        (g) => normalizeAppId(g.app_id) === normAppId && securityGroupLookup.has(g.key)
-      );
-      if (hasMatchingGroup) return true;
-
-      // Check if user's role has any menu access in this module
-      const targetMod = APP_MODULES.find((m) => m.id === appId);
-      const currentRole = roles.find((r) => r.id === activeRoleId);
-      if (targetMod && currentRole?.menu_access) {
-        if (targetMod.menus.some((m) => currentRole.menu_access.includes(m.id))) {
-          return true;
-        }
-      }
-
-      return false;
+      return (targetMod.menus || []).some((menu) => hasMenuAccess(menu.id));
     },
-    [currentUser, userProfiles, securityGroupLookup, roles, activeRoleId]
-  );
-
-  /**
-   * Check if user has permission for a specific sub-menu / model
-   */
-  const hasMenuAccess = useCallback(
-    (menuId) => {
-      if (!currentUser) return false;
-      if (currentUser.is_superadmin) return true;
-
-      // 1. Check role menu_access from active role
-      const currentRole = roles.find((r) => r.id === activeRoleId);
-      if (currentRole && Array.isArray(currentRole.menu_access)) {
-        if (currentRole.menu_access.includes(menuId)) {
-          return true;
-        }
-      }
-
-      // 2. Check menu required_groups from module registry
-      for (const mod of APP_MODULES) {
-        const foundMenu = mod.menus?.find((m) => m.id === menuId);
-        if (foundMenu?.required_groups) {
-          const hasGroup = foundMenu.required_groups.some((grp) =>
-            securityGroupLookup.has(grp) || (currentUser.security_groups || []).includes(grp)
-          );
-          if (hasGroup) return true;
-        }
-      }
-
-      // 3. Fallback to MENU_PERMISSIONS lookup
-      const reqPermission = MENU_PERMISSIONS[menuId];
-      if (reqPermission) {
-        return hasPermission(reqPermission);
-      }
-
-      return false;
-    },
-    [currentUser, activeRoleId, roles, securityGroupLookup, hasPermission]
+    [currentUser, hasMenuAccess]
   );
 
   const value = {
@@ -480,6 +512,7 @@ export function AccessControlProvider({ children }) {
     updateRole,
     deleteRole,
     updateRolePermission,
+    updateRoleEntityPermissions,
     toggleRoleMenuAccess,
     refreshRoles: fetchRoles,
   };

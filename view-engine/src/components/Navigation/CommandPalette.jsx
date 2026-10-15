@@ -28,6 +28,7 @@ import { useAccessControl } from '../../context/AccessControlContext';
 import { useTenancy } from '../../context/TenancyContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useLocale } from '../../context/LocaleContext';
+import { ErrorBoundary } from '../common/ErrorBoundary';
 
 const ICON_MAP = {
   Users,
@@ -42,6 +43,7 @@ export function CommandPalette({
   onNavigate,
   onOpenNewAttendance,
   onOpenNewUser,
+  onOpenNewEmployee,
   onOpenProfile,
   onOpenPolicy,
   onOpenBusinessModal,
@@ -58,8 +60,27 @@ export function CommandPalette({
 
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [employees, setEmployees] = useState([]);
   const inputRef = useRef(null);
   const listRef = useRef(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      const token = typeof window !== 'undefined'
+        ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
+        : null;
+      fetch('/api/v1/employees', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (Array.isArray(data.employees)) {
+            setEmployees(data.employees);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isOpen]);
 
   // 1. Build Searchable Items Pool across 4 Scopes
   const allPaletteItems = useMemo(() => {
@@ -154,6 +175,26 @@ export function CommandPalette({
         action: () => {
           onNavigate({ moduleId: 'iam', menuId: 'users' });
           onOpenNewUser?.();
+          onClose();
+        },
+      });
+    }
+
+    // Action: Create New Employee (requires employee.write)
+    if (hasPermission('employee.write')) {
+      items.push({
+        id: 'action_create_employee',
+        scope: 'actions',
+        scopeLabel: 'Quick Actions',
+        title: '+ Create New Employee',
+        subtitle: 'Onboard expat personnel, track QID/visa compliance & banking',
+        icon: Users,
+        iconBg: '#2563eb',
+        badge: 'Action',
+        keywords: ['create employee', 'new employee', 'onboard', 'hire', 'staff', 'add employee', 'visa', 'qid'],
+        action: () => {
+          onNavigate({ moduleId: 'hr', menuId: 'new_employee' });
+          onOpenNewEmployee?.();
           onClose();
         },
       });
@@ -274,6 +315,40 @@ export function CommandPalette({
       });
     }
 
+    // International Expat Employees (requires employee.read)
+    if (hasPermission('employee.read') && Array.isArray(employees)) {
+      employees.forEach((emp) => {
+        items.push({
+          id: `rec_emp_${emp.id}`,
+          scope: 'records',
+          scopeLabel: 'Active Records',
+          title: emp.full_name || `${emp.first_name} ${emp.last_name}`,
+          subtitle: `${emp.employee_number || 'EMP'} • ${emp.job_title || 'Employee'} • ${emp.department_id || 'HR'} • QID: ${emp.national_id_number || 'N/A'}`,
+          icon: Users,
+          iconBg: '#059669',
+          badge: emp.status || 'Active',
+          keywords: [
+            emp.full_name,
+            emp.first_name,
+            emp.last_name,
+            emp.employee_number,
+            emp.job_title,
+            emp.department_id,
+            emp.national_id_number,
+            emp.passport_number,
+            emp.visa_number,
+            emp.nationality,
+            'employee',
+            'expat',
+          ],
+          action: () => {
+            onNavigate({ moduleId: 'hr', menuId: 'employees' });
+            onClose();
+          },
+        });
+      });
+    }
+
     return items;
   }, [
     hasAppAccess,
@@ -281,6 +356,7 @@ export function CommandPalette({
     hasMenuAccess,
     attendanceRecords,
     users,
+    employees,
     currentOrganization,
     themeMode,
     effectiveTheme,
@@ -288,6 +364,7 @@ export function CommandPalette({
     onNavigate,
     onOpenNewAttendance,
     onOpenNewUser,
+    onOpenNewEmployee,
     onOpenProfile,
     onOpenPolicy,
     onOpenBusinessModal,
@@ -300,12 +377,12 @@ export function CommandPalette({
     if (!q) return allPaletteItems;
 
     return allPaletteItems.filter((item) => {
-      const matchTitle = item.title?.toLowerCase().includes(q);
-      const matchSubtitle = item.subtitle?.toLowerCase().includes(q);
-      const matchBadge = item.badge?.toLowerCase().includes(q);
       const matchKeywords = item.keywords?.some(
-        (kw) => kw && kw.toLowerCase().includes(q)
+        (kw) => kw != null && String(kw).toLowerCase().includes(q)
       );
+      const matchTitle = item.title != null && String(item.title).toLowerCase().includes(q);
+      const matchSubtitle = item.subtitle != null && String(item.subtitle).toLowerCase().includes(q);
+      const matchBadge = item.badge != null && String(item.badge).toLowerCase().includes(q);
       return matchTitle || matchSubtitle || matchBadge || matchKeywords;
     });
   }, [allPaletteItems, query]);
@@ -395,17 +472,43 @@ export function CommandPalette({
   let flatCounter = 0;
 
   return createPortal(
-    <div
-      className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-start justify-center pt-16 sm:pt-24 px-4 overflow-y-auto animate-fadeIn select-none"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Unified Command Palette"
-      onClick={onClose}
+    <ErrorBoundary
+      title="Command Search Error"
+      fallback={(err, reset) => (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-start justify-center pt-16 sm:pt-24 px-4 select-none"
+          onClick={onClose}
+        >
+          <div
+            className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl p-6 text-center shadow-2xl border border-slate-200 dark:border-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-sm font-semibold text-rose-500 mb-2">Search palette encountered an issue</p>
+            <p className="text-xs text-slate-400 mb-4">{err?.message || 'Rendering error'}</p>
+            <button
+              onClick={() => {
+                reset();
+                onClose();
+              }}
+              className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg cursor-pointer"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     >
       <div
-        className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[80vh] animate-scaleUp"
-        onClick={(e) => e.stopPropagation()}
+        className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-start justify-center pt-16 sm:pt-24 px-4 overflow-y-auto animate-fadeIn select-none"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Unified Command Palette"
+        onClick={onClose}
       >
+        <div
+          className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[80vh] animate-scaleUp"
+          onClick={(e) => e.stopPropagation()}
+        >
         {/* Search Input Bar */}
         <div className="relative flex items-center px-4 py-3.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/90">
           <Search className="w-5 h-5 text-slate-400 shrink-0 ml-1" />
@@ -558,7 +661,8 @@ export function CommandPalette({
           </div>
         </div>
       </div>
-    </div>,
-    document.body
-  );
+    </div>
+  </ErrorBoundary>,
+  document.body
+);
 }

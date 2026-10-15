@@ -10,8 +10,16 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
+    watch: {
+      usePolling: true,
+      interval: 100,
+    },
     proxy: {
       '/api': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
+      '/iclock': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },

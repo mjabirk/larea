@@ -1,6 +1,7 @@
 import time
 import secrets
 import ipaddress
+import json
 from typing import Optional, Dict, Any, List
 import redis.asyncio as aioredis
 from fastapi import Request, HTTPException, status
@@ -50,12 +51,23 @@ class SessionManager:
         session_key = f"session:{token}"
         user_sessions_key = f"user_sessions:{user_id}"
         
+        sec_groups = user_data.get("security_groups", [])
+        perms = user_data.get("permissions", {})
+
         session_payload = {
             "token": token,
             "user_id": str(user_id),
-            "username": user_data.get("username", ""),
+            "username": user_data.get("username", "") or user_data.get("email", ""),
+            "full_name": user_data.get("full_name", ""),
+            "email": user_data.get("email", ""),
             "role": user_data.get("role", "user"),
+            "role_id": user_data.get("role_id", "role_standard"),
+            "is_superadmin": "true" if user_data.get("is_superadmin") else "false",
             "department": user_data.get("department", "General"),
+            "organization_id": str(user_data.get("organization_id") or ""),
+            "branch_id": str(user_data.get("branch_id") or ""),
+            "security_groups": json.dumps(sec_groups),
+            "permissions": json.dumps(perms),
             "client_ip": client_ip,
             "user_agent": user_agent[:128],
             "created_at": str(now),
@@ -73,7 +85,7 @@ class SessionManager:
         return token
 
     @staticmethod
-    async def validate_session(token: str, client_ip: str) -> Optional[Dict[str, str]]:
+    async def validate_session(token: str, client_ip: str) -> Optional[Dict[str, Any]]:
         if not redis_client or not token:
             return None
             
@@ -95,6 +107,21 @@ class SessionManager:
         await redis_client.expire(session_key, settings.SESSION_IDLE_TIMEOUT_SECONDS)
         await redis_client.hset(session_key, "last_active", str(now))
         
+        # Cast boolean is_superadmin
+        session_data["is_superadmin"] = session_data.get("is_superadmin") == "true"
+        if not session_data.get("username"):
+            session_data["username"] = session_data.get("email", "") or session_data.get("full_name", "") or "Authorized User"
+
+        try:
+            session_data["security_groups"] = json.loads(session_data.get("security_groups", "[]"))
+        except Exception:
+            session_data["security_groups"] = []
+
+        try:
+            session_data["permissions"] = json.loads(session_data.get("permissions", "{}"))
+        except Exception:
+            session_data["permissions"] = {}
+            
         return session_data
 
     @staticmethod

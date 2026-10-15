@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # PostgreSQL Configuration for Row-Level Security (RLS) & Identity
     DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5432/enterprise_db")
 
+    # Master key for AES-256-GCM file encryption at rest
+    FILE_ENCRYPTION_KEY: str = os.getenv("FILE_ENCRYPTION_KEY", "enterprise-master-sec-key-2026-aes256gcm")
+
     class Config:
         case_sensitive = True
 

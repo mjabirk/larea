@@ -12,22 +12,25 @@ import {
   AlertTriangle,
   FileText,
   Lock,
+  Loader2,
 } from 'lucide-react';
 import { useTenancy } from '../../context/TenancyContext';
 import { useAccessControl } from '../../context/AccessControlContext';
 import { DEFAULT_ROLES } from '../../schema/rbacSchema';
+import { validatePasswordComplexity } from '../../schema/securityValidation';
 
 export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
   const { branches, createUser } = useTenancy();
   const { roles } = useAccessControl();
   const modalRef = useRef(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [formData, setFormData] = useState({
     full_name: '',
     email: '',
     date_of_birth: '',
     branch_id: branches[0]?.id || '',
-    role: 'Operations Lead',
+    role_id: roles[0]?.id || 'role_ops_lead',
     initial_password: 'TempAdminPass@2026',
     require_change: false, // Unchecked by default to prevent dark patterns
     terms_consent: false,  // Unchecked by default to prevent dark patterns
@@ -86,7 +89,7 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
 
@@ -121,29 +124,40 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
       return;
     }
 
-    if (!formData.initial_password || formData.initial_password.length < 8) {
-      setError('Initial password must be at least 8 characters long.');
+    const pwdError = validatePasswordComplexity(formData.initial_password);
+    if (pwdError) {
+      setError(pwdError);
       return;
     }
 
-    const created = createUser({
-      full_name: formData.full_name.trim(),
-      email: formData.email.trim(),
-      date_of_birth: formData.date_of_birth,
-      age: calculatedAge,
-      is_minor: isMinor,
-      guardian_name: isMinor ? formData.guardian_name.trim() : null,
-      guardian_email: isMinor ? formData.guardian_email.trim() : null,
-      age_consent_verified: isMinor ? formData.age_consent_verified : true,
-      terms_consent_recorded: true,
-      role: formData.role,
-      branch_id: formData.branch_id || branches[0]?.id,
-      initial_password: formData.initial_password,
-      require_change: formData.require_change,
-    });
+    setIsSubmitting(true);
+    try {
+      const selectedRole = (roles || DEFAULT_ROLES).find((r) => r.id === formData.role_id);
+      const created = await createUser({
+        full_name: formData.full_name.trim(),
+        email: formData.email.trim(),
+        date_of_birth: formData.date_of_birth,
+        age: calculatedAge,
+        is_minor: isMinor,
+        guardian_name: isMinor ? formData.guardian_name.trim() : null,
+        guardian_email: isMinor ? formData.guardian_email.trim() : null,
+        age_consent_verified: isMinor ? formData.age_consent_verified : true,
+        terms_consent_recorded: true,
+        role_id: formData.role_id,
+        role: selectedRole?.name || 'Operations Lead',
+        branch_id: formData.branch_id || branches[0]?.id,
+        initial_password: formData.initial_password,
+        require_change: formData.require_change,
+      });
 
-    onUserCreated && onUserCreated(created);
-    onClose();
+      onUserCreated && onUserCreated(created);
+      onClose();
+    } catch (err) {
+      console.error('User creation failed:', err);
+      setError(err.message || 'Failed to provision user. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return createPortal(
@@ -306,12 +320,12 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
                 Initial RBAC Role
               </label>
               <select
-                value={formData.role}
-                onChange={(e) => setFormData({ ...formData, role: e.target.value })}
+                value={formData.role_id}
+                onChange={(e) => setFormData({ ...formData, role_id: e.target.value })}
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 cursor-pointer font-medium"
               >
                 {(roles || DEFAULT_ROLES).map((r) => (
-                  <option key={r.id} value={r.name}>
+                  <option key={r.id} value={r.id}>
                     {r.name} - {r.code} {r.is_system ? '(System)' : '(Custom)'}
                   </option>
                 ))}
@@ -404,10 +418,20 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
             </button>
             <button
               type="submit"
-              className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              disabled={isSubmitting}
+              className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             >
-              <Check className="w-3.5 h-3.5" />
-              <span>Provision User</span>
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Provisioning User...</span>
+                </>
+              ) : (
+                <>
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Provision User</span>
+                </>
+              )}
             </button>
           </div>
         </form>

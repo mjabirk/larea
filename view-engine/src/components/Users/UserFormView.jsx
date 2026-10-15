@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   User,
   ShieldCheck,
@@ -19,71 +19,28 @@ import {
   ArrowLeft,
   Save,
   RotateCcw,
+  Loader2,
 } from 'lucide-react';
 import { useTenancy } from '../../context/TenancyContext';
+import { useAuth } from '../../context/AuthContext';
 import { useLocale } from '../../context/LocaleContext';
 import { useAccessControl } from '../../context/AccessControlContext';
 import { DEFAULT_ROLES } from '../../schema/rbacSchema';
 import { ResetPasswordModal } from './ResetPasswordModal';
 
-const INITIAL_SESSIONS = [
-  {
-    id: 'sess_curr_win',
-    ip_address: '192.168.10.104',
-    device: 'Chrome 124 on Windows 11',
-    os: 'Windows 11 Enterprise',
-    location: 'Doha, Qatar',
-    last_activity: 'Active now',
-    is_current: true,
-  },
-  {
-    id: 'sess_mac_lusail',
-    ip_address: '172.16.80.22',
-    device: 'Safari 17.4 on macOS Sonoma',
-    os: 'macOS Sonoma 14.5',
-    location: 'Lusail, Qatar',
-    last_activity: '24 mins ago',
-    is_current: false,
-  },
-  {
-    id: 'sess_ios_iphone',
-    ip_address: '10.200.1.45',
-    device: 'Mobile App (iOS 17.5 / iPhone 15 Pro)',
-    os: 'iOS 17.5',
-    location: 'Dubai, UAE',
-    last_activity: '2 hours ago',
-    is_current: false,
-  },
-  {
-    id: 'sess_linux_desk',
-    ip_address: '192.168.1.15',
-    device: 'Chrome 124 on Linux (Ubuntu 24.04)',
-    os: 'Ubuntu LTS',
-    location: 'Riyadh, KSA',
-    last_activity: 'Yesterday 17:42',
-    is_current: false,
-  },
-];
-
 export function UserFormView({ user, onBackToList }) {
   const { users, currentUser, organizations, branches, organization_memberships, updateUser } = useTenancy();
+  const { session } = useAuth();
   const { roles } = useAccessControl();
   const { t } = useLocale();
 
   const activeUser = user || currentUser || users[0];
 
-  // Active sessions state per user
-  const [sessions, setSessions] = useState(() => {
-    const saved = localStorage.getItem(`enterprise_sessions_${activeUser?.id}`);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-    return INITIAL_SESSIONS;
-  });
+  // Active stateful DragonflyDB sessions
+  const [sessions, setSessions] = useState([]);
+  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
+  const [isRevokingSession, setIsRevokingSession] = useState(false);
+  const [isRevokingOthers, setIsRevokingOthers] = useState(false);
 
   // State for modals
   const [sessionToRevoke, setSessionToRevoke] = useState(null);
@@ -150,29 +107,123 @@ export function UserFormView({ user, onBackToList }) {
     setTimeout(() => setNotification(''), 3000);
   };
 
-  const confirmRevokeSession = () => {
+  // Fetch real DragonflyDB active sessions for inspected identity
+  const fetchSessions = useCallback(async () => {
+    if (!activeUser?.id) return;
+    setIsLoadingSessions(true);
+    try {
+      const token = session?.token || localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token');
+      const res = await fetch(`/api/v1/auth/sessions?user_id=${activeUser.id}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const currentToken = data.current_token || session?.token || '';
+        const mapped = (data.sessions || []).map((s) => {
+          const isCurrent = s.token === currentToken || s.token === session?.token;
+          let deviceName = 'Desktop Workstation';
+          const ua = s.user_agent || '';
+          if (ua.includes('iPhone') || ua.includes('iPad')) deviceName = 'iOS Mobile App';
+          else if (ua.includes('Android')) deviceName = 'Android Mobile';
+          else if (ua.includes('Macintosh') || ua.includes('Mac OS')) deviceName = 'Safari on macOS';
+          else if (ua.includes('Windows')) deviceName = 'Chrome on Windows';
+          else if (ua.includes('Linux')) deviceName = 'Linux Client';
+          else if (ua) deviceName = ua.slice(0, 36);
+
+          let lastAct = 'Active now';
+          if (s.last_active) {
+            const diffSec = Math.floor(Date.now() / 1000 - parseInt(s.last_active, 10));
+            if (diffSec < 60) lastAct = 'Active now';
+            else if (diffSec < 3600) lastAct = `${Math.floor(diffSec / 60)} mins ago`;
+            else lastAct = `${Math.floor(diffSec / 3600)} hrs ago`;
+          }
+
+          return {
+            id: s.token,
+            token: s.token,
+            ip_address: s.client_ip || '127.0.0.1',
+            device: deviceName,
+            raw_user_agent: s.user_agent,
+            last_activity: lastAct,
+            is_current: isCurrent,
+            created_at: s.created_at,
+          };
+        });
+        setSessions(mapped);
+      }
+    } catch (err) {
+      console.warn('Failed to load active sessions from backend:', err);
+    } finally {
+      setIsLoadingSessions(false);
+    }
+  }, [activeUser?.id, session?.token]);
+
+  useEffect(() => {
+    fetchSessions();
+  }, [fetchSessions]);
+
+  // Real DragonflyDB Single Session Revocation
+  const confirmRevokeSession = async () => {
     if (!sessionToRevoke) return;
+    setIsRevokingSession(true);
 
-    setSessions((prev) => {
-      const updated = prev.filter((s) => s.id !== sessionToRevoke.id);
-      localStorage.setItem(`enterprise_sessions_${activeUser?.id}`, JSON.stringify(updated));
-      return updated;
-    });
+    try {
+      const token = session?.token || localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token');
+      const res = await fetch('/api/v1/auth/sessions/revoke', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ token: sessionToRevoke.token }),
+      });
 
-    setNotification(`Session for ${sessionToRevoke.device} (${sessionToRevoke.ip_address}) has been revoked.`);
-    setSessionToRevoke(null);
-    setTimeout(() => setNotification(''), 3500);
+      if (res.ok) {
+        setNotification(`Session for ${sessionToRevoke.device} (${sessionToRevoke.ip_address}) has been revoked.`);
+        setSessionToRevoke(null);
+        await fetchSessions();
+      } else {
+        setNotification('Failed to revoke session. Please try again.');
+      }
+    } catch (err) {
+      console.error('Revocation error:', err);
+      setNotification('Network error occurred while revoking session.');
+    } finally {
+      setIsRevokingSession(false);
+      setTimeout(() => setNotification(''), 3500);
+    }
   };
 
-  const handleRevokeAllOtherSessions = () => {
-    setSessions((prev) => {
-      const currentOnly = prev.filter((s) => s.is_current);
-      localStorage.setItem(`enterprise_sessions_${activeUser?.id}`, JSON.stringify(currentOnly));
-      return currentOnly;
-    });
+  // Real DragonflyDB Revoke All Other Sessions
+  const handleRevokeAllOtherSessions = async () => {
+    if (!activeUser?.id || isRevokingOthers) return;
+    setIsRevokingOthers(true);
 
-    setNotification('All other active sessions have been terminated immediately.');
-    setTimeout(() => setNotification(''), 3500);
+    try {
+      const token = session?.token || localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token');
+      const res = await fetch(`/api/v1/auth/sessions/revoke-others?user_id=${activeUser.id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ user_id: activeUser.id, token }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setNotification(`Successfully revoked ${data.revoked_count || 0} other active sessions.`);
+        await fetchSessions();
+      } else {
+        setNotification('Failed to revoke other sessions.');
+      }
+    } catch (err) {
+      console.error('Revoke others error:', err);
+      setNotification('Network error occurred while terminating sessions.');
+    } finally {
+      setIsRevokingOthers(false);
+      setTimeout(() => setNotification(''), 3500);
+    }
   };
 
   return (
@@ -514,18 +565,25 @@ export function UserFormView({ user, onBackToList }) {
               {sessions.length > 1 && (
                 <button
                   type="button"
+                  disabled={isRevokingOthers}
                   onClick={handleRevokeAllOtherSessions}
-                  className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+                  className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
                   title="Revoke all sessions except the current device"
                 >
-                  Revoke Others
+                  {isRevokingOthers && <Loader2 className="w-3 h-3 animate-spin" />}
+                  <span>{isRevokingOthers ? 'Revoking...' : 'Revoke Others'}</span>
                 </button>
               )}
             </div>
 
             {/* Sessions List */}
             <div className="space-y-3">
-              {sessions.length === 0 ? (
+              {isLoadingSessions ? (
+                <div className="py-8 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                  <span>Loading active sessions...</span>
+                </div>
+              ) : sessions.length === 0 ? (
                 <div className="py-8 text-center text-slate-400 text-xs">
                   No active sessions found.
                 </div>
@@ -626,18 +684,29 @@ export function UserFormView({ user, onBackToList }) {
             <div className="flex items-center justify-end gap-2.5 pt-2">
               <button
                 type="button"
+                disabled={isRevokingSession}
                 onClick={() => setSessionToRevoke(null)}
-                className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="button"
+                disabled={isRevokingSession}
                 onClick={confirmRevokeSession}
-                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Revoke Immediately</span>
+                {isRevokingSession ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Revoking...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Revoke Immediately</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

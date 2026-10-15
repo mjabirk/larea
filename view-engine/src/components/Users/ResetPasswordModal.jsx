@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { KeyRound, X, Check, Lock, Eye, EyeOff } from 'lucide-react';
+import { KeyRound, X, Check, Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { useTenancy } from '../../context/TenancyContext';
+import { validatePasswordComplexity } from '../../schema/securityValidation';
 
 export function ResetPasswordModal({ isOpen, onClose, targetUser, onSuccess }) {
   const { resetUserPassword } = useTenancy();
@@ -11,6 +12,7 @@ export function ResetPasswordModal({ isOpen, onClose, targetUser, onSuccess }) {
   const [requireChange, setRequireChange] = useState(false); // Unchecked by default (Ethical UX safeguard)
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const modalRef = useRef(null);
 
   useEffect(() => {
@@ -26,12 +28,13 @@ export function ResetPasswordModal({ isOpen, onClose, targetUser, onSuccess }) {
 
   if (!isOpen || !targetUser) return null;
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
 
-    if (!password || password.length < 8) {
-      setError('Password must be at least 8 characters long.');
+    const pwdError = validatePasswordComplexity(password);
+    if (pwdError) {
+      setError(pwdError);
       return;
     }
 
@@ -40,9 +43,17 @@ export function ResetPasswordModal({ isOpen, onClose, targetUser, onSuccess }) {
       return;
     }
 
-    resetUserPassword(targetUser.id, password, requireChange);
-    onSuccess && onSuccess(`Password updated successfully for ${targetUser.full_name}.`);
-    onClose();
+    setIsSubmitting(true);
+    try {
+      await resetUserPassword(targetUser.id, password, requireChange);
+      onSuccess && onSuccess(`Password updated successfully for ${targetUser.full_name}.`);
+      onClose();
+    } catch (err) {
+      console.error('Password reset failed:', err);
+      setError(err.message || 'Failed to update password. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return createPortal(
@@ -165,10 +176,20 @@ export function ResetPasswordModal({ isOpen, onClose, targetUser, onSuccess }) {
             </button>
             <button
               type="submit"
-              className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+              disabled={isSubmitting}
+              className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
             >
-              <Check className="w-3.5 h-3.5" />
-              <span>Confirm Password Reset</span>
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Updating Password...</span>
+                </>
+              ) : (
+                <>
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Confirm Password Reset</span>
+                </>
+              )}
             </button>
           </div>
         </form>

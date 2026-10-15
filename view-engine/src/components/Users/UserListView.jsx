@@ -14,10 +14,12 @@ import {
   Filter,
 } from 'lucide-react';
 import { useTenancy } from '../../context/TenancyContext';
+import { useLocale } from '../../context/LocaleContext';
 import { NewUserModal } from './NewUserModal';
 
 export function UserListView({ onSelectUser }) {
   const { users, organizations, branches, organization_memberships } = useTenancy();
+  const { formatDateTime } = useLocale();
 
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
@@ -275,7 +277,13 @@ export function UserListView({ onSelectUser }) {
 
                       {/* Last Activity */}
                       <td className="py-3.5 px-4 font-mono text-xs text-slate-500 dark:text-slate-400">
-                        {user.id === 'user_sarah' ? 'Active now' : '14 mins ago'}
+                        {user.last_login
+                          ? formatDateTime(user.last_login)
+                          : user.updated_at
+                          ? formatDateTime(user.updated_at)
+                          : user.created_at
+                          ? formatDateTime(user.created_at)
+                          : '—'}
                       </td>
 
                       {/* Chevron Arrow */}

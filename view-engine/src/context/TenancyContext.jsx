@@ -28,12 +28,19 @@ export function TenancyProvider({ children }) {
     }
   });
 
+  const getAuthHeaders = () => {
+    const token = typeof window !== 'undefined'
+      ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
+      : null;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
   // Fetch live Tenancy & User data from PostgreSQL backend
   const refreshTenancyData = useCallback(async () => {
     try {
       const [tenancyRes, usersRes] = await Promise.all([
-        fetch('/api/v1/iam/tenancy').catch(() => null),
-        fetch('/api/v1/iam/users').catch(() => null),
+        fetch('/api/v1/iam/tenancy', { headers: getAuthHeaders() }).catch(() => null),
+        fetch('/api/v1/iam/users', { headers: getAuthHeaders() }).catch(() => null),
       ]);
 
       let orgs = [];
@@ -78,9 +85,25 @@ export function TenancyProvider({ children }) {
     }
   }, []);
 
+  const refreshAttendanceData = useCallback(async () => {
+    try {
+      const res = await fetch('/api/v1/attendance', { headers: getAuthHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.records && Array.isArray(data.records) && data.records.length > 0) {
+          setAttendanceRecords(data.records);
+          localStorage.setItem('enterprise_attendance_records', JSON.stringify(data.records));
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load attendance records from backend:', e);
+    }
+  }, []);
+
   useEffect(() => {
     refreshTenancyData();
-  }, [refreshTenancyData]);
+    refreshAttendanceData();
+  }, [refreshTenancyData, refreshAttendanceData]);
 
   // Active entities
   const currentUser =
@@ -169,7 +192,7 @@ export function TenancyProvider({ children }) {
     try {
       const res = await fetch('/api/v1/iam/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           full_name,
           email,
@@ -199,22 +222,7 @@ export function TenancyProvider({ children }) {
       return createdUser;
     } catch (err) {
       console.error('Error creating user in PostgreSQL:', err);
-      // Fallback local update
-      const fallbackUser = {
-        id: `user_${Date.now()}`,
-        full_name,
-        email,
-        status: 'active',
-        is_superadmin: role === 'Superadmin',
-        role: role || 'Standard User',
-        date_of_birth,
-        age,
-      };
-      setTenancyState((prev) => ({
-        ...prev,
-        users: [fallbackUser, ...prev.users],
-      }));
-      return fallbackUser;
+      throw err;
     }
   };
 
@@ -223,7 +231,7 @@ export function TenancyProvider({ children }) {
     try {
       await fetch(`/api/v1/iam/users/${userId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify(updatedFields),
       });
     } catch (err) {
@@ -246,17 +254,18 @@ export function TenancyProvider({ children }) {
     try {
       const res = await fetch(`/api/v1/iam/users/${userId}/reset-password`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ password: newPassword }),
       });
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.detail || 'Failed to update password');
       }
+      return { success: true, timestamp: new Date().toISOString() };
     } catch (err) {
-      console.warn('Failed to persist reset password in backend:', err);
+      console.error('Failed to persist reset password in backend:', err);
+      throw err;
     }
-    return { success: true, timestamp: new Date().toISOString() };
   };
 
   // Delete User: Calls DELETE /api/v1/iam/users/{id}
@@ -264,6 +273,7 @@ export function TenancyProvider({ children }) {
     try {
       await fetch(`/api/v1/iam/users/${userId}`, {
         method: 'DELETE',
+        headers: getAuthHeaders(),
       });
     } catch (err) {
       console.warn('Failed to delete user in backend:', err);
@@ -316,8 +326,40 @@ export function TenancyProvider({ children }) {
     });
   };
 
-  // Attendance management
-  const addAttendanceRecord = (record) => {
+  // Attendance management (persisted to PostgreSQL /api/v1/attendance)
+  const addAttendanceRecord = async (record) => {
+    try {
+      const payload = {
+        employee_id: record.employee_id,
+        employee_name: record.employee_name,
+        department: record.department,
+        terminal_id: record.terminal_id,
+        check_in: record.check_in,
+        check_out: record.check_out,
+        duration_hours: record.duration_hours,
+        status: record.status || 'draft',
+        notes: record.notes,
+      };
+      if (payload.employee_id) {
+        const res = await fetch('/api/v1/attendance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          const saved = await res.json();
+          setAttendanceRecords((prev) => {
+            const updated = [saved, ...prev.filter((r) => r.id !== record.id)];
+            localStorage.setItem('enterprise_attendance_records', JSON.stringify(updated));
+            return updated;
+          });
+          return saved;
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to persist attendance record to PostgreSQL:', err);
+    }
+
     setAttendanceRecords((prev) => {
       const updated = [record, ...prev];
       localStorage.setItem('enterprise_attendance_records', JSON.stringify(updated));
@@ -325,7 +367,26 @@ export function TenancyProvider({ children }) {
     });
   };
 
-  const updateAttendanceRecord = (id, updatedFields) => {
+  const updateAttendanceRecord = async (id, updatedFields) => {
+    try {
+      const res = await fetch(`/api/v1/attendance/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify(updatedFields),
+      });
+      if (res.ok) {
+        const saved = await res.json();
+        setAttendanceRecords((prev) => {
+          const updated = prev.map((r) => (r.id === id ? { ...r, ...saved } : r));
+          localStorage.setItem('enterprise_attendance_records', JSON.stringify(updated));
+          return updated;
+        });
+        return saved;
+      }
+    } catch (err) {
+      console.warn('Failed to update attendance record in PostgreSQL:', err);
+    }
+
     setAttendanceRecords((prev) => {
       const updated = prev.map((r) =>
         r.id === id ? { ...r, ...updatedFields } : r
@@ -335,7 +396,16 @@ export function TenancyProvider({ children }) {
     });
   };
 
-  const deleteAttendanceRecord = (id) => {
+  const deleteAttendanceRecord = async (id) => {
+    try {
+      await fetch(`/api/v1/attendance/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      });
+    } catch (err) {
+      console.warn('Failed to delete attendance record in backend:', err);
+    }
+
     setAttendanceRecords((prev) => {
       const updated = prev.filter((r) => r.id !== id);
       localStorage.setItem('enterprise_attendance_records', JSON.stringify(updated));

@@ -1,12 +1,15 @@
+// Top of src/components/Navigation/SubNavBar.jsx
 import React from 'react';
 import {
   Users,
   Shield,
   Cpu,
   Banknote,
+  SlidersHorizontal,
   Layers,
   ChevronDown,
   LayoutGrid,
+  Plus,
 } from 'lucide-react';
 import { getModuleById, getMenuById } from '../../registry/moduleRegistry';
 import { useAccessControl } from '../../context/AccessControlContext';
@@ -16,6 +19,7 @@ const ICON_MAP = {
   Shield,
   Cpu,
   Banknote,
+  SlidersHorizontal,
 };
 
 export function SubNavBar({
@@ -24,7 +28,7 @@ export function SubNavBar({
   onSelectMenu,
   onOpenLauncher,
 }) {
-  const { hasMenuAccess } = useAccessControl();
+  const { hasMenuAccess, hasPermission } = useAccessControl();
   const activeModule = getModuleById(activeModuleId);
   const activeMenu = getMenuById(activeModuleId, activeMenuId);
 
@@ -75,11 +79,10 @@ export function SubNavBar({
                 type="button"
                 onClick={() => onSelectMenu(menu.id)}
                 aria-current={isActive ? 'page' : undefined}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-slate-900 ${
-                  isActive
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-                }`}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-slate-900 ${isActive
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  }`}
               >
                 <span>{menu.label}</span>
               </button>
@@ -88,15 +91,18 @@ export function SubNavBar({
         </div>
       </div>
 
-      {/* Right: Active Model Context & Health Pulse */}
-      <div className="hidden md:flex items-center gap-2 text-[11px] font-mono text-slate-400">
-        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-        <span>
-          Active Context:{' '}
-          <strong className="text-slate-200 font-mono">
-            {activeMenu?.model || 'workspace'}
-          </strong>
-        </span>
+      {/* Right: Active Model Context */}
+      <div className="flex items-center gap-3">
+
+        <div className="hidden md:flex items-center gap-2 text-[11px] font-mono text-slate-400">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          <span>
+            Active Context:{' '}
+            <strong className="text-slate-200 font-mono">
+              {activeMenu?.model || 'workspace'}
+            </strong>
+          </span>
+        </div>
       </div>
     </nav>
   );

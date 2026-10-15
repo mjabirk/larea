@@ -24,6 +24,7 @@ import {
   Shield,
   Cpu,
   Banknote,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { useAccessControl } from '../../context/AccessControlContext';
 import { useTenancy } from '../../context/TenancyContext';
@@ -63,7 +64,9 @@ export function RolesView() {
     updateRole,
     deleteRole,
     updateRolePermission,
+    updateRoleEntityPermissions,
     toggleRoleMenuAccess,
+    refreshRoles,
     resetRolesToDefaults,
   } = useAccessControl();
 
@@ -76,8 +79,10 @@ export function RolesView() {
 
   // Modals state
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [isSubmittingCreate, setIsSubmittingCreate] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [deleteModalState, setDeleteModalState] = useState({ isOpen: false, role: null, safeguardError: null });
+  const [isSubmittingDelete, setIsSubmittingDelete] = useState(false);
 
   // Create form state
   const [newRoleData, setNewRoleData] = useState({
@@ -110,13 +115,14 @@ export function RolesView() {
   const roleUserCounts = useMemo(() => {
     const counts = {};
     (roles || []).forEach((r) => {
+      const rName = String(r?.name || '').toLowerCase();
+      const rCode = String(r?.code || '').toLowerCase();
+      const rId = String(r?.id || '').toLowerCase();
       counts[r.id] = (users || []).filter((u) => {
-        const userRole = (u.role || '').toLowerCase();
+        const userRole = String(u?.role || '').toLowerCase();
         return (
-          u.role_id === r.id ||
-          userRole === r.name.toLowerCase() ||
-          userRole === r.code.toLowerCase() ||
-          userRole === r.id.toLowerCase()
+          Boolean(u?.role_id && u.role_id === r.id) ||
+          Boolean(userRole && (userRole === rName || (rCode && userRole === rCode) || (rId && userRole === rId)))
         );
       }).length;
     });
@@ -127,12 +133,12 @@ export function RolesView() {
   const filteredRoles = useMemo(() => {
     const q = roleSearch.trim().toLowerCase();
     if (!q) return roles;
-    return roles.filter(
-      (r) =>
-        r.name.toLowerCase().includes(q) ||
-        r.code.toLowerCase().includes(q) ||
-        r.description.toLowerCase().includes(q)
-    );
+    return (roles || []).filter((r) => {
+      const rName = String(r?.name || '').toLowerCase();
+      const rCode = String(r?.code || '').toLowerCase();
+      const rDesc = String(r?.description || '').toLowerCase();
+      return rName.includes(q) || rCode.includes(q) || rDesc.includes(q);
+    });
   }, [roles, roleSearch]);
 
   // Handle Toggle Permission
@@ -148,9 +154,17 @@ export function RolesView() {
 
   const handleToggleAllForEntity = (roleId, entityKey, enableAll) => {
     if (roleId === 'role_superadmin') return;
+    const allPerms = {};
     CRUD_ACTIONS.forEach((action) => {
-      updateRolePermission(roleId, entityKey, action.key, enableAll);
+      allPerms[action.key] = enableAll;
     });
+    if (updateRoleEntityPermissions) {
+      updateRoleEntityPermissions(roleId, entityKey, allPerms);
+    } else {
+      CRUD_ACTIONS.forEach((action) => {
+        updateRolePermission(roleId, entityKey, action.key, enableAll);
+      });
+    }
     setSaveSuccess(true);
     setTimeout(() => setSaveSuccess(false), 2000);
   };
@@ -168,35 +182,68 @@ export function RolesView() {
     setIsCreateModalOpen(true);
   };
 
-  const handleCreateSubmit = (e) => {
+  const handleCreateSubmit = async (e) => {
     e.preventDefault();
-    if (!newRoleData.name.trim()) {
+    if (isSubmittingCreate) return;
+
+    const trimmedName = newRoleData.name.trim();
+    if (!trimmedName) {
       setCreateError('Role name is required.');
       return;
     }
 
-    // Clone base permissions if selected
-    const sourcePerms = rolePermissions[newRoleData.cloneFromId] || {
-      attendance_logs: { create: false, read: true, update: false, delete: false },
-      organizations: { create: false, read: false, update: false, delete: false },
-      users: { create: false, read: false, update: false, delete: false },
-    };
+    setIsSubmittingCreate(true);
+    setCreateError('');
 
-    const result = createRole({
-      name: newRoleData.name,
-      code: newRoleData.code,
-      description: newRoleData.description,
-      badgeColor: newRoleData.badgeColor,
-      permissions: JSON.parse(JSON.stringify(sourcePerms)),
-    });
+    try {
+      // Clone base permissions & menu access from source role
+      const sourceRole = roles.find((r) => r.id === newRoleData.cloneFromId);
+      const sourcePerms = rolePermissions[newRoleData.cloneFromId] || sourceRole?.permissions || {
+        attendance_logs: { create: false, read: true, update: false, delete: false },
+        organizations: { create: false, read: false, update: false, delete: false },
+        users: { create: false, read: false, update: false, delete: false },
+      };
+      const sourceMenuAccess = sourceRole?.menu_access || ['attendances'];
 
-    if (!result.success) {
-      setCreateError(result.error);
-      return;
+      const result = await createRole({
+        name: trimmedName,
+        code: newRoleData.code,
+        description: newRoleData.description,
+        badgeColor: newRoleData.badgeColor,
+        permissions: JSON.parse(JSON.stringify(sourcePerms)),
+        menu_access: sourceMenuAccess,
+      });
+
+      if (!result.success) {
+        setCreateError(result.error || 'Failed to create role.');
+        return;
+      }
+
+      // Explicitly close modal, clear form inputs, and select the newly created role in the sidebar
+      setIsCreateModalOpen(false);
+      setNewRoleData({
+        name: '',
+        code: '',
+        description: '',
+        badgeColor: 'amber',
+        cloneFromId: 'role_standard',
+      });
+      setCreateError('');
+
+      if (refreshRoles) {
+        await refreshRoles();
+      }
+
+      const newId = result.role?.id;
+      if (newId) {
+        setSelectedRoleId(newId);
+      }
+    } catch (err) {
+      console.error('Failed to create role:', err);
+      setCreateError('An unexpected error occurred while creating role.');
+    } finally {
+      setIsSubmittingCreate(false);
     }
-
-    setSelectedRoleId(result.role.id);
-    setIsCreateModalOpen(false);
   };
 
   // Open Edit Modal
@@ -213,20 +260,23 @@ export function RolesView() {
     setIsEditModalOpen(true);
   };
 
-  const handleEditSubmit = (e) => {
+  const handleEditSubmit = async (e) => {
     e.preventDefault();
     if (!editRoleData.name.trim()) {
       setEditError('Role name is required.');
       return;
     }
 
-    const result = updateRole(editRoleData.id, editRoleData);
+    const result = await updateRole(editRoleData.id, editRoleData);
     if (!result.success) {
-      setEditError(result.error);
+      setEditError(result.error || 'Failed to update role.');
       return;
     }
 
     setIsEditModalOpen(false);
+    if (refreshRoles) {
+      await refreshRoles();
+    }
   };
 
   // Open Delete Safeguard Modal
@@ -241,13 +291,14 @@ export function RolesView() {
     }
 
     // Check assigned users safeguard
+    const roleName = String(role?.name || '').toLowerCase();
+    const roleCode = String(role?.code || '').toLowerCase();
+    const roleId = String(role?.id || '').toLowerCase();
     const assigned = (users || []).filter((u) => {
-      const userRole = (u.role || '').toLowerCase();
+      const userRole = String(u?.role || '').toLowerCase();
       return (
-        u.role_id === role.id ||
-        userRole === role.name.toLowerCase() ||
-        userRole === role.code.toLowerCase() ||
-        userRole === role.id.toLowerCase()
+        Boolean(u?.role_id && u.role_id === role?.id) ||
+        Boolean(userRole && (userRole === roleName || (roleCode && userRole === roleCode) || (roleId && userRole === roleId)))
       );
     });
 
@@ -270,17 +321,39 @@ export function RolesView() {
     });
   };
 
-  const handleConfirmDelete = () => {
-    if (!deleteModalState.role) return;
-    const result = deleteRole(deleteModalState.role.id);
-    if (result.success) {
-      setDeleteModalState({ isOpen: false, role: null, safeguardError: null });
-      setSelectedRoleId('role_ops_lead');
-    } else {
+  const handleConfirmDelete = async () => {
+    if (!deleteModalState.role || isSubmittingDelete) return;
+    setIsSubmittingDelete(true);
+
+    try {
+      const deletedRoleId = deleteModalState.role.id;
+      const result = await deleteRole(deletedRoleId);
+
+      if (result.success) {
+        // Await the deletion handler and immediately close the confirmation modal upon successful deletion
+        setDeleteModalState({ isOpen: false, role: null, safeguardError: null, assignedUsers: [] });
+
+        // Reset the selected role to the default role and refresh the sidebar list
+        const defaultRole = roles.find((r) => r.id === 'role_ops_lead') || roles.find((r) => r.is_system) || roles[0];
+        setSelectedRoleId(defaultRole?.id || 'role_ops_lead');
+
+        if (refreshRoles) {
+          await refreshRoles();
+        }
+      } else {
+        setDeleteModalState((prev) => ({
+          ...prev,
+          safeguardError: result.error,
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to delete role:', err);
       setDeleteModalState((prev) => ({
         ...prev,
-        safeguardError: result.error,
+        safeguardError: 'An unexpected error occurred while deleting role.',
       }));
+    } finally {
+      setIsSubmittingDelete(false);
     }
   };
 
@@ -358,11 +431,10 @@ export function RolesView() {
                 <div
                   key={role.id}
                   onClick={() => setSelectedRoleId(role.id)}
-                  className={`w-full p-4 rounded-xl border text-left rtl:text-right transition cursor-pointer flex flex-col gap-2 ${
-                    isSelected
-                      ? 'bg-blue-50/60 dark:bg-slate-800/90 border-blue-500 dark:border-blue-500 shadow-xs ring-1 ring-blue-500/20'
-                      : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/60'
-                  }`}
+                  className={`w-full p-4 rounded-xl border text-left rtl:text-right transition cursor-pointer flex flex-col gap-2 ${isSelected
+                    ? 'bg-blue-50/60 dark:bg-slate-800/90 border-blue-500 dark:border-blue-500 shadow-xs ring-1 ring-blue-500/20'
+                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                    }`}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 truncate">
@@ -557,13 +629,12 @@ export function RolesView() {
                               type="button"
                               disabled={isSuperadmin}
                               onClick={() => handleToggle(selectedRole.id, entity.key, action.key)}
-                              className={`p-3 rounded-lg border text-left rtl:text-right transition flex items-center justify-between ${
-                                isSuperadmin
-                                  ? 'bg-violet-50/40 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800 cursor-not-allowed opacity-90'
-                                  : isEnabled
+                              className={`p-3 rounded-lg border text-left rtl:text-right transition flex items-center justify-between ${isSuperadmin
+                                ? 'bg-violet-50/40 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800 cursor-not-allowed opacity-90'
+                                : isEnabled
                                   ? 'bg-white dark:bg-slate-800 border-blue-500 dark:border-blue-500 shadow-2xs cursor-pointer'
                                   : 'bg-white/60 dark:bg-slate-900/60 border-slate-200 dark:border-slate-800 opacity-60 hover:opacity-100 cursor-pointer'
-                              }`}
+                                }`}
                             >
                               <div>
                                 <span className="font-bold text-xs text-slate-900 dark:text-slate-100 block">
@@ -575,11 +646,10 @@ export function RolesView() {
                               </div>
 
                               <div
-                                className={`w-5 h-5 rounded flex items-center justify-center shrink-0 transition ${
-                                  isEnabled
-                                    ? 'bg-blue-600 text-white'
-                                    : 'border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800'
-                                }`}
+                                className={`w-5 h-5 rounded flex items-center justify-center shrink-0 transition ${isEnabled
+                                  ? 'bg-blue-600 text-white'
+                                  : 'border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800'
+                                  }`}
                               >
                                 {isEnabled && <Check className="w-3 h-3 stroke-[3]" />}
                               </div>
@@ -652,13 +722,12 @@ export function RolesView() {
                                 type="button"
                                 disabled={isSuperadmin}
                                 onClick={() => toggleRoleMenuAccess && toggleRoleMenuAccess(selectedRole.id, menu.id)}
-                                className={`w-full p-2.5 rounded-lg border text-left rtl:text-right transition flex items-center justify-between ${
-                                  isSuperadmin
-                                    ? 'bg-violet-50/40 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800 cursor-not-allowed opacity-90'
-                                    : isMenuAllowed
+                                className={`w-full p-2.5 rounded-lg border text-left rtl:text-right transition flex items-center justify-between ${isSuperadmin
+                                  ? 'bg-violet-50/40 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800 cursor-not-allowed opacity-90'
+                                  : isMenuAllowed
                                     ? 'bg-white dark:bg-slate-800 border-blue-500 dark:border-blue-500 shadow-2xs cursor-pointer'
                                     : 'bg-white/60 dark:bg-slate-900/60 border-slate-200 dark:border-slate-800 opacity-60 hover:opacity-100 cursor-pointer'
-                                }`}
+                                  }`}
                               >
                                 <div className="pr-2 truncate">
                                   <span className="font-semibold text-xs text-slate-900 dark:text-slate-100 block truncate">
@@ -677,11 +746,10 @@ export function RolesView() {
                                 </div>
 
                                 <div
-                                  className={`w-5 h-5 rounded flex items-center justify-center shrink-0 transition ${
-                                    isMenuAllowed
-                                      ? 'bg-blue-600 text-white'
-                                      : 'border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800'
-                                  }`}
+                                  className={`w-5 h-5 rounded flex items-center justify-center shrink-0 transition ${isMenuAllowed
+                                    ? 'bg-blue-600 text-white'
+                                    : 'border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800'
+                                    }`}
                                 >
                                   {isMenuAllowed && <Check className="w-3.5 h-3.5 stroke-[3]" />}
                                 </div>
@@ -815,9 +883,17 @@ export function RolesView() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold cursor-pointer shadow-xs"
+                  disabled={isSubmittingCreate}
+                  className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold cursor-pointer shadow-xs flex items-center gap-1.5"
                 >
-                  Create Custom Role
+                  {isSubmittingCreate ? (
+                    <>
+                      <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>Creating Role...</span>
+                    </>
+                  ) : (
+                    <span>Create Custom Role</span>
+                  )}
                 </button>
               </div>
             </form>
@@ -1026,11 +1102,21 @@ export function RolesView() {
                     </button>
                     <button
                       type="button"
+                      disabled={isSubmittingDelete}
                       onClick={handleConfirmDelete}
-                      className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold cursor-pointer shadow-xs flex items-center gap-1.5"
+                      className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold cursor-pointer shadow-xs flex items-center gap-1.5"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Permanently Delete Role</span>
+                      {isSubmittingDelete ? (
+                        <>
+                          <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                          <span>Deleting Role...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Permanently Delete Role</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>

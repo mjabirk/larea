@@ -6,6 +6,7 @@
 
 import { spawn } from 'child_process';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -17,7 +18,16 @@ console.log('======================================================\n');
 console.log('[Startup] Initiating dual service launcher...');
 
 const isWindows = process.platform === 'win32';
-const pythonCmd = isWindows ? 'python' : 'python3';
+let pythonCmd = isWindows ? 'python' : 'python3';
+
+const venvLinux = path.join(__dirname, '.venv', 'bin', 'python');
+const venvWin = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
+if (!isWindows && fs.existsSync(venvLinux)) {
+  pythonCmd = venvLinux;
+} else if (isWindows && fs.existsSync(venvWin)) {
+  pythonCmd = venvWin;
+}
+
 const npmCmd = isWindows ? 'npm.cmd' : 'npm';
 
 // 1. Launch FastAPI Backend

@@ -49,6 +49,15 @@ import { LegalPolicyModal } from './components/legal/LegalPolicyModal';
 import { BusinessVerificationModal } from './components/legal/BusinessVerificationModal';
 import { CookieConsentBanner } from './components/legal/CookieConsentBanner';
 import { LegalFooter } from './components/legal/LegalFooter';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
+import { EmployeesView } from './components/Employees/EmployeesView';
+import { ContractListView } from './components/Employees/ContractListView';
+import { ConfigurationView } from './components/Configuration/ConfigurationView';
+import { PayrollBatchesView } from './components/Payroll/PayrollBatchesView';
+import { PayrollAdjustmentsView } from './components/Payroll/PayrollAdjustmentsView';
+import { LeaveManagementView } from './components/Leaves/LeaveManagementView';
+import { EOSBGratuityView } from './components/Payroll/EOSBGratuityView';
+import { HardwareTerminalsView } from './components/Operations/HardwareTerminalsView';
 
 // Storage Keys for Persistent Window & Menu Navigation
 const STORAGE_NAV_MODULE_KEY = 'enterprise_active_module';
@@ -95,7 +104,10 @@ function parseNavigationState() {
   let isLauncherOpen = false;
   if (paramView === 'launcher' || isAppsPath) {
     isLauncherOpen = true;
-  } else if (!paramApp && !paramMenu && storedActiveView === 'launcher') {
+  } else if (!paramApp && !paramMenu) {
+    // When loaded at application root without specific parameters, route to Workspace Launcher
+    isLauncherOpen = paramView !== 'workspace';
+  } else if (storedActiveView === 'launcher') {
     isLauncherOpen = true;
   }
 
@@ -112,9 +124,9 @@ function parseNavigationState() {
   const validMenus = moduleObj?.menus || [];
   let resolvedMenuId = validMenus[0]?.id || 'attendances';
 
-  if (paramMenu && validMenus.some((m) => m.id === paramMenu)) {
+  if (paramMenu && (validMenus.some((m) => m.id === paramMenu) || (resolvedModuleId === 'hr' && paramMenu === 'new_employee'))) {
     resolvedMenuId = paramMenu;
-  } else if (storedMenu && validMenus.some((m) => m.id === storedMenu)) {
+  } else if (storedMenu && (validMenus.some((m) => m.id === storedMenu) || (resolvedModuleId === 'hr' && storedMenu === 'new_employee'))) {
     resolvedMenuId = storedMenu;
   }
 
@@ -169,6 +181,8 @@ function MainAppShell() {
 
   // User Management List/Form View Mode
   const [userViewMode, setUserViewMode] = useState(initialNav.userViewMode);
+  const [employeeResetKey, setEmployeeResetKey] = useState(0);
+  const [targetContractEmployeeId, setTargetContractEmployeeId] = useState(null);
   const [selectedUserForForm, setSelectedUserForForm] = useState(() => {
     if (initialNav.selectedUserId && users?.length > 0) {
       return users.find((u) => u.id === initialNav.selectedUserId) || null;
@@ -346,6 +360,9 @@ function MainAppShell() {
       setUserViewMode('list');
       setSelectedUserForForm(null);
     }
+    if (menuId === 'employees') {
+      setEmployeeResetKey((prev) => prev + 1);
+    }
     setIsLauncherOpen(false);
   };
 
@@ -368,7 +385,7 @@ function MainAppShell() {
       localStorage.removeItem(STORAGE_NAV_USER_VIEW_KEY);
       localStorage.removeItem(STORAGE_NAV_USER_ID_KEY);
       window.history.replaceState(null, '', '/');
-    } catch (e) {}
+    } catch (e) { }
     logout();
   };
 
@@ -410,25 +427,32 @@ function MainAppShell() {
       />
 
       {/* 3. UNIFIED COMMAND PALETTE (Ctrl+K / ⌘K) */}
-      <CommandPalette
-        isOpen={isCommandPaletteOpen}
-        onClose={() => setIsCommandPaletteOpen(false)}
-        onNavigate={({ moduleId, menuId }) => {
-          setIsLauncherOpen(false);
-          handleSelectModule(moduleId);
-          if (menuId) handleSelectMenu(menuId);
-        }}
-        onOpenNewUser={() => {
-          setIsLauncherOpen(false);
-          handleSelectModule('iam');
-          handleSelectMenu('users');
-          setSelectedUserForForm(null);
-          setUserViewMode('form');
-        }}
-        onOpenProfile={() => setIsProfileModalOpen(true)}
-        onOpenPolicy={handleOpenPolicy}
-        onOpenBusinessModal={handleOpenBusinessModal}
-      />
+      <ErrorBoundary title="Command Palette Error">
+        <CommandPalette
+          isOpen={isCommandPaletteOpen}
+          onClose={() => setIsCommandPaletteOpen(false)}
+          onNavigate={({ moduleId, menuId }) => {
+            setIsLauncherOpen(false);
+            handleSelectModule(moduleId);
+            if (menuId) handleSelectMenu(menuId);
+          }}
+          onOpenNewUser={() => {
+            setIsLauncherOpen(false);
+            handleSelectModule('iam');
+            handleSelectMenu('users');
+            setSelectedUserForForm(null);
+            setUserViewMode('form');
+          }}
+          onOpenNewEmployee={() => {
+            setIsLauncherOpen(false);
+            handleSelectModule('hr');
+            handleSelectMenu('new_employee');
+          }}
+          onOpenProfile={() => setIsProfileModalOpen(true)}
+          onOpenPolicy={handleOpenPolicy}
+          onOpenBusinessModal={handleOpenBusinessModal}
+        />
+      </ErrorBoundary>
 
       {/* 4. PERMANENT GLOBAL TOP BAR (56px) - Always Mounted Across All Views */}
       <header className="h-14 bg-[#0f172a] text-white flex items-center justify-between px-4 sticky top-0 z-30 border-b border-slate-800/80 shadow-xs select-none">
@@ -443,11 +467,10 @@ function MainAppShell() {
             aria-label={isLauncherOpen ? "Close Workspace Launcher (Esc)" : "Open Application Launcher (9-dots)"}
             aria-haspopup="dialog"
             aria-expanded={isLauncherOpen}
-            className={`p-2 rounded-lg transition cursor-pointer shadow-2xs group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${
-              isLauncherOpen
-                ? 'bg-blue-600 text-white border border-blue-500 shadow-blue-500/30'
-                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/60'
-            }`}
+            className={`p-2 rounded-lg transition cursor-pointer shadow-2xs group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${isLauncherOpen
+              ? 'bg-blue-600 text-white border border-blue-500 shadow-blue-500/30'
+              : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/60'
+              }`}
             title={isLauncherOpen ? "Close Workspace Launcher (Esc)" : "Open Application Launcher (9-dots)"}
           >
             <LayoutGrid className="w-4 h-4 group-hover:scale-105 transition-transform" aria-hidden="true" />
@@ -565,9 +588,8 @@ function MainAppShell() {
                       key={org.id}
                       type="button"
                       onClick={() => switchOrganization(org.id)}
-                      className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between hover:bg-slate-800 transition cursor-pointer ${
-                        isOrgActive ? 'text-blue-400 font-semibold bg-slate-800/60' : 'text-slate-300'
-                      }`}
+                      className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between hover:bg-slate-800 transition cursor-pointer ${isOrgActive ? 'text-blue-400 font-semibold bg-slate-800/60' : 'text-slate-300'
+                        }`}
                     >
                       <span className="truncate">{org.legal_name}</span>
                       <span className="font-mono text-[10px] text-slate-500 shrink-0 ml-2">
@@ -592,9 +614,8 @@ function MainAppShell() {
                         switchBranch(br.id);
                         setShowBranchMenu(false);
                       }}
-                      className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between hover:bg-slate-800 transition cursor-pointer ${
-                        isBrActive ? 'text-blue-400 font-semibold bg-slate-800/60' : 'text-slate-300'
-                      }`}
+                      className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between hover:bg-slate-800 transition cursor-pointer ${isBrActive ? 'text-blue-400 font-semibold bg-slate-800/60' : 'text-slate-300'
+                        }`}
                     >
                       <div className="truncate">
                         <div>{br.name}</div>
@@ -749,157 +770,156 @@ function MainAppShell() {
       )}
 
       {/* 6. WORKSPACE RENDERER ACCORDING TO 2-TIER MODULE & SUB-MENU */}
-      <main className="flex-1 flex flex-col">
-        {isLauncherOpen ? (
-          <AppGridOverlay
-            activeModuleId={activeModuleId}
-            onSelectModule={handleSelectModule}
-            onSelectMenu={handleSelectMenu}
-            onClose={() => setIsLauncherOpen(false)}
-          />
-        ) : !hasMenuAccess(activeMenuId) ? (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto animate-fadeIn select-none">
-            <div className="w-16 h-16 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 flex items-center justify-center text-rose-500 mb-4 shadow-sm">
-              <ShieldAlert className="w-8 h-8" />
+      <ErrorBoundary title="Workspace Viewport Error">
+        <main className="flex-1 flex flex-col">
+          {isLauncherOpen ? (
+            <AppGridOverlay
+              activeModuleId={activeModuleId}
+              onSelectModule={handleSelectModule}
+              onSelectMenu={handleSelectMenu}
+              onClose={() => setIsLauncherOpen(false)}
+            />
+          ) : !hasMenuAccess(activeMenuId) ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto animate-fadeIn select-none">
+              <div className="w-16 h-16 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 flex items-center justify-center text-rose-500 mb-4 shadow-sm">
+                <ShieldAlert className="w-8 h-8" />
+              </div>
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">
+                403 Forbidden • Access Denied
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">
+                Access Denied: You do not have the required permissions for this menu.
+              </p>
+              <div className="mt-6 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => handleToggleLauncher(true)}
+                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
+                >
+                  Open Workspace Launcher
+                </button>
+              </div>
             </div>
-            <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-              403 Forbidden • Access Denied
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">
-              Access Denied: You do not have the required permissions for this menu.
-            </p>
-            <div className="mt-6 flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => handleToggleLauncher(true)}
-                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
-              >
-                Open Workspace Launcher
-              </button>
-            </div>
-          </div>
-        ) : (
-          <>
-            {/* Module HR: Attendance Logs */}
-            {activeModuleId === 'hr' && activeMenuId === 'attendances' && (
-              <ViewEngine
-                schema={VIEW_SCHEMA}
-                initialData={attendanceRecords || []}
-              />
-            )}
+          ) : (
+            <>
+              {/* Unified Configuration & Settings Screens */}
+              {['hr_config', 'salary_rules', 'wps_config', 'api_keys', 'orgs', 'compliance_alerts'].includes(activeMenuId) && (
+                <div className="p-4 sm:p-6">
+                  <ConfigurationView activeMenuId={activeMenuId} />
+                </div>
+              )}
 
-            {/* Module HR: Shift Rosters */}
-            {activeModuleId === 'hr' && activeMenuId === 'rosters' && (
-              <div className="p-4 sm:p-6 space-y-4">
+              {/* Module HR: Attendance Logs */}
+              {activeModuleId === 'hr' && activeMenuId === 'attendances' && (
                 <ViewEngine
-                  schema={{
-                    ...VIEW_SCHEMA,
-                    title: "Shift Rosters & Department Schedules",
-                  }}
+                  schema={VIEW_SCHEMA}
                   initialData={attendanceRecords || []}
                 />
-              </div>
-            )}
+              )}
 
-            {/* Module IAM: Users & Identities (Standardized List/Form View) */}
-            {activeModuleId === 'iam' && activeMenuId === 'users' && (
-              <div className="p-4 sm:p-6">
-                {userViewMode === 'list' ? (
-                  <UserListView
-                    onSelectUser={(u) => {
-                      setSelectedUserForForm(u);
-                      setUserViewMode('form');
+              {/* Module HR: Shift Rosters */}
+              {activeModuleId === 'hr' && activeMenuId === 'rosters' && (
+                <div className="p-4 sm:p-6 space-y-4">
+                  <ViewEngine
+                    schema={{
+                      ...VIEW_SCHEMA,
+                      title: "Shift Rosters & Department Schedules",
+                    }}
+                    initialData={attendanceRecords || []}
+                  />
+                </div>
+              )}
+
+              {/* Module HR: Global Contracts Management */}
+              {activeModuleId === 'hr' && activeMenuId === 'contracts' && (
+                <div className="p-4 sm:p-6">
+                  <ContractListView
+                    onSelectEmployee={(empId) => {
+                      setTargetContractEmployeeId(empId);
+                      handleSelectMenu('employees');
                     }}
                   />
-                ) : (
-                  <UserFormView
-                    key={selectedUserForForm?.id || 'default'}
-                    user={selectedUserForForm}
-                    onBackToList={() => setUserViewMode('list')}
-                  />
-                )}
-              </div>
-            )}
-
-            {/* Module IAM: Roles & Permissions Matrix */}
-            {activeModuleId === 'iam' && activeMenuId === 'roles' && (
-              <div className="p-4 sm:p-6">
-                <PermissionMatrix />
-              </div>
-            )}
-
-            {/* Module IAM: Organizations & Operating Branches */}
-            {activeModuleId === 'iam' && activeMenuId === 'orgs' && (
-              <div className="p-4 sm:p-6">
-                <OrganizationsView />
-              </div>
-            )}
-
-            {/* Module Operations: Hardware Terminals */}
-            {activeModuleId === 'operations' && (
-              <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-6 animate-fadeIn">
-                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xs space-y-3">
-                  <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 font-bold text-xs uppercase tracking-wider">
-                    <Cpu className="w-4 h-4" />
-                    <span>Biometric Hardware Terminals & ADMS Push Gateway</span>
-                  </div>
-                  <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-                    Hardware Device Ingestion Matrix
-                  </h2>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Connected biometric terminals stream attendance punches directly via the Zero-Trust ADMS listener.
-                  </p>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-3">
-                    {[
-                      { name: "Terminal #01 (Main Lobby Gate)", ip: "192.168.10.104", status: "Online", ping: "4ms", model: "ZKTeco ProFaceX" },
-                      { name: "Terminal #02 (R&D Lab Floor 2)", ip: "172.16.80.22", status: "Online", ping: "8ms", model: "Suprema BioStation 3" },
-                      { name: "Terminal #03 (HQ Executive Wing)", ip: "10.0.4.12", status: "Online", ping: "2ms", model: "Hikvision Facial Terminal" },
-                    ].map((term, i) => (
-                      <div key={i} className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-xs text-slate-900 dark:text-white">{term.name}</span>
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                            {term.status}
-                          </span>
-                        </div>
-                        <div className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                          IP: <strong>{term.ip}</strong> • Ping: {term.ping}
-                        </div>
-                        <div className="text-[10px] text-slate-400 font-medium">
-                          Model: {term.model}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* Module Payroll: Batches */}
-            {activeModuleId === 'payroll' && (
-              <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-6 animate-fadeIn">
-                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xs space-y-3">
-                  <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 font-bold text-xs uppercase tracking-wider">
-                    <Banknote className="w-4 h-4" />
-                    <span>Automated Payroll Engine Integration</span>
-                  </div>
-                  <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-                    Monthly Attendance & Overtime Locking Batches
-                  </h2>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Synchronized verified shifts are grouped into cryptographic payroll batches ready for WPS bank export.
-                  </p>
-                  <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-xs text-amber-800 dark:text-amber-300">
-                    Active Batch: <strong>October 2026 Shift Reconciliation</strong> • 12 Shifts Synced • Total 107.0 Verified Hours
-                  </div>
+              {/* Module HR: Leave & Time Off */}
+              {activeModuleId === 'hr' && activeMenuId === 'leaves' && (
+                <div className="p-4 sm:p-6">
+                  <LeaveManagementView />
                 </div>
-              </div>
-            )}
-          </>
-        )}
-      </main>
+              )}
+
+              {/* Module HR: Employees & Create New Employee */}
+              {activeModuleId === 'hr' && (activeMenuId === 'employees' || activeMenuId === 'new_employee') && (
+                <EmployeesView
+                  key={`emp-view-${employeeResetKey}-${targetContractEmployeeId || 'none'}`}
+                  activeMenuId={activeMenuId}
+                  initialEmployeeId={targetContractEmployeeId}
+                  onBackToList={() => {
+                    setTargetContractEmployeeId(null);
+                    handleSelectMenu('employees');
+                  }}
+                />
+              )}
+
+              {/* Module IAM: Users & Identities */}
+              {activeModuleId === 'iam' && activeMenuId === 'users' && (
+                <div className="p-4 sm:p-6">
+                  {userViewMode === 'list' ? (
+                    <UserListView
+                      onSelectUser={(u) => {
+                        setSelectedUserForForm(u);
+                        setUserViewMode('form');
+                      }}
+                    />
+                  ) : (
+                    <UserFormView
+                      key={selectedUserForForm?.id || 'default'}
+                      user={selectedUserForForm}
+                      onBackToList={() => setUserViewMode('list')}
+                    />
+                  )}
+                </div>
+              )}
+
+              {/* Module IAM: Roles & Permissions Matrix */}
+              {activeModuleId === 'iam' && activeMenuId === 'roles' && (
+                <div className="p-4 sm:p-6">
+                  <PermissionMatrix />
+                </div>
+              )}
+
+              {/* Module Operations: Hardware Terminals */}
+              {activeModuleId === 'operations' && activeMenuId === 'terminals' && (
+                <div className="p-4 sm:p-6">
+                  <HardwareTerminalsView />
+                </div>
+              )}
+
+              {/* Module Payroll: Batches */}
+              {activeModuleId === 'payroll' && activeMenuId === 'batches' && (
+                <div className="p-4 sm:p-6">
+                  <PayrollBatchesView />
+                </div>
+              )}
+
+              {/* Module Payroll: Variable Pay & Approvals */}
+              {activeModuleId === 'payroll' && activeMenuId === 'payroll_adjustments' && (
+                <div className="p-4 sm:p-6">
+                  <PayrollAdjustmentsView />
+                </div>
+              )}
+
+              {/* Module Payroll: EOSB & Final Settlement */}
+              {activeModuleId === 'payroll' && activeMenuId === 'eosb' && (
+                <div className="p-4 sm:p-6">
+                  <EOSBGratuityView />
+                </div>
+              )}
+            </>
+          )}
+        </main>
+      </ErrorBoundary>
 
       {/* 7. ENTERPRISE STATUTORY COMPLIANCE & LEGAL FOOTER */}
       <LegalFooter

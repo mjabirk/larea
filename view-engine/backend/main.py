@@ -2,6 +2,7 @@ import json
 import uuid
 import datetime
 import hashlib
+import re
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, Depends, HTTPException, Header, Request, status, Response
@@ -53,7 +54,26 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "X-Vault-Decrypted"],
 )
+
+from backend.api.v1.documents import router as documents_router
+from backend.api.v1.employees import router as employees_router
+from backend.api.v1.audit import router as audit_router
+from backend.api.v1.contracts import router as contracts_router
+from backend.api.v1.attendance import router as attendance_router
+from backend.api.v1.payroll import router as payroll_router
+from backend.api.v1.leaves_eosb import router as leaves_eosb_router
+from backend.api.v1.zkteco import router as zkteco_router
+
+app.include_router(documents_router)
+app.include_router(employees_router)
+app.include_router(audit_router)
+app.include_router(contracts_router)
+app.include_router(attendance_router)
+app.include_router(payroll_router)
+app.include_router(leaves_eosb_router)
+app.include_router(zkteco_router)
 
 # Request Models
 class LoginRequest(BaseModel):
@@ -66,8 +86,23 @@ class Verify2FARequest(BaseModel):
     pending_token: Optional[str] = None
     totp_code: str
 
+def validate_password_complexity(password: str) -> Optional[str]:
+    if not password or len(password) < 10:
+        return "Password must be at least 10 characters long."
+    if not re.search(r"[A-Z]", password):
+        return "Password must contain at least one uppercase letter."
+    if not re.search(r"[0-9]", password):
+        return "Password must contain at least one digit."
+    if not re.search(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>\/?]", password):
+        return "Password must contain at least one special symbol."
+    return None
+
 class RevokeSessionRequest(BaseModel):
     token: str
+
+class RevokeOtherSessionsRequest(BaseModel):
+    user_id: Optional[str] = None
+    token: Optional[str] = None
 
 class SetupInitRequest(BaseModel):
     org_data: Dict[str, Any]
@@ -122,14 +157,14 @@ class UpdateRoleRequest(BaseModel):
     permissions: Optional[Dict[str, Any]] = None
     menu_access: Optional[List[str]] = None
 
-# Helper to extract client IP safely (trusting reverse proxies only when verified)
-def get_client_ip(request: Request) -> str:
-    remote_host = request.client.host if request.client else "127.0.0.1"
-    if remote_host in settings.TRUSTED_PROXIES:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-    return remote_host
+class CreateAPIKeyRequest(BaseModel):
+    owner: str
+    role: Optional[str] = "service_daemon"
+    allowed_cidrs: Optional[List[str]] = None
+    scopes: Optional[List[str]] = None
+
+
+from backend.core.dependencies import get_client_ip, get_current_user_session
 
 # Redis-based Atomic Rate Limiting Helpers (DoS Protection & Brute Force Prevention)
 async def enforce_rate_limit(key_prefix: str, identifier: str, max_attempts: int, window_seconds: int = 60):
@@ -159,42 +194,6 @@ async def enforce_setup_boot_limit(max_calls: int = 3):
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"System setup initialization limit exceeded (maximum {max_calls} invocations allowed)."
         )
-
-# Session Authentication Dependency
-async def get_current_user_session(
-    request: Request,
-    authorization: Optional[str] = Header(None),
-    x_api_key: Optional[str] = Header(None)
-) -> Dict[str, Any]:
-    client_ip = get_client_ip(request)
-    
-    # 1. Check CIDR network restriction
-    if not verify_client_cidr(client_ip, settings.ALLOWED_CIDR_NETWORKS):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access forbidden from this network subnet."
-        )
-        
-    # 2. Check Headless API Key authentication
-    if x_api_key:
-        api_data = await APIKeyEngine.validate_api_key(x_api_key, client_ip)
-        if api_data:
-            return {"user_id": api_data["key_id"], "role": api_data["role"], "auth_type": "api_key"}
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key.")
-
-    # 3. Check Stateful Session Bearer Token
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing session token.")
-        
-    token = authorization.replace("Bearer ", "").strip()
-    session = await SessionManager.validate_session(token, client_ip)
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session expired (idle timeout or max lifetime reached). Please log in again."
-        )
-        
-    return session
 
 # ==============================================================================
 # 1. SYSTEM METADATA & STATUS ENDPOINTS
@@ -388,7 +387,13 @@ async def login(req: LoginRequest, request: Request):
             
         menu_access = json.loads(row["menu_access"]) if row["menu_access"] else []
         permissions = json.loads(row["permissions"]) if row["permissions"] else {}
-        
+
+        role_sec_groups = []
+        if isinstance(permissions, dict):
+            role_sec_groups = permissions.get("security_groups", [])
+        elif isinstance(permissions, list):
+            role_sec_groups = permissions
+
         user_data = {
             "id": str(row["id"]),
             "username": row["email"],
@@ -404,7 +409,7 @@ async def login(req: LoginRequest, request: Request):
             "branch_id": str(row["branch_id"]) if row["branch_id"] else None,
             "branch_name": row["branch_name"],
             "branch_code": row["branch_code"],
-            "security_groups": ["*"] if row["is_superadmin"] else [],
+            "security_groups": ["*"] if row["is_superadmin"] else role_sec_groups,
             "menu_access": menu_access,
             "permissions": permissions,
         }
@@ -627,27 +632,35 @@ async def get_current_user_profile(session: Dict[str, Any] = Depends(get_current
         }
 
 @app.get("/api/v1/auth/sessions")
-async def get_active_sessions(session: Dict[str, Any] = Depends(get_current_user_session)):
-    user_id = session["user_id"]
-    active = await SessionManager.list_active_sessions(user_id)
+async def get_active_sessions(
+    user_id: Optional[str] = None,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    target_user_id = user_id if (user_id and (session.get("is_superadmin") or user_id == session.get("user_id"))) else session["user_id"]
+    active = await SessionManager.list_active_sessions(target_user_id)
     return {"sessions": active, "current_token": session.get("token", "")}
 
 @app.post("/api/v1/auth/sessions/revoke")
 async def revoke_session(req: RevokeSessionRequest, session: Dict[str, Any] = Depends(get_current_user_session)):
     success = await SessionManager.revoke_session(req.token)
-    return {"status": "revoked" if success else "failed"}
+    return {"status": "revoked" if success else "failed", "token": req.token}
 
 @app.post("/api/v1/auth/sessions/revoke-others")
-async def revoke_other_sessions(session: Dict[str, Any] = Depends(get_current_user_session)):
-    user_id = session["user_id"]
-    count = await SessionManager.revoke_other_sessions(user_id, session.get("token", ""))
+async def revoke_other_sessions(
+    user_id: Optional[str] = None,
+    req: Optional[RevokeOtherSessionsRequest] = None,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    target_user_id = user_id or (req.user_id if req else None) or session["user_id"]
+    token_to_keep = (req.token if req and req.token else None) or session.get("token", "")
+    count = await SessionManager.revoke_other_sessions(target_user_id, token_to_keep)
     return {"status": "success", "revoked_count": count}
 
 # ==============================================================================
 # 3. IAM USERS CRUD ENDPOINTS (PostgreSQL Direct)
 # ==============================================================================
 @app.get("/api/v1/iam/users")
-async def list_users():
+async def list_users(session: Dict[str, Any] = Depends(get_current_user_session)):
     """Returns list of users from PostgreSQL with tenancy and role info."""
     pool = get_db_pool()
     async with pool.acquire() as conn:
@@ -692,7 +705,10 @@ async def list_users():
         return {"users": users_list}
 
 @app.post("/api/v1/iam/users")
-async def create_user(req: CreateUserRequest):
+async def create_user(
+    req: CreateUserRequest,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
     """Provisions a new identity directly in PostgreSQL with a bcrypt password."""
     pool = get_db_pool()
     clean_email = req.email.strip().lower()
@@ -717,7 +733,11 @@ async def create_user(req: CreateUserRequest):
                 
         is_super = role_id == "role_superadmin" or "superadmin" in (req.role or "").lower()
         new_id = uuid.uuid4()
-        pwd_hash = hash_password(req.initial_password or "InitPass@2026")
+        initial_pwd = req.initial_password or "InitPass@2026"
+        complexity_err = validate_password_complexity(initial_pwd)
+        if complexity_err:
+            raise HTTPException(status_code=400, detail=complexity_err)
+        pwd_hash = hash_password(initial_pwd)
         
         await conn.execute("""
             INSERT INTO users (
@@ -759,7 +779,11 @@ async def create_user(req: CreateUserRequest):
         }
 
 @app.put("/api/v1/iam/users/{user_id}")
-async def update_user(user_id: str, req: UpdateUserRequest):
+async def update_user(
+    user_id: str,
+    req: UpdateUserRequest,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
     """Updates user record in PostgreSQL."""
     pool = get_db_pool()
     try:
@@ -802,7 +826,11 @@ async def update_user(user_id: str, req: UpdateUserRequest):
         return {"status": "success", "message": "User updated successfully."}
 
 @app.post("/api/v1/iam/users/{user_id}/reset-password")
-async def reset_user_password(user_id: str, req: ResetPasswordRequest):
+async def reset_user_password(
+    user_id: str,
+    req: ResetPasswordRequest,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
     """Sets a new bcrypt-hashed password in PostgreSQL."""
     pool = get_db_pool()
     try:
@@ -810,8 +838,9 @@ async def reset_user_password(user_id: str, req: ResetPasswordRequest):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid user UUID.")
         
-    if not req.password or len(req.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    complexity_err = validate_password_complexity(req.password)
+    if complexity_err:
+        raise HTTPException(status_code=400, detail=complexity_err)
         
     hashed_pwd = hash_password(req.password)
     async with pool.acquire() as conn:
@@ -825,7 +854,10 @@ async def reset_user_password(user_id: str, req: ResetPasswordRequest):
     return {"status": "success", "message": "Password updated successfully."}
 
 @app.delete("/api/v1/iam/users/{user_id}")
-async def delete_user(user_id: str):
+async def delete_user(
+    user_id: str,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
     """Deletes user from PostgreSQL."""
     pool = get_db_pool()
     try:
@@ -845,7 +877,7 @@ async def delete_user(user_id: str):
 # 4. IAM ROLES CRUD ENDPOINTS (PostgreSQL Direct with Menu Access)
 # ==============================================================================
 @app.get("/api/v1/iam/roles")
-async def list_roles():
+async def list_roles(session: Dict[str, Any] = Depends(get_current_user_session)):
     """Lists roles and permissions matrix from PostgreSQL."""
     pool = get_db_pool()
     async with pool.acquire() as conn:
@@ -871,7 +903,10 @@ async def list_roles():
         return {"roles": roles_list}
 
 @app.post("/api/v1/iam/roles")
-async def create_role(req: CreateRoleRequest):
+async def create_role(
+    req: CreateRoleRequest,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
     """Creates a custom security role in PostgreSQL."""
     pool = get_db_pool()
     clean_name = req.name.strip()
@@ -907,9 +942,14 @@ async def create_role(req: CreateRoleRequest):
         "menu_access": menu_access,
     }
 
+@app.patch("/api/v1/iam/roles/{role_id}")
 @app.put("/api/v1/iam/roles/{role_id}")
-async def update_role(role_id: str, req: UpdateRoleRequest):
-    """Updates role permissions and menu_access in PostgreSQL."""
+async def update_role(
+    role_id: str,
+    req: UpdateRoleRequest,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Dynamically updates role permissions and menu_access in PostgreSQL."""
     pool = get_db_pool()
     async with pool.acquire() as conn:
         existing = await conn.fetchrow("SELECT * FROM roles WHERE id = $1", role_id)
@@ -928,11 +968,29 @@ async def update_role(role_id: str, req: UpdateRoleRequest):
                 menu_access = $6::jsonb
             WHERE id = $1
         """, role_id, req.name, req.description, req.badge_color, perms_json, menu_json)
+
+        updated_row = await conn.fetchrow("SELECT * FROM roles WHERE id = $1", role_id)
         
-    return {"status": "success", "message": "Role updated successfully."}
+    return {
+        "status": "success",
+        "message": "Role updated successfully.",
+        "role": {
+            "id": updated_row["id"],
+            "name": updated_row["name"],
+            "code": updated_row["code"],
+            "description": updated_row["description"],
+            "badgeColor": updated_row["badge_color"],
+            "is_system": bool(updated_row["is_system"]),
+            "permissions": json.loads(updated_row["permissions"]) if updated_row["permissions"] else {},
+            "menu_access": json.loads(updated_row["menu_access"]) if updated_row["menu_access"] else [],
+        }
+    }
 
 @app.delete("/api/v1/iam/roles/{role_id}")
-async def delete_role(role_id: str):
+async def delete_role(
+    role_id: str,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
     """Deletes custom role from PostgreSQL (system roles are protected)."""
     pool = get_db_pool()
     async with pool.acquire() as conn:
@@ -951,10 +1009,45 @@ async def delete_role(role_id: str):
     return {"status": "success", "message": "Role deleted."}
 
 # ==============================================================================
+# 4.1 HEADLESS API KEY PERSISTENCE ENDPOINTS (PostgreSQL + Redis Cache)
+# ==============================================================================
+@app.get("/api/v1/iam/api-keys")
+async def list_api_keys(session: Dict[str, Any] = Depends(get_current_user_session)):
+    """Lists persistent API keys from PostgreSQL."""
+    keys = await APIKeyEngine.list_api_keys()
+    return {"api_keys": keys}
+
+@app.post("/api/v1/iam/api-keys")
+async def create_api_key(
+    req: CreateAPIKeyRequest,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Creates a new API key in PostgreSQL and populates Redis cache."""
+    created = await APIKeyEngine.create_api_key(
+        owner=req.owner,
+        role=req.role or "service_daemon",
+        allowed_cidrs=req.allowed_cidrs,
+        scopes=req.scopes
+    )
+    return {"status": "success", "api_key": created}
+
+@app.delete("/api/v1/iam/api-keys/{key_id}")
+async def revoke_api_key(
+    key_id: str,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Revokes API key from PostgreSQL and purges Redis cache."""
+    success = await APIKeyEngine.revoke_api_key(key_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="API key not found.")
+    return {"status": "success", "message": "API key revoked."}
+
+
+# ==============================================================================
 # 5. TENANCY METADATA ENDPOINTS (Organizations & Branches)
 # ==============================================================================
 @app.get("/api/v1/iam/tenancy")
-async def get_tenancy_data():
+async def get_tenancy_data(session: Dict[str, Any] = Depends(get_current_user_session)):
     """Returns organizations and branches from PostgreSQL."""
     pool = get_db_pool()
     async with pool.acquire() as conn:
@@ -986,6 +1079,165 @@ async def get_tenancy_data():
         ]
         
         return {"organizations": orgs, "branches": branches}
+
+class UpdateOrganizationRequest(BaseModel):
+    legal_name: str
+    tax_id: Optional[str] = None
+    base_currency: Optional[str] = "QAR"
+    default_timezone: Optional[str] = "Asia/Qatar"
+    default_locale: Optional[str] = "en"
+
+class BranchPayload(BaseModel):
+    organization_id: Optional[str] = None
+    name: str
+    code: str
+    city: Optional[str] = "Doha"
+    ip_allowlist: Optional[List[str]] = ["127.0.0.1/32", "192.168.1.0/24"]
+
+class SystemSettingPayload(BaseModel):
+    value: Dict[str, Any]
+
+@app.put("/api/v1/iam/organizations/{org_id}")
+async def update_organization(
+    org_id: str,
+    req: UpdateOrganizationRequest,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Updates organization legal name, Qatar CR/Tax ID, currency, and timezone."""
+    pool = get_db_pool()
+    try:
+        o_uuid = uuid.UUID(org_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid organization UUID.")
+
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE organizations
+            SET legal_name = $2,
+                tax_id = $3,
+                base_currency = COALESCE($4, base_currency),
+                default_timezone = COALESCE($5, default_timezone),
+                default_locale = COALESCE($6, default_locale)
+            WHERE id = $1
+        """, o_uuid, req.legal_name.strip(), req.tax_id, req.base_currency, req.default_timezone, req.default_locale)
+        row = await conn.fetchrow("SELECT * FROM organizations WHERE id = $1", o_uuid)
+        if not row:
+            raise HTTPException(status_code=404, detail="Organization not found.")
+        return {
+            "id": str(row["id"]),
+            "legal_name": row["legal_name"],
+            "tax_id": row["tax_id"],
+            "base_currency": row["base_currency"],
+            "default_timezone": row["default_timezone"],
+            "default_locale": row["default_locale"],
+        }
+
+@app.post("/api/v1/iam/branches")
+async def create_branch(
+    req: BranchPayload,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Creates a new operating branch in PostgreSQL."""
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        org_uuid = (
+            uuid.UUID(req.organization_id)
+            if req.organization_id
+            else await conn.fetchval("SELECT id FROM organizations LIMIT 1")
+        )
+        new_id = uuid.uuid4()
+        cidrs = req.ip_allowlist or ["127.0.0.1/32"]
+        await conn.execute("""
+            INSERT INTO branches (id, organization_id, name, code, city, ip_allowlist)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+        """, new_id, org_uuid, req.name.strip(), req.code.strip().upper(), req.city or "Doha", json.dumps(cidrs))
+        return {
+            "id": str(new_id),
+            "organization_id": str(org_uuid),
+            "name": req.name.strip(),
+            "code": req.code.strip().upper(),
+            "city": req.city or "Doha",
+            "ip_allowlist": cidrs,
+        }
+
+@app.put("/api/v1/iam/branches/{branch_id}")
+async def update_branch(
+    branch_id: str,
+    req: BranchPayload,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Updates an operating branch and its CIDR IP allowlist."""
+    pool = get_db_pool()
+    try:
+        b_uuid = uuid.UUID(branch_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid branch UUID.")
+
+    cidrs = req.ip_allowlist or ["127.0.0.1/32"]
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE branches
+            SET name = $2, code = $3, city = $4, ip_allowlist = $5::jsonb
+            WHERE id = $1
+        """, b_uuid, req.name.strip(), req.code.strip().upper(), req.city or "Doha", json.dumps(cidrs))
+        return {"status": "success", "id": str(b_uuid)}
+
+@app.delete("/api/v1/iam/branches/{branch_id}")
+async def delete_branch(
+    branch_id: str,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Deletes an operating branch if more than 1 branch exists."""
+    pool = get_db_pool()
+    try:
+        b_uuid = uuid.UUID(branch_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid branch UUID.")
+
+    async with pool.acquire() as conn:
+        count = await conn.fetchval("SELECT count(*) FROM branches")
+        if count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot delete the primary operating branch.")
+        await conn.execute("DELETE FROM branches WHERE id = $1", b_uuid)
+        return {"status": "success", "deleted_id": str(b_uuid)}
+
+@app.get("/api/v1/settings/{config_key}")
+async def get_system_setting(
+    config_key: str,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Fetches a JSON configuration setting from PostgreSQL system_metadata."""
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        val = await conn.fetchval(
+            "SELECT value FROM system_metadata WHERE key = $1",
+            f"cfg:{config_key.strip().lower()}"
+        )
+        if not val:
+            return {"key": config_key, "value": None}
+        try:
+            return {"key": config_key, "value": json.loads(val)}
+        except Exception:
+            return {"key": config_key, "value": None}
+
+@app.put("/api/v1/settings/{config_key}")
+async def save_system_setting(
+    config_key: str,
+    payload: SystemSettingPayload,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Persists a JSON configuration setting into PostgreSQL system_metadata."""
+    pool = get_db_pool()
+    clean_key = f"cfg:{config_key.strip().lower()}"
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO system_metadata (key, value, updated_at)
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET
+                value = EXCLUDED.value,
+                updated_at = CURRENT_TIMESTAMP;
+        """, clean_key, json.dumps(payload.value))
+    return {"status": "success", "key": config_key, "value": payload.value}
 
 # ==============================================================================
 # 6. SERVER-DRIVEN UI METADATA ENDPOINT

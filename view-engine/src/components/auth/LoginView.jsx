@@ -33,6 +33,8 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
       const res = await login({ email, password, rememberMe });
       if (!res.success) {
         setError(res.error || 'Authentication failed. Please verify your credentials.');
+      } else {
+        window.history.replaceState(null, '', '/?view=launcher');
       }
     } catch (err) {
       setError('An unexpected error occurred during sign-in. Please try again.');
@@ -192,27 +194,6 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
               )}
             </button>
           </form>
-
-          {/* Quick Identity Information Hint & Test Runner Autofill */}
-          <div className="pt-2 border-t border-slate-800 text-[11px] text-slate-400 space-y-1.5">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-slate-300">Test / Admin Identity:</span>
-              <button
-                type="button"
-                id="btn-quick-fill-admin"
-                onClick={() => {
-                  setEmail('admin@company.local');
-                  setPassword('Admin@123');
-                }}
-                className="text-blue-400 hover:text-blue-300 font-mono text-[10px] bg-blue-950/60 border border-blue-800/80 px-2 py-0.5 rounded cursor-pointer transition hover:bg-blue-900/60"
-              >
-                Autofill admin / Admin@123
-              </button>
-            </div>
-            <div className="text-[10px] text-slate-500">
-              Standard identity: <strong className="text-slate-400 font-mono">admin@company.local</strong> • Password: <strong className="text-slate-400 font-mono">Admin@123</strong>
-            </div>
-          </div>
         </div>
       </main>
 

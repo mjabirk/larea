@@ -56,8 +56,8 @@ export function ControlPanel({
   // Enabled views in schema
   const enabledViews = Object.keys(schema?.views || {});
 
-  // Integrated filter chips: All, Draft, Verified, Synced
-  const filterChips = [
+  // Integrated filter chips: schema defined or defaults
+  const filterChips = schema?.filterChips || [
     { id: 'all', label: t('all') },
     { id: 'draft', label: t('draft') },
     { id: 'verified', label: t('verified') },
@@ -179,7 +179,7 @@ export function ControlPanel({
             className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>{t('new_record')}</span>
+            <span>{schema?.newButtonLabel || t('new_record')}</span>
           </button>
         )}
 
@@ -211,19 +211,21 @@ export function ControlPanel({
                 <Download className="w-3.5 h-3.5 text-slate-400" />
                 <span>{t('export_csv')}</span>
               </button>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  onPrintReports();
-                  setShowActionMenu(false);
-                }}
-                className="w-full px-3 py-2 text-left rtl:text-right flex items-center gap-2 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              >
-                <Printer className="w-3.5 h-3.5 text-slate-400" />
-                <span>{t('print_slip')}</span>
-              </button>
-              {selectedCount > 0 && (
+              {onPrintReports && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    onPrintReports();
+                    setShowActionMenu(false);
+                  }}
+                  className="w-full px-3 py-2 text-left rtl:text-right flex items-center gap-2 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                >
+                  <Printer className="w-3.5 h-3.5 text-slate-400" />
+                  <span>{t('print_slip')}</span>
+                </button>
+              )}
+              {onBulkAction && (selectedCount > 0 || currentView === 'form') && (
                 <button
                   type="button"
                   role="menuitem"
@@ -234,7 +236,7 @@ export function ControlPanel({
                   className="w-full px-3 py-2 text-left rtl:text-right flex items-center gap-2 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer border-t border-slate-100 dark:border-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                 >
                   <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-                  <span>{t('delete')} ({selectedCount})</span>
+                  <span>{t('delete')} {selectedCount > 0 ? `(${selectedCount})` : ''}</span>
                 </button>
               )}
             </div>
@@ -271,7 +273,7 @@ export function ControlPanel({
 
         {/* Page Counter */}
         {pager && (
-          <div className="hidden xl:flex items-center gap-1.5 text-slate-500 dark:text-slate-400 font-mono text-xs pl-2 rtl:pr-2 rtl:pl-0 border-l rtl:border-r rtl:border-l-0 border-slate-200 dark:border-slate-700">
+          <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 font-mono text-xs pl-2 rtl:pr-2 rtl:pl-0 border-l rtl:border-r rtl:border-l-0 border-slate-200 dark:border-slate-700">
             <span>{pager.label}</span>
             <div className="inline-flex items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
               <button

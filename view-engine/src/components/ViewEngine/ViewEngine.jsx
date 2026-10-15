@@ -177,6 +177,9 @@ export function ViewEngine({ schema, initialData = [], onRecordCreated, onRecord
     setRecords((prev) =>
       prev.map((r) => (r.id === draftRecord.id ? draftRecord : r))
     );
+    if (tenancy?.updateAttendanceRecord) {
+      tenancy.updateAttendanceRecord(draftRecord.id, draftRecord);
+    }
     setIsDirty(false);
     showNotification('Changes saved successfully');
   };
