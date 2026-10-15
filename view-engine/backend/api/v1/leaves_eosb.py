@@ -422,6 +422,30 @@ async def approve_leave_request(
             # Synchronize to any existing draft payslip
             await sync_employee_adjustments_to_payslips(conn, leave["employee_id"], salary_ym)
 
+        # Fire automated trigger if leave reached final 'approved' status
+        if new_status == "approved":
+            try:
+                from backend.core.communication_engine import execute_automation_trigger
+                await execute_automation_trigger(
+                    event_type="leave_approved",
+                    record_model="hr.leave",
+                    record_id=str(l_uuid),
+                    record_data={
+                        "employee_id": str(leave["employee_id"]),
+                        "employee_name": leave["employee_name"],
+                        "employee_number": leave["employee_number"],
+                        "leave_type": leave["leave_type_name"],
+                        "total_days": str(leave["total_days"]),
+                        "start_date": str(leave["start_date"]),
+                        "end_date": str(leave["end_date"]),
+                        "approval_status": "APPROVED",
+                        "remarks": leave.get("reason") or "Approved"
+                    },
+                    author_name=author_name
+                )
+            except Exception as e:
+                pass
+
         updated = await conn.fetchrow("SELECT * FROM leave_requests WHERE id = $1;", l_uuid)
         resp_data = serialize_row(dict(updated))
         if not can_read_salary(session):
@@ -459,6 +483,8 @@ async def reject_leave_request(
         if leave["approval_status"] == "approved":
             raise HTTPException(status_code=400, detail="Cannot reject a previously approved leave request.")
 
+        user_id, author_name = await resolve_audit_author(conn, session)
+
         await conn.execute("""
             UPDATE leave_requests SET
                 approval_status = 'rejected',
@@ -466,6 +492,29 @@ async def reject_leave_request(
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = $1;
         """, l_uuid, payload.rejection_reason.strip())
+
+        # Fire automated trigger for leave_rejected
+        try:
+            from backend.core.communication_engine import execute_automation_trigger
+            await execute_automation_trigger(
+                event_type="leave_rejected",
+                record_model="hr.leave",
+                record_id=str(l_uuid),
+                record_data={
+                    "employee_id": str(leave["employee_id"]),
+                    "employee_name": leave["employee_name"],
+                    "employee_number": leave["employee_number"],
+                    "leave_type": leave["leave_type_name"],
+                    "total_days": str(leave["total_days"]),
+                    "start_date": str(leave["start_date"]),
+                    "end_date": str(leave["end_date"]),
+                    "approval_status": "REJECTED",
+                    "rejection_reason": payload.rejection_reason.strip()
+                },
+                author_name=author_name
+            )
+        except Exception as e:
+            pass
 
         return {"status": "success", "message": f"Leave request {leave['code']} has been rejected."}
 

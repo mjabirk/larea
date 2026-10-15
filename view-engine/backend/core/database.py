@@ -1081,4 +1081,729 @@ async def init_schema():
                     );
                 """, str(uuid.uuid4()), e["id"])
 
-        logger.info("PostgreSQL schema initialization and role/employee seeding completed.")
+        # ==============================================================================
+        # 18. NOTIFICATIONS ENGINE SCHEMA
+        # ==============================================================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS notifications (
+                id UUID PRIMARY KEY,
+                user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                title VARCHAR(255) NOT NULL,
+                message TEXT NOT NULL,
+                type VARCHAR(50) NOT NULL DEFAULT 'info',
+                link_url VARCHAR(255),
+                is_read BOOLEAN DEFAULT false,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at DESC);
+        """)
+
+        # ==============================================================================
+        # 19. ENTERPRISE MAIL ENGINE SCHEMA
+        # ==============================================================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS mail_servers (
+                id UUID PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                server_type VARCHAR(50) NOT NULL DEFAULT 'outgoing',
+                protocol VARCHAR(50) NOT NULL DEFAULT 'SMTP',
+                host VARCHAR(255) NOT NULL,
+                port INT NOT NULL DEFAULT 587,
+                encryption VARCHAR(50) NOT NULL DEFAULT 'STARTTLS',
+                username VARCHAR(255),
+                password_encrypted TEXT,
+                from_email VARCHAR(255),
+                from_name VARCHAR(255),
+                is_default BOOLEAN DEFAULT false,
+                active BOOLEAN DEFAULT true,
+                auto_purge_mode VARCHAR(50) DEFAULT 'days',
+                auto_purge_days INT DEFAULT 60,
+                last_connection_status VARCHAR(50) DEFAULT 'ready',
+                last_connection_error TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_templates (
+                id UUID PRIMARY KEY,
+                name VARCHAR(150) NOT NULL,
+                model_scope VARCHAR(100) NOT NULL DEFAULT 'custom',
+                subject VARCHAR(255) NOT NULL,
+                body_html TEXT NOT NULL,
+                attach_system_report BOOLEAN DEFAULT false,
+                report_generator_hook VARCHAR(100),
+                purge_override VARCHAR(50) DEFAULT 'inherit',
+                purge_days INT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_messages (
+                id UUID PRIMARY KEY,
+                mail_server_id UUID REFERENCES mail_servers(id) ON DELETE SET NULL,
+                direction VARCHAR(50) NOT NULL DEFAULT 'outgoing',
+                status VARCHAR(50) NOT NULL DEFAULT 'draft',
+                record_model VARCHAR(100),
+                record_id VARCHAR(100),
+                to_addresses TEXT NOT NULL,
+                cc_addresses TEXT,
+                subject VARCHAR(255) NOT NULL,
+                body_html TEXT,
+                error_log TEXT,
+                sent_at TIMESTAMPTZ,
+                purge_after TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_mail_messages_record ON mail_messages(record_model, record_id);
+            CREATE INDEX IF NOT EXISTS idx_mail_messages_purge ON mail_messages(purge_after);
+            CREATE INDEX IF NOT EXISTS idx_mail_messages_status ON mail_messages(status, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS mail_attachments (
+                id UUID PRIMARY KEY,
+                mail_message_id UUID REFERENCES mail_messages(id) ON DELETE CASCADE,
+                template_id UUID REFERENCES mail_templates(id) ON DELETE SET NULL,
+                filename VARCHAR(255) NOT NULL,
+                disk_path VARCHAR(500) NOT NULL,
+                file_size_bytes BIGINT NOT NULL DEFAULT 0,
+                mime_type VARCHAR(100) NOT NULL DEFAULT 'application/octet-stream',
+                checksum_sha256 VARCHAR(64) NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_mail_attachments_msg ON mail_attachments(mail_message_id);
+        """)
+
+        # ==============================================================================
+        # 20. SEED BASELINE MAIL SERVERS & TEMPLATES
+        # ==============================================================================
+        mail_srv_count = await conn.fetchval("SELECT COUNT(*) FROM mail_servers;")
+        if mail_srv_count == 0:
+            from backend.core.mail_engine import encrypt_mail_password
+            default_servers = [
+                (
+                    "00000000-0000-0000-0000-000000000010",
+                    "Corporate SMTP Relay (Doha HQ)",
+                    "outgoing",
+                    "SMTP",
+                    "smtp.company.local",
+                    587,
+                    "STARTTLS",
+                    "notifications@company.local",
+                    encrypt_mail_password("ApexSecurePass2026!"),
+                    "notifications@company.local",
+                    "Apex Global Enterprises HR",
+                    True,
+                    True,
+                    "days",
+                    60,
+                    "ready",
+                    None
+                ),
+                (
+                    "00000000-0000-0000-0000-000000000011",
+                    "HR Incoming Inquiries (IMAP)",
+                    "incoming",
+                    "IMAP",
+                    "imap.company.local",
+                    993,
+                    "SSL_TLS",
+                    "hr.desk@company.local",
+                    encrypt_mail_password("ApexInboxPass2026!"),
+                    "hr.desk@company.local",
+                    "HR Service Desk",
+                    False,
+                    True,
+                    "days",
+                    90,
+                    "ready",
+                    None
+                )
+            ]
+            for s_id, s_name, s_type, s_proto, s_host, s_port, s_enc, s_user, s_pwd, s_from, s_from_n, s_def, s_act, s_pmode, s_pdays, s_stat, s_err in default_servers:
+                await conn.execute("""
+                    INSERT INTO mail_servers (
+                        id, name, server_type, protocol, host, port, encryption,
+                        username, password_encrypted, from_email, from_name,
+                        is_default, active, auto_purge_mode, auto_purge_days,
+                        last_connection_status, last_connection_error
+                    ) VALUES (
+                        $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+                    ) ON CONFLICT (id) DO NOTHING;
+                """, s_id, s_name, s_type, s_proto, s_host, s_port, s_enc, s_user, s_pwd, s_from, s_from_n, s_def, s_act, s_pmode, s_pdays, s_stat, s_err)
+
+        mail_tmpl_count = await conn.fetchval("SELECT COUNT(*) FROM mail_templates;")
+        if mail_tmpl_count == 0:
+            default_templates = [
+                (
+                    "00000000-0000-0000-0000-000000000020",
+                    "Monthly Payslip Notification",
+                    "payroll.payslip",
+                    "Official Salary Statement for {{month}} — {{employee_name}}",
+                    """<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #1e293b; max-width: 600px; line-height: 1.6;">
+  <div style="border-bottom: 2px solid #0284c7; padding-bottom: 12px; margin-bottom: 16px;">
+    <h2 style="margin: 0; color: #0f172a; font-size: 18px;">APEX GLOBAL ENTERPRISES Q.P.S.C.</h2>
+    <p style="margin: 4px 0 0; color: #64748b; font-size: 12px;">Electronic Wage Protection System (WPS) Payslip Notification</p>
+  </div>
+  <p>Dear <strong>{{employee_name}}</strong>,</p>
+  <p>Your official salary statement for the period of <strong>{{month}}</strong> has been calculated and disbursed to your registered banking IBAN in compliance with State of Qatar Ministry of Labour Wage Protection System (WPS) guidelines.</p>
+  
+  <table style="width: 100%; border-collapse: collapse; margin: 18px 0; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+    <tr>
+      <td style="padding: 10px 14px; font-weight: 600; color: #475569; border-bottom: 1px solid #f1f5f9;">Employee Number</td>
+      <td style="padding: 10px 14px; color: #0f172a; border-bottom: 1px solid #f1f5f9;">{{employee_number}}</td>
+    </tr>
+    <tr>
+      <td style="padding: 10px 14px; font-weight: 600; color: #475569; border-bottom: 1px solid #f1f5f9;">Department</td>
+      <td style="padding: 10px 14px; color: #0f172a; border-bottom: 1px solid #f1f5f9;">{{department}}</td>
+    </tr>
+    <tr>
+      <td style="padding: 10px 14px; font-weight: 600; color: #475569; border-bottom: 1px solid #f1f5f9;">Gross Earnings</td>
+      <td style="padding: 10px 14px; color: #0f172a; border-bottom: 1px solid #f1f5f9;">{{base_salary}} QAR</td>
+    </tr>
+    <tr>
+      <td style="padding: 10px 14px; font-weight: 600; color: #475569; border-bottom: 1px solid #f1f5f9;">Deductions</td>
+      <td style="padding: 10px 14px; color: #dc2626; border-bottom: 1px solid #f1f5f9;">-{{deductions}} QAR</td>
+    </tr>
+    <tr style="background-color: #f0fdf4;">
+      <td style="padding: 12px 14px; font-weight: 700; color: #166534;">Net Disbursement</td>
+      <td style="padding: 12px 14px; font-weight: 700; color: #15803d; font-size: 16px;">{{net_salary}} QAR</td>
+    </tr>
+    <tr>
+      <td style="padding: 10px 14px; font-weight: 600; color: #475569;">Bank / IBAN</td>
+      <td style="padding: 10px 14px; color: #0f172a;">{{bank_name}} ({{bank_iban}})</td>
+    </tr>
+  </table>
+
+  <p>Your official Qatar WPS-compliant payslip report has been attached to this email as a PDF document for your records.</p>
+  <p style="margin-top: 24px; color: #94a3b8; font-size: 11px; border-top: 1px solid #e2e8f0; padding-top: 12px;">
+    Confidentiality Notice: This electronic salary communication is intended solely for the designated recipient. If you have questions regarding your compensation or banking transfer, please contact payroll@company.local.
+  </p>
+</div>""",
+                    True,
+                    "generate_payslip_pdf",
+                    "inherit",
+                    None
+                ),
+                (
+                    "00000000-0000-0000-0000-000000000021",
+                    "Employee Directory Profile Welcome",
+                    "hr.employee",
+                    "Welcome to Apex Global Enterprises — {{employee_name}}",
+                    """<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #1e293b; max-width: 600px; line-height: 1.6;">
+  <h2 style="color: #0f172a; margin-top: 0;">Welcome to {{company_name}}, {{employee_name}}!</h2>
+  <p>We are delighted to confirm that your employee master record has been activated in the corporate directory under employee ID <strong>{{employee_number}}</strong>.</p>
+  <p>Key onboarding details:</p>
+  <ul>
+    <li><strong>Designation:</strong> {{job_title}}</li>
+    <li><strong>Department:</strong> {{department}}</li>
+    <li><strong>Work Email:</strong> {{work_email}}</li>
+  </ul>
+  <p>Please log in to your employee self-service portal to review your profile, verify emergency contact information, and acknowledge company policies.</p>
+  <p>Best regards,<br>Human Resources Directorate</p>
+</div>""",
+                    False,
+                    None,
+                    "inherit",
+                    None
+                ),
+                (
+                    "00000000-0000-0000-0000-000000000022",
+                    "Leave Request Status Update",
+                    "hr.leave",
+                    "Leave Request Notification: {{leave_type}} ({{status}})",
+                    """<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #1e293b; max-width: 600px; line-height: 1.6;">
+  <h3 style="color: #0f172a; margin-top: 0;">Leave Request Status Update</h3>
+  <p>Dear <strong>{{employee_name}}</strong>,</p>
+  <p>Your request for <strong>{{leave_type}}</strong> has been updated:</p>
+  <table style="width: 100%; border-collapse: collapse; margin: 14px 0; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;">
+    <tr><td style="padding: 8px 12px; font-weight: 600;">Status:</td><td style="padding: 8px 12px; font-weight: bold; color: #0284c7;">{{status}}</td></tr>
+    <tr><td style="padding: 8px 12px; font-weight: 600;">Start Date:</td><td style="padding: 8px 12px;">{{start_date}}</td></tr>
+    <tr><td style="padding: 8px 12px; font-weight: 600;">End Date:</td><td style="padding: 8px 12px;">{{end_date}}</td></tr>
+    <tr><td style="padding: 8px 12px; font-weight: 600;">Total Duration:</td><td style="padding: 8px 12px;">{{total_days}} Calendar Days</td></tr>
+  </table>
+  <p>If you have any questions, please consult with your direct supervisor or HR department.</p>
+</div>""",
+                    False,
+                    None,
+                    "inherit",
+                    None
+                ),
+                (
+                    "00000000-0000-0000-0000-000000000023",
+                    "Employment Contract Notice",
+                    "hr.contract",
+                    "Corporate Contract Notification — {{employee_name}}",
+                    """<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #1e293b; max-width: 600px; line-height: 1.6;">
+  <h3 style="color: #0f172a; margin-top: 0;">Employment Contract Record Notice</h3>
+  <p>Dear <strong>{{employee_name}}</strong>,</p>
+  <p>This is an automated confirmation that your employment contract record has been updated and archived in the enterprise HR directory.</p>
+  <p>Please review your contract terms and retain this notice for your statutory employment records.</p>
+  <p>Legal & Compliance Directorate<br>{{company_name}}</p>
+</div>""",
+                    False,
+                    None,
+                    "inherit",
+                    None
+                )
+            ]
+            for t_id, t_name, t_scope, t_subj, t_body, t_rep, t_hook, t_pov, t_pdays in default_templates:
+                await conn.execute("""
+                    INSERT INTO mail_templates (
+                        id, name, model_scope, subject, body_html,
+                        attach_system_report, report_generator_hook, purge_override, purge_days
+                    ) VALUES (
+                        $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9
+                    ) ON CONFLICT (id) DO NOTHING;
+                """, t_id, t_name, t_scope, t_subj, t_body, t_rep, t_hook, t_pov, t_pdays)
+
+        # Seed baseline notifications if table is empty
+        notif_count = await conn.fetchval("SELECT COUNT(*) FROM notifications;")
+        if notif_count == 0:
+            admin_user_id = await conn.fetchval("SELECT id FROM users WHERE is_superadmin = true LIMIT 1;")
+            if admin_user_id:
+                sample_notifs = [
+                    (
+                        uuid.uuid4(),
+                        admin_user_id,
+                        "WPS Payroll Batch Verified",
+                        "October 2026 payroll batch has been calculated and verified ready for bank disbursement.",
+                        "payroll",
+                        "batches",
+                        False,
+                        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=15)
+                    ),
+                    (
+                        uuid.uuid4(),
+                        admin_user_id,
+                        "Residency Permit Expiry Warning",
+                        "Johnathan Vance (EMP-1003) Qatar ID & Visa expires in 12 days. Renewal pending.",
+                        "compliance",
+                        "compliance_alerts",
+                        False,
+                        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
+                    ),
+                    (
+                        uuid.uuid4(),
+                        admin_user_id,
+                        "Annual Leave Approval Pending",
+                        "Leave request for Tariq Al-Mansoor (14 days) requires Level 2 managerial approval.",
+                        "approval",
+                        "leaves",
+                        False,
+                        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=5)
+                    ),
+                    (
+                        uuid.uuid4(),
+                        admin_user_id,
+                        "Biometric ADMS Terminal Synchronized",
+                        "Doha HQ Main Gate terminal ZK-QAT-HQ01 completed real-time punch ingestion.",
+                        "info",
+                        "terminals",
+                        True,
+                        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+                    )
+                ]
+                for n_id, n_uid, n_title, n_msg, n_type, n_link, n_read, n_created in sample_notifs:
+                    await conn.execute("""
+                        INSERT INTO notifications (
+                            id, user_id, title, message, type, link_url, is_read, created_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        ON CONFLICT (id) DO NOTHING;
+                    """, n_id, n_uid, n_title, n_msg, n_type, n_link, n_read, n_created)
+
+        # ==============================================================================
+        # 21. SMS GATEWAYS, WHATSAPP BUSINESS & AUTOMATION TRIGGERS SCHEMA
+        # ==============================================================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS sms_gateways (
+                id UUID PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                provider_type VARCHAR(50) NOT NULL DEFAULT 'generic_http',
+                endpoint_url VARCHAR(500) NOT NULL,
+                http_method VARCHAR(10) NOT NULL DEFAULT 'POST',
+                request_format VARCHAR(20) NOT NULL DEFAULT 'json',
+                headers_json TEXT,
+                body_template TEXT,
+                sender_id VARCHAR(50),
+                is_default BOOLEAN DEFAULT false,
+                active BOOLEAN DEFAULT true,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_sms_gateways_default ON sms_gateways(is_default);
+
+            CREATE TABLE IF NOT EXISTS whatsapp_configs (
+                id UUID PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                waba_id VARCHAR(100) NOT NULL,
+                phone_number_id VARCHAR(100) NOT NULL,
+                business_phone_number VARCHAR(50) NOT NULL,
+                access_token_encrypted TEXT NOT NULL,
+                webhook_verify_token VARCHAR(100) NOT NULL,
+                api_version VARCHAR(20) DEFAULT 'v20.0',
+                is_default BOOLEAN DEFAULT false,
+                active BOOLEAN DEFAULT true,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_wa_configs_default ON whatsapp_configs(is_default);
+
+            CREATE TABLE IF NOT EXISTS whatsapp_templates (
+                id UUID PRIMARY KEY,
+                config_id UUID NOT NULL REFERENCES whatsapp_configs(id) ON DELETE CASCADE,
+                template_name VARCHAR(100) NOT NULL,
+                category VARCHAR(50) DEFAULT 'UTILITY',
+                language VARCHAR(10) DEFAULT 'en_US',
+                header_type VARCHAR(20) DEFAULT 'NONE',
+                header_text VARCHAR(60),
+                body_text TEXT NOT NULL,
+                footer_text VARCHAR(60),
+                buttons_json TEXT,
+                meta_template_id VARCHAR(100),
+                approval_status VARCHAR(50) DEFAULT 'DRAFT',
+                rejection_reason TEXT,
+                model_scope VARCHAR(50) DEFAULT 'general',
+                variable_mapping_json TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_wa_templates_config ON whatsapp_templates(config_id);
+            CREATE INDEX IF NOT EXISTS idx_wa_templates_scope ON whatsapp_templates(model_scope, approval_status);
+
+            CREATE TABLE IF NOT EXISTS communication_logs (
+                id UUID PRIMARY KEY,
+                channel VARCHAR(20) NOT NULL,
+                direction VARCHAR(20) DEFAULT 'outgoing',
+                recipient_phone VARCHAR(50) NOT NULL,
+                recipient_name VARCHAR(150),
+                message_body TEXT NOT NULL,
+                template_id UUID REFERENCES whatsapp_templates(id) ON DELETE SET NULL,
+                record_model VARCHAR(100),
+                record_id VARCHAR(100),
+                status VARCHAR(50) DEFAULT 'queued',
+                provider_message_id VARCHAR(150),
+                error_message TEXT,
+                attachment_disk_path VARCHAR(500),
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_comm_logs_channel ON communication_logs(channel, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_comm_logs_record ON communication_logs(record_model, record_id);
+            CREATE INDEX IF NOT EXISTS idx_comm_logs_recipient ON communication_logs(recipient_phone);
+
+            CREATE TABLE IF NOT EXISTS automation_triggers (
+                id UUID PRIMARY KEY,
+                name VARCHAR(150) NOT NULL,
+                event_type VARCHAR(50) NOT NULL,
+                channel VARCHAR(20) NOT NULL,
+                whatsapp_template_id UUID REFERENCES whatsapp_templates(id) ON DELETE SET NULL,
+                sms_gateway_id UUID REFERENCES sms_gateways(id) ON DELETE SET NULL,
+                sms_body_template TEXT,
+                active BOOLEAN DEFAULT true,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_auto_triggers_event ON automation_triggers(event_type, active);
+        """)
+
+        # Seed default SMS Gateway if none exist
+        sms_gw_count = await conn.fetchval("SELECT COUNT(*) FROM sms_gateways;")
+        default_gw_id = uuid.UUID("00000000-0000-0000-0000-000000000030")
+        twilio_gw_id = uuid.UUID("00000000-0000-0000-0000-000000000031")
+        if sms_gw_count == 0:
+            await conn.execute("""
+                INSERT INTO sms_gateways (
+                    id, name, provider_type, endpoint_url, http_method, request_format,
+                    headers_json, body_template, sender_id, is_default, active
+                ) VALUES (
+                    $1, 'Ooredoo Bulk SMS (Qatar National Gateway)', 'generic_http',
+                    'https://messaging.ooredoo.qa/b2c/http/sendSMS?username=apex_corp&password=secret_token&sender={{sender_id}}&destination={{to}}&message={{message}}',
+                    'GET', 'url_params',
+                    '{"Content-Type": "application/x-www-form-urlencoded"}',
+                    NULL, 'APEXCORP', true, true
+                ) ON CONFLICT (id) DO NOTHING;
+            """, default_gw_id)
+
+            await conn.execute("""
+                INSERT INTO sms_gateways (
+                    id, name, provider_type, endpoint_url, http_method, request_format,
+                    headers_json, body_template, sender_id, is_default, active
+                ) VALUES (
+                    $1, 'Twilio Global SMS Gateway', 'twilio',
+                    'https://api.twilio.com/2010-04-01/Accounts/ACmock_account_sid_2026/Messages.json',
+                    'POST', 'form_data',
+                    '{"Authorization": "Basic QUNtb2NrOm1vY2tfdG9rZW4="}',
+                    '{"To": "{{to}}", "From": "{{sender_id}}", "Body": "{{message}}"}',
+                    '+14155552671', false, true
+                ) ON CONFLICT (id) DO NOTHING;
+            """, twilio_gw_id)
+
+        # Seed default WhatsApp Configuration & Templates
+        wa_cfg_count = await conn.fetchval("SELECT COUNT(*) FROM whatsapp_configs;")
+        if wa_cfg_count == 0:
+            wa_cfg_id = uuid.UUID("00000000-0000-0000-0000-000000000040")
+            # Encrypt default dummy token
+            from backend.core.mail_engine import encrypt_mail_password
+            enc_token = encrypt_mail_password("EAAGmockPermanentSystemUserTokenForApexGlobal2026MetaCloudApi")
+            await conn.execute("""
+                INSERT INTO whatsapp_configs (
+                    id, name, waba_id, phone_number_id, business_phone_number,
+                    access_token_encrypted, webhook_verify_token, api_version, is_default, active
+                ) VALUES (
+                    $1, 'Apex Global Official WhatsApp Business', '109283746501928',
+                    '100928374650192', '+974 4400 5500', $2,
+                    'apex_enterprise_webhook_token_2026', 'v20.0', true, true
+                ) ON CONFLICT (id) DO NOTHING;
+            """, wa_cfg_id, enc_token)
+
+            # Seed default approved WhatsApp templates
+            tmpl1_id = uuid.UUID("00000000-0000-0000-0000-000000000050")
+            tmpl2_id = uuid.UUID("00000000-0000-0000-0000-000000000051")
+            tmpl3_id = uuid.UUID("00000000-0000-0000-0000-000000000052")
+
+            await conn.execute("""
+                INSERT INTO whatsapp_templates (
+                    id, config_id, template_name, category, language, header_type,
+                    header_text, body_text, footer_text, buttons_json, meta_template_id,
+                    approval_status, model_scope, variable_mapping_json
+                ) VALUES (
+                    $1, $2, 'payslip_notice_v1', 'UTILITY', 'en_US', 'DOCUMENT',
+                    NULL,
+                    'Dear {{1}},\n\nYour official salary statement for the month of {{2}} has been confirmed and disbursed via WPS. Your net payment is {{3}} QAR.\n\nPlease find your official payslip attached.',
+                    'Apex Global Enterprises • WPS Payroll',
+                    '[{"type": "QUICK_REPLY", "text": "Acknowledge Receipt"}, {"type": "URL", "text": "View Portal", "url": "https://erp.company.local/portal"}]',
+                    'meta_tmpl_98234710293847', 'APPROVED', 'payroll.payslip',
+                    '{"1": "employee_name", "2": "month", "3": "net_salary"}'
+                ) ON CONFLICT (id) DO NOTHING;
+            """, tmpl1_id, wa_cfg_id)
+
+            await conn.execute("""
+                INSERT INTO whatsapp_templates (
+                    id, config_id, template_name, category, language, header_type,
+                    header_text, body_text, footer_text, buttons_json, meta_template_id,
+                    approval_status, model_scope, variable_mapping_json
+                ) VALUES (
+                    $1, $2, 'leave_status_update_v1', 'UTILITY', 'en_US', 'NONE',
+                    NULL,
+                    'Dear {{1}},\n\nYour leave request for {{2}} ({{3}} days, {{4}} to {{5}}) has been {{6}}.\n\nRemarks: {{7}}.',
+                    'HR Department • Leave Administration',
+                    '[{"type": "QUICK_REPLY", "text": "Confirm Status"}]',
+                    'meta_tmpl_19283746501928', 'APPROVED', 'hr.leave',
+                    '{"1": "employee_name", "2": "leave_type", "3": "total_days", "4": "start_date", "5": "end_date", "6": "approval_status", "7": "remarks"}'
+                ) ON CONFLICT (id) DO NOTHING;
+            """, tmpl2_id, wa_cfg_id)
+
+            await conn.execute("""
+                INSERT INTO whatsapp_templates (
+                    id, config_id, template_name, category, language, header_type,
+                    header_text, body_text, footer_text, buttons_json, meta_template_id,
+                    approval_status, model_scope, variable_mapping_json
+                ) VALUES (
+                    $1, $2, 'contract_renewal_notice_v1', 'UTILITY', 'en_US', 'NONE',
+                    NULL,
+                    'Dear {{1}},\n\nThis is a notification regarding your employment contract (Ref: {{2}}). Please review your renewed terms with the HR Compliance Office before {{3}}.',
+                    'HR Compliance Office • Apex Global',
+                    NULL,
+                    'meta_tmpl_56473829104829', 'APPROVED', 'hr.contract',
+                    '{"1": "employee_name", "2": "contract_reference", "3": "expiry_date"}'
+                ) ON CONFLICT (id) DO NOTHING;
+            """, tmpl3_id, wa_cfg_id)
+
+            # Seed default Automation Triggers
+            trig1_id = uuid.UUID("00000000-0000-0000-0000-000000000060")
+            trig2_id = uuid.UUID("00000000-0000-0000-0000-000000000061")
+            trig3_id = uuid.UUID("00000000-0000-0000-0000-000000000062")
+
+            await conn.execute("""
+                INSERT INTO automation_triggers (
+                    id, name, event_type, channel, whatsapp_template_id, sms_gateway_id, sms_body_template, active
+                ) VALUES (
+                    $1, 'Leave Approved - WhatsApp Notification', 'leave_approved', 'whatsapp', $2, NULL, NULL, true
+                ) ON CONFLICT (id) DO NOTHING;
+            """, trig1_id, tmpl2_id)
+
+            await conn.execute("""
+                INSERT INTO automation_triggers (
+                    id, name, event_type, channel, whatsapp_template_id, sms_gateway_id, sms_body_template, active
+                ) VALUES (
+                    $1, 'Leave Rejected - SMS Alert', 'leave_rejected', 'sms', NULL, $2,
+                    'Dear {{employee_name}}, your leave request has been rejected. Reason: {{rejection_reason}}.', true
+                ) ON CONFLICT (id) DO NOTHING;
+            """, trig2_id, default_gw_id)
+
+            await conn.execute("""
+                INSERT INTO automation_triggers (
+                    id, name, event_type, channel, whatsapp_template_id, sms_gateway_id, sms_body_template, active
+                ) VALUES (
+                    $1, 'Payslip Confirmed - WhatsApp PDF Delivery', 'payslip_confirmed', 'whatsapp', $2, NULL, NULL, true
+                ) ON CONFLICT (id) DO NOTHING;
+            """, trig3_id, tmpl1_id)
+
+        # 34. Departments (Enterprise Organizational Units)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS departments (
+                id UUID PRIMARY KEY,
+                name VARCHAR(100) UNIQUE NOT NULL,
+                code VARCHAR(50) UNIQUE,
+                description TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        standard_depts = [
+            ("Operations", "OPS", "Core enterprise operations and logistics"),
+            ("Human Resources", "HR", "Personnel management, recruitment, and compliance"),
+            ("Finance", "FIN", "Corporate finance, payroll, and accounting"),
+            ("Engineering", "ENG", "Software engineering and infrastructure"),
+            ("Executive Office", "EXEC", "Executive management and strategy"),
+            ("Sales & Marketing", "MKT", "Sales development, marketing, and client relations")
+        ]
+        dept_id_map = {}
+        for d_name, d_code, d_desc in standard_depts:
+            d_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"department.{d_code.lower()}")
+            dept_id_map[d_name] = d_id
+            await conn.execute("""
+                INSERT INTO departments (id, name, code, description)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (id) DO NOTHING;
+            """, d_id, d_name, d_code, d_desc)
+
+        # 35. Real-time Internal Chat & Channels
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_channels (
+                id UUID PRIMARY KEY,
+                name VARCHAR(100),
+                channel_slug VARCHAR(120),
+                channel_type VARCHAR(30) DEFAULT 'direct',
+                department_id UUID REFERENCES departments(id) ON DELETE SET NULL,
+                description TEXT,
+                is_announcement_only BOOLEAN DEFAULT false,
+                record_model VARCHAR(100),
+                record_id VARCHAR(100),
+                created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            ALTER TABLE chat_channels DROP CONSTRAINT IF EXISTS chat_channels_channel_type_check;
+            ALTER TABLE chat_channels ADD COLUMN IF NOT EXISTS channel_slug VARCHAR(120);
+            ALTER TABLE chat_channels ADD COLUMN IF NOT EXISTS department_id UUID REFERENCES departments(id) ON DELETE SET NULL;
+            ALTER TABLE chat_channels ADD COLUMN IF NOT EXISTS description TEXT;
+            ALTER TABLE chat_channels ADD COLUMN IF NOT EXISTS is_announcement_only BOOLEAN DEFAULT false;
+            ALTER TABLE chat_channels ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;
+
+            UPDATE chat_channels SET channel_type = 'public_group' WHERE channel_type = 'group';
+            UPDATE chat_channels SET channel_slug = LOWER(REGEXP_REPLACE(name, '[^a-zA-Z0-9]+', '-', 'g')) WHERE channel_slug IS NULL AND name IS NOT NULL;
+
+            ALTER TABLE chat_channels ADD CONSTRAINT chat_channels_channel_type_check 
+                CHECK (channel_type IN ('direct', 'department_auto', 'public_group', 'private_group', 'record_discussion'));
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_channels_slug ON chat_channels(channel_slug) WHERE channel_slug IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_chat_channels_dept ON chat_channels(department_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_channels_type ON chat_channels(channel_type);
+            CREATE INDEX IF NOT EXISTS idx_chat_channels_record ON chat_channels(record_model, record_id);
+        """)
+
+        # 36. Chat Channel Members
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_channel_members (
+                id UUID PRIMARY KEY,
+                channel_id UUID NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                role VARCHAR(30) DEFAULT 'member',
+                is_auto_assigned BOOLEAN DEFAULT false,
+                last_read_message_id UUID,
+                last_read_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                is_muted BOOLEAN DEFAULT false,
+                joined_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (channel_id, user_id)
+            );
+            ALTER TABLE chat_channel_members ADD COLUMN IF NOT EXISTS role VARCHAR(30) DEFAULT 'member';
+            ALTER TABLE chat_channel_members ADD COLUMN IF NOT EXISTS is_auto_assigned BOOLEAN DEFAULT false;
+            ALTER TABLE chat_channel_members ADD COLUMN IF NOT EXISTS last_read_message_id UUID;
+
+            CREATE INDEX IF NOT EXISTS idx_chat_members_channel ON chat_channel_members(channel_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_members_user ON chat_channel_members(user_id);
+        """)
+
+        # 37. Chat Messages
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id UUID PRIMARY KEY,
+                channel_id UUID NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+                sender_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                message_text TEXT NOT NULL,
+                mentions_json TEXT,
+                attachments_json TEXT,
+                is_system_event BOOLEAN DEFAULT false,
+                reply_to_message_id UUID REFERENCES chat_messages(id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS mentions_json TEXT;
+            ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS reply_to_message_id UUID REFERENCES chat_messages(id) ON DELETE SET NULL;
+
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_channel ON chat_messages(channel_id, created_at ASC);
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_sender ON chat_messages(sender_id);
+        """)
+
+        # 38. Web Push Subscriptions (VAPID)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS web_push_subscriptions (
+                id UUID PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                endpoint TEXT UNIQUE NOT NULL,
+                p256dh_key TEXT NOT NULL,
+                auth_key TEXT NOT NULL,
+                user_agent VARCHAR(255),
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_web_push_user ON web_push_subscriptions(user_id);
+        """)
+
+        # Seed default Company General Discussion Channel
+        gen_channel_id = uuid.UUID("00000000-0000-0000-0000-000000000070")
+        first_user_id = await conn.fetchval("SELECT id FROM users ORDER BY created_at ASC LIMIT 1;")
+        await conn.execute("""
+            INSERT INTO chat_channels (id, name, channel_slug, channel_type, description, is_announcement_only, created_by)
+            VALUES ($1, 'Apex Company General', 'general', 'public_group', 'General company-wide announcements and open discussions.', false, $2)
+            ON CONFLICT (id) DO UPDATE SET
+                channel_slug = 'general',
+                channel_type = 'public_group';
+        """, gen_channel_id, first_user_id)
+
+        # Add all active users to the general channel
+        users_list = await conn.fetch("SELECT id FROM users LIMIT 50;")
+        for u in users_list:
+            await conn.execute("""
+                INSERT INTO chat_channel_members (id, channel_id, user_id, role, joined_at)
+                VALUES ($1, $2, $3, 'member', CURRENT_TIMESTAMP)
+                ON CONFLICT (channel_id, user_id) DO NOTHING;
+            """, uuid.uuid4(), gen_channel_id, u["id"])
+
+        # Seed and auto-provision Department Channels
+        for d_name, d_code, d_desc in standard_depts:
+            dept_uuid = dept_id_map[d_name]
+            slug = d_name.lower().replace(" & ", "-").replace(" ", "-")
+            dept_chan_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"chat.dept.{slug}")
+            await conn.execute("""
+                INSERT INTO chat_channels (id, name, channel_slug, channel_type, department_id, description, is_announcement_only, created_by)
+                VALUES ($1, $2, $3, 'department_auto', $4, $5, false, $6)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    channel_slug = EXCLUDED.channel_slug,
+                    channel_type = 'department_auto',
+                    department_id = EXCLUDED.department_id;
+            """, dept_chan_id, d_name, slug, dept_uuid, f"Automated communication channel for {d_name} team.", first_user_id)
+
+            # Auto-assign users matching this department
+            matched_users = await conn.fetch("""
+                SELECT u.id FROM users u
+                LEFT JOIN employees e ON (LOWER(u.email) = LOWER(e.work_email))
+                WHERE u.department = $1 OR e.department_id = $1;
+            """, d_name)
+            for mu in matched_users:
+                await conn.execute("""
+                    INSERT INTO chat_channel_members (id, channel_id, user_id, role, is_auto_assigned, joined_at)
+                    VALUES ($1, $2, $3, 'member', true, CURRENT_TIMESTAMP)
+                    ON CONFLICT (channel_id, user_id) DO UPDATE SET is_auto_assigned = true;
+                """, uuid.uuid4(), dept_chan_id, mu["id"])
+
+        logger.info("PostgreSQL schema initialization, mail, notifications, SMS, WhatsApp & Chat seeding completed.")
+

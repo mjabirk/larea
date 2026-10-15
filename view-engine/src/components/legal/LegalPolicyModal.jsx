@@ -66,10 +66,10 @@ export function LegalPolicyModal({ isOpen, onClose, initialPolicy = 'privacy' })
 
   const filteredSections = searchQuery
     ? currentPolicy.sections.filter(
-        (sec) =>
-          sec.heading.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          sec.content.toLowerCase().includes(searchQuery.toLowerCase())
-      )
+      (sec) =>
+        sec.heading.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        sec.content.toLowerCase().includes(searchQuery.toLowerCase())
+    )
     : currentPolicy.sections;
 
   const handlePrint = () => {
@@ -136,11 +136,10 @@ export function LegalPolicyModal({ isOpen, onClose, initialPolicy = 'privacy' })
                   key={tab.id}
                   type="button"
                   onClick={() => setActivePolicyId(tab.id)}
-                  className={`px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
-                    isActive
+                  className={`px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${isActive
                       ? 'bg-blue-600 text-white shadow-xs'
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-700/50'
-                  }`}
+                    }`}
                   aria-pressed={isActive}
                 >
                   <Icon className="w-3.5 h-3.5" />
@@ -239,7 +238,7 @@ export function LegalPolicyModal({ isOpen, onClose, initialPolicy = 'privacy' })
           <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-3">
             <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-xs">
               <Building2 className="w-4 h-4 text-blue-600" />
-              <span>Verified Corporate Entity & Statutory Governance</span>
+              <span>Verified Entity & Statutory Governance</span>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px] text-slate-600 dark:text-slate-300">

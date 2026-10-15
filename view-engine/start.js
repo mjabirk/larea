@@ -1,3 +1,4 @@
+/* global process */
 /**
  * Enterprise Service Startup Orchestrator (start.js)
  * Concurrently launches FastAPI Backend (port 8000) and Vite React Frontend (port 5173).

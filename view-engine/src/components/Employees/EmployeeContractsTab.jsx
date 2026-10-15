@@ -376,11 +376,11 @@ export function EmployeeContractsTab({
     return (
       <div className="text-center py-12 px-4 rounded-xl border border-dashed border-slate-300 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
         <FileText className="w-10 h-10 text-slate-400 mx-auto mb-3" />
-        <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-          Contract Lifecycle & Benefits Engine
+        <h4 className="text-[15px] font-semibold text-slate-800 dark:text-slate-200">
+          Employment Contracts
         </h4>
-        <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto mt-1">
-          Save initial employee record first to generate the employee UUID before binding formal legal contracts and WPS compensation rules.
+        <p className="text-[13px] text-slate-500 dark:text-slate-400 max-w-sm mx-auto mt-1">
+          Save the employee record first before adding employment contracts and compensation breakdown.
         </p>
       </div>
     );
@@ -390,11 +390,11 @@ export function EmployeeContractsTab({
     return (
       <div className="text-center py-12 px-4 rounded-xl border border-dashed border-rose-300 dark:border-rose-900/60 bg-rose-50/50 dark:bg-rose-950/20">
         <ShieldCheck className="w-10 h-10 text-rose-500 mx-auto mb-3" />
-        <h4 className="text-sm font-semibold text-rose-700 dark:text-rose-300">
-          Access Restricted (Confidential Contract Records)
+        <h4 className="text-[15px] font-semibold text-rose-700 dark:text-rose-300">
+          Access Restricted
         </h4>
-        <p className="text-xs text-rose-600 dark:text-rose-400 max-w-sm mx-auto mt-1">
-          You lack the required security clearance (<code>hr.contracts_read</code>) to view employment contract records and compensation terms.
+        <p className="text-[13px] text-rose-600 dark:text-rose-400 max-w-sm mx-auto mt-1">
+          You do not have permission to view employment contracts and compensation terms.
         </p>
       </div>
     );
@@ -422,42 +422,31 @@ export function EmployeeContractsTab({
         </div>
       )}
 
-      {/* Contract Version Bar & Switcher */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-100/70 dark:bg-slate-800/60 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-700/60">
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
-          <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap mr-1">
-            Contract Lifecycle:
-          </span>
-          {contracts.map((c) => {
-            const isSelected = activeContract?.id === c.id;
-            return (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => setSelectedContractId(c.id)}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition cursor-pointer border ${
-                  isSelected
-                    ? 'bg-blue-600 text-white border-blue-500 shadow-xs'
-                    : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-blue-400'
-                }`}
-              >
-                <span>{c.contract_reference}</span>
-                <span
-                  className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-bold uppercase ${
-                    c.status === 'active'
-                      ? isSelected
-                        ? 'bg-white/20 text-white'
-                        : 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400'
-                      : isSelected
-                      ? 'bg-white/20 text-white'
-                      : 'bg-slate-200 dark:bg-slate-800 text-slate-500'
-                  }`}
-                >
-                  {c.status}
-                </span>
-              </button>
-            );
-          })}
+      {/* Contract Version Bar & Switcher Dropdown */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs">
+        <div className="flex items-center gap-3 flex-1 max-w-md">
+          <label htmlFor="contract-version-select" className="text-[13px] font-medium text-slate-700 dark:text-slate-300 whitespace-nowrap">
+            Select Version:
+          </label>
+          <div className="relative flex-1">
+            <select
+              id="contract-version-select"
+              value={activeContract?.id || ''}
+              onChange={(e) => setSelectedContractId(e.target.value)}
+              className="w-full h-[40px] text-[14px] font-medium pl-3.5 pr-8 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 cursor-pointer appearance-none"
+            >
+              {contracts.length === 0 ? (
+                <option value="">No contracts created</option>
+              ) : (
+                contracts.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.contract_reference} ({c.status ? c.status.charAt(0).toUpperCase() + c.status.slice(1) : 'Draft'}) - {c.start_date || 'N/A'}
+                  </option>
+                ))
+              )}
+            </select>
+            <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          </div>
         </div>
 
         {canManageContracts && (
@@ -477,14 +466,14 @@ export function EmployeeContractsTab({
                 notice_period_days: 30,
                 trial_period_days: 90,
                 working_hours_per_week: 40.0,
-                terms_notes: 'Renewed fixed-term employment contract with updated compensation schedule.',
+                terms_notes: 'Standard bilateral employment contract.',
               });
               setIsNewContractModalOpen(true);
             }}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs font-semibold shadow-2xs transition cursor-pointer shrink-0"
+            className="inline-flex items-center gap-1.5 h-[40px] px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold shadow-xs transition cursor-pointer shrink-0"
           >
-            <Plus className="w-3.5 h-3.5 text-blue-500" />
-            <span>New Contract Version</span>
+            <Plus className="w-4 h-4" />
+            <span>+ New Contract Version</span>
           </button>
         )}
       </div>
@@ -523,9 +512,6 @@ export function EmployeeContractsTab({
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Legally binding bilateral terms & statutory WPS monthly compensation breakdown
-                  </p>
                 </div>
               </div>
 
@@ -545,7 +531,7 @@ export function EmployeeContractsTab({
             {/* Contract Key Parameters Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
               <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/60 dark:border-slate-800">
-                <span className="text-[11px] text-slate-400 block font-medium">Duration Period</span>
+                <span className="text-[12px] text-slate-500 dark:text-slate-400 block font-medium">Duration Period</span>
                 <span className="font-semibold text-slate-900 dark:text-white font-mono mt-0.5 block">
                   {activeContract.start_date || 'N/A'}{' '}
                   <span className="text-slate-400 font-sans">to</span>{' '}
@@ -554,9 +540,9 @@ export function EmployeeContractsTab({
               </div>
 
               <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/60 dark:border-slate-800">
-                <span className="text-[11px] text-slate-400 block font-medium">Monthly Base Wage</span>
+                <span className="text-[12px] text-slate-500 dark:text-slate-400 block font-medium">Monthly Base Wage</span>
                 {canReadSalary ? (
-                  <span className="font-bold text-slate-900 dark:text-white font-mono text-sm mt-0.5 block">
+                  <span className="font-bold text-slate-900 dark:text-white font-mono text-[15px] mt-0.5 block">
                     {activeContract.wage_base !== null && activeContract.wage_base !== undefined
                       ? `${Number(activeContract.wage_base).toLocaleString()} ${activeContract.currency}`
                       : '—'}
@@ -572,14 +558,14 @@ export function EmployeeContractsTab({
               </div>
 
               <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/60 dark:border-slate-800">
-                <span className="text-[11px] text-slate-400 block font-medium">Notice & Probation</span>
+                <span className="text-[12px] text-slate-500 dark:text-slate-400 block font-medium">Notice & Probation</span>
                 <span className="font-semibold text-slate-900 dark:text-white font-mono mt-0.5 block">
                   {activeContract.notice_period_days || 30}d notice • {activeContract.trial_period_days || 90}d trial
                 </span>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/60 dark:border-slate-800">
-                <span className="text-[11px] text-slate-400 block font-medium">Working Schedule</span>
+                <span className="text-[12px] text-slate-500 dark:text-slate-400 block font-medium">Working Schedule</span>
                 <span className="font-semibold text-slate-900 dark:text-white font-mono mt-0.5 block">
                   {activeContract.working_hours_per_week || 40.0} hrs/week
                 </span>
@@ -593,18 +579,14 @@ export function EmployeeContractsTab({
             )}
           </div>
 
-          {/* 2. DYNAMIC PACKAGE BREAKDOWN & SALARY RULES ENGINE */}
+          {/* 2. COMPENSATION BREAKDOWN */}
           {canReadSalary && (
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-2">
-                    <Sparkles className="w-4 h-4 text-amber-500" />
-                    Dynamic Package Breakdown (No Hardcoding)
+                  <h4 className="text-[15px] font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                    Compensation Breakdown
                   </h4>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Declarative benefits & statutory deductions calculated dynamically against the contract base
-                  </p>
                 </div>
 
                 {canManageSalary && (
@@ -733,39 +715,50 @@ export function EmployeeContractsTab({
                 </table>
               </div>
 
-              {/* REAL-TIME TOTAL PACKAGE SUMMARY BANNER */}
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-2">
+              {/* COMPENSATION TOTALS SUMMARY */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2">
                 <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
-                  <span className="text-[11px] font-medium text-slate-400 block">Base Monthly Wage</span>
-                  <span className="text-sm font-bold font-mono text-slate-900 dark:text-white mt-1 block">
+                  <span className="text-[13px] font-medium text-slate-600 dark:text-slate-400 block">Base Monthly Wage</span>
+                  <span className="text-[15px] font-bold font-mono text-slate-900 dark:text-white mt-1 block">
                     {packageSummary.baseWage.toLocaleString('en-US', { minimumFractionDigits: 2 })}{' '}
                     {activeContract.currency}
                   </span>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-800 dark:text-emerald-300">
-                  <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 block">
-                    + Total Allowances
-                  </span>
-                  <span className="text-sm font-bold font-mono text-emerald-700 dark:text-emerald-300 mt-1 block">
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                    <span className="text-[13px] font-medium text-slate-600 dark:text-slate-400">
+                      Total Allowances
+                    </span>
+                  </div>
+                  <span className="text-[15px] font-bold font-mono text-slate-900 dark:text-white mt-1 block">
                     +{packageSummary.allowancesTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}{' '}
                     {activeContract.currency}
                   </span>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-800 dark:text-rose-300">
-                  <span className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 block">
-                    - Total Deductions
-                  </span>
-                  <span className="text-sm font-bold font-mono text-rose-700 dark:text-rose-300 mt-1 block">
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
+                    <span className="text-[13px] font-medium text-slate-600 dark:text-slate-400">
+                      Total Deductions
+                    </span>
+                  </div>
+                  <span className="text-[15px] font-bold font-mono text-slate-900 dark:text-white mt-1 block">
                     -{packageSummary.deductionsTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}{' '}
                     {activeContract.currency}
                   </span>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-md">
-                  <span className="text-[11px] font-semibold text-blue-100 block">Total Monthly Net Package</span>
-                  <span className="text-base font-extrabold font-mono text-white mt-1 block">
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-blue-200/80 dark:border-blue-900/60">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-blue-600 shrink-0" />
+                    <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300">
+                      Net Monthly Package
+                    </span>
+                  </div>
+                  <span className="text-[16px] font-bold font-mono text-blue-600 dark:text-blue-400 mt-1 block">
                     {packageSummary.netPackage.toLocaleString('en-US', { minimumFractionDigits: 2 })}{' '}
                     {activeContract.currency}
                   </span>
@@ -792,11 +785,11 @@ export function EmployeeContractsTab({
                   <Sparkles className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white">
                     Add Benefit / Salary Rule
                   </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Bind declarative rule to contract #{activeContract?.contract_reference}
+                  <p className="text-[12px] text-slate-500 dark:text-slate-400">
+                    Attach a compensation rule to contract #{activeContract?.contract_reference}
                   </p>
                 </div>
               </div>
@@ -816,15 +809,15 @@ export function EmployeeContractsTab({
               </div>
             )}
 
-            <form onSubmit={handleAddBenefitSubmit} className="space-y-4 text-xs">
+            <form onSubmit={handleAddBenefitSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                   Select Salary Rule Definition
                 </label>
                 <select
                   value={selectedRuleId}
                   onChange={(e) => handleRuleSelect(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium cursor-pointer"
+                  className="w-full h-10 px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium cursor-pointer"
                 >
                   {salaryRules.map((r) => {
                     let desc = `${r.default_amount} QAR fixed`;
@@ -846,7 +839,7 @@ export function EmployeeContractsTab({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                     Calculation Engine
                   </label>
                   <select
@@ -860,7 +853,7 @@ export function EmployeeContractsTab({
                         setBenefitAmountValue(hasRate ? rule.grade_rates[employeeGrade.id] : parseFloat(rule.default_amount) || 0);
                       }
                     }}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                    className="w-full h-10 px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer font-medium"
                   >
                     <option value="percentage_of_base">% of Base Wage</option>
                     <option value="fixed_amount">Fixed Monthly Cash</option>
@@ -869,7 +862,7 @@ export function EmployeeContractsTab({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                     {benefitCalcType === 'percentage_of_base'
                       ? 'Percentage Rate (%)'
                       : benefitCalcType === 'grade_based'
@@ -881,7 +874,7 @@ export function EmployeeContractsTab({
                     step="0.01"
                     value={benefitAmountValue}
                     onChange={(e) => setBenefitAmountValue(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono font-bold"
+                    className="w-full h-10 px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono font-bold"
                   />
                 </div>
               </div>
@@ -939,11 +932,11 @@ export function EmployeeContractsTab({
                   <FileText className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white">
                     Create New Contract Version
                   </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Provisions bilateral agreement and WPS electronic wage structure
+                  <p className="text-[12px] text-slate-500 dark:text-slate-400">
+                    Configure contract terms and compensation structure
                   </p>
                 </div>
               </div>
@@ -963,10 +956,10 @@ export function EmployeeContractsTab({
               </div>
             )}
 
-            <form onSubmit={handleCreateContractSubmit} className="space-y-3.5 text-xs">
-              <div className="grid grid-cols-2 gap-3">
+            <form onSubmit={handleCreateContractSubmit} className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                     Contract Title
                   </label>
                   <input
@@ -974,12 +967,12 @@ export function EmployeeContractsTab({
                     required
                     value={newContractForm.title}
                     onChange={(e) => setNewContractForm({ ...newContractForm, title: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full h-10 px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                     Contract Reference (Auto or Custom)
                   </label>
                   <input
@@ -987,14 +980,14 @@ export function EmployeeContractsTab({
                     value={newContractForm.contract_reference}
                     onChange={(e) => setNewContractForm({ ...newContractForm, contract_reference: e.target.value })}
                     placeholder="e.g. CNT-2026-1001-2"
-                    className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    className="w-full h-10 px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                     Start Effective Date
                   </label>
                   <input
@@ -1002,16 +995,16 @@ export function EmployeeContractsTab({
                     required
                     value={newContractForm.start_date}
                     onChange={(e) => setNewContractForm({ ...newContractForm, start_date: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    className="w-full h-10 px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                   />
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300">
                       End Date
                     </label>
-                    <label className="flex items-center gap-1.5 text-[10px] text-blue-600 dark:text-blue-400 cursor-pointer font-semibold">
+                    <label className="flex items-center gap-1.5 text-[11px] text-blue-600 dark:text-blue-400 cursor-pointer font-medium">
                       <input
                         type="checkbox"
                         checked={newContractForm.isOpenEnded}
@@ -1028,14 +1021,14 @@ export function EmployeeContractsTab({
                     disabled={newContractForm.isOpenEnded}
                     value={newContractForm.isOpenEnded ? '' : newContractForm.end_date}
                     onChange={(e) => setNewContractForm({ ...newContractForm, end_date: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono disabled:opacity-40"
+                    className="w-full h-10 px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono disabled:opacity-40"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div className="col-span-2">
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                     Monthly Base Wage
                   </label>
                   {canReadSalary ? (
@@ -1046,16 +1039,16 @@ export function EmployeeContractsTab({
                       disabled={!canManageSalary}
                       value={newContractForm.wage_base}
                       onChange={(e) => setNewContractForm({ ...newContractForm, wage_base: e.target.value })}
-                      className={`w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 ${
+                      className={`w-full h-10 px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 ${
                         !canManageSalary
                           ? 'bg-slate-100 dark:bg-slate-800/40 text-slate-400 cursor-not-allowed'
                           : 'bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white'
                       } focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono font-bold`}
                     />
                   ) : (
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800/80 text-slate-400">
+                    <div className="flex items-center gap-2 h-10 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800/80 text-slate-400">
                       <span className="font-mono font-bold">•••••• {newContractForm.currency}</span>
-                      <span className="text-[9px] font-semibold bg-amber-500/10 text-amber-600 px-1.5 py-0.5 rounded">
+                      <span className="text-[10px] font-semibold bg-amber-500/10 text-amber-600 px-1.5 py-0.5 rounded">
                         Restricted
                       </span>
                     </div>
@@ -1063,7 +1056,7 @@ export function EmployeeContractsTab({
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                     Currency
                   </label>
                   <input
@@ -1071,7 +1064,7 @@ export function EmployeeContractsTab({
                     disabled={!canManageSalary}
                     value={newContractForm.currency}
                     onChange={(e) => setNewContractForm({ ...newContractForm, currency: e.target.value })}
-                    className={`w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 ${
+                    className={`w-full h-10 px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 ${
                       !canManageSalary
                         ? 'bg-slate-100 dark:bg-slate-800/40 text-slate-400 cursor-not-allowed'
                         : 'bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white'
@@ -1080,15 +1073,15 @@ export function EmployeeContractsTab({
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                     Status
                   </label>
                   <select
                     value={newContractForm.status}
                     onChange={(e) => setNewContractForm({ ...newContractForm, status: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer font-medium"
+                    className="w-full h-10 px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer font-medium"
                   >
                     <option value="draft">Draft (Review)</option>
                     <option value="active">Active (Current)</option>
@@ -1097,19 +1090,19 @@ export function EmployeeContractsTab({
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                     Notice (Days)
                   </label>
                   <input
                     type="number"
                     value={newContractForm.notice_period_days}
                     onChange={(e) => setNewContractForm({ ...newContractForm, notice_period_days: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    className="w-full h-10 px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                     Hours / Week
                   </label>
                   <input
@@ -1119,20 +1112,20 @@ export function EmployeeContractsTab({
                     onChange={(e) =>
                       setNewContractForm({ ...newContractForm, working_hours_per_week: e.target.value })
                     }
-                    className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    className="w-full h-10 px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                   Terms & Conditions Notes
                 </label>
                 <textarea
                   rows={2}
                   value={newContractForm.terms_notes}
                   onChange={(e) => setNewContractForm({ ...newContractForm, terms_notes: e.target.value })}
-                  className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 text-[14px] rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 

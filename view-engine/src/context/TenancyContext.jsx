@@ -101,8 +101,21 @@ export function TenancyProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    refreshTenancyData();
-    refreshAttendanceData();
+    let isMounted = true;
+    const initializeData = async () => {
+      try {
+        await refreshTenancyData();
+        if (isMounted) {
+          await refreshAttendanceData();
+        }
+      } catch (err) {
+        console.warn('Initial data load error:', err);
+      }
+    };
+    initializeData();
+    return () => {
+      isMounted = false;
+    };
   }, [refreshTenancyData, refreshAttendanceData]);
 
   // Active entities

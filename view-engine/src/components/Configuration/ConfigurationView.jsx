@@ -14,6 +14,14 @@ import {
 import { SalaryRulesView } from './SalaryRulesView';
 import { APIKeysView } from './APIKeysView';
 import { OrganizationsView } from '../Tenancy/OrganizationsView';
+import { MailServersView } from './MailServersView';
+import { MailTemplatesView } from './MailTemplatesView';
+import { MailLogsView } from './MailLogsView';
+import { SMSGatewaysView } from './SMSGatewaysView';
+import { WhatsAppConfigsView } from './WhatsAppConfigsView';
+import { WhatsAppTemplatesView } from './WhatsAppTemplatesView';
+import { CommunicationLogsView } from './CommunicationLogsView';
+import { AutomationTriggersView } from './AutomationTriggersView';
 
 export function ConfigurationView({ activeMenuId = 'wps_config' }) {
     const [savedBanner, setSavedBanner] = useState('');
@@ -110,6 +118,14 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
     if (activeMenuId === 'salary_rules') return <SalaryRulesView />;
     if (activeMenuId === 'api_keys') return <APIKeysView />;
     if (activeMenuId === 'orgs') return <OrganizationsView />;
+    if (activeMenuId === 'mail_servers') return <MailServersView />;
+    if (activeMenuId === 'mail_templates') return <MailTemplatesView />;
+    if (activeMenuId === 'mail_logs') return <MailLogsView />;
+    if (activeMenuId === 'sms_gateways') return <SMSGatewaysView />;
+    if (activeMenuId === 'whatsapp_configs') return <WhatsAppConfigsView />;
+    if (activeMenuId === 'whatsapp_templates') return <WhatsAppTemplatesView />;
+    if (activeMenuId === 'communication_logs') return <CommunicationLogsView />;
+    if (activeMenuId === 'automation_triggers') return <AutomationTriggersView />;
 
     const handleSaveWps = async (e) => {
         e.preventDefault();
@@ -175,7 +191,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                                 <span>Qatar Central Bank (QCB) & Ministry of Labour WPS</span>
                             </div>
                             <h2 className="text-lg font-bold text-slate-900 dark:text-white mt-1">
-                                Salary Information File (.SIF) Corporate Header Settings
+                                Salary Information File (.SIF) Header Settings
                             </h2>
                         </div>
                         <button
@@ -222,7 +238,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
 
                         <div className="md:col-span-2">
                             <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                Corporate Payer IBAN (29-Character QA IBAN) *
+                                Payer IBAN (29-Character QA IBAN) *
                             </label>
                             <input
                                 type="text"

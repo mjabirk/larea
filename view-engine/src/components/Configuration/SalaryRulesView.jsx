@@ -645,16 +645,16 @@ export function SalaryRulesView() {
                                 {activeTab === 'salary_rules'
                                     ? '+ New Salary Rule'
                                     : activeTab === 'grades'
-                                    ? '+ New Employee Grade'
-                                    : activeTab === 'overtime'
-                                    ? '+ New Overtime Preset'
-                                    : activeTab === 'task_benefit'
-                                    ? '+ New Task / Trip Rate'
-                                    : activeTab === 'bonus'
-                                    ? '+ New Bonus Preset'
-                                    : activeTab === 'deduction'
-                                    ? '+ New Deduction Preset'
-                                    : '+ New Leave Policy'}
+                                        ? '+ New Employee Grade'
+                                        : activeTab === 'overtime'
+                                            ? '+ New Overtime Preset'
+                                            : activeTab === 'task_benefit'
+                                                ? '+ New Task / Trip Rate'
+                                                : activeTab === 'bonus'
+                                                    ? '+ New Bonus Preset'
+                                                    : activeTab === 'deduction'
+                                                        ? '+ New Deduction Preset'
+                                                        : '+ New Leave Policy'}
                             </span>
                         </button>
                     )}
@@ -666,11 +666,10 @@ export function SalaryRulesView() {
                 <button
                     type="button"
                     onClick={() => setActiveTab('salary_rules')}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${
-                        activeTab === 'salary_rules'
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${activeTab === 'salary_rules'
                             ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs border border-slate-200 dark:border-slate-700'
                             : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                    }`}
+                        }`}
                 >
                     <Banknote className="w-4 h-4 text-emerald-500" />
                     <span>Contract Salary Rules</span>
@@ -682,11 +681,10 @@ export function SalaryRulesView() {
                 <button
                     type="button"
                     onClick={() => setActiveTab('grades')}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${
-                        activeTab === 'grades'
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${activeTab === 'grades'
                             ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs border border-slate-200 dark:border-slate-700'
                             : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                    }`}
+                        }`}
                 >
                     <Layers className="w-4 h-4 text-violet-500" />
                     <span>Employee Grades</span>
@@ -698,11 +696,10 @@ export function SalaryRulesView() {
                 <button
                     type="button"
                     onClick={() => setActiveTab('overtime')}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${
-                        activeTab === 'overtime'
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${activeTab === 'overtime'
                             ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs border border-slate-200 dark:border-slate-700'
                             : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                    }`}
+                        }`}
                 >
                     <Clock className="w-4 h-4 text-blue-500" />
                     <span>Overtime Presets</span>
@@ -714,11 +711,10 @@ export function SalaryRulesView() {
                 <button
                     type="button"
                     onClick={() => setActiveTab('task_benefit')}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${
-                        activeTab === 'task_benefit'
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${activeTab === 'task_benefit'
                             ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs border border-slate-200 dark:border-slate-700'
                             : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                    }`}
+                        }`}
                 >
                     <Truck className="w-4 h-4 text-cyan-500" />
                     <span>Task / Trip Piece-Rates</span>
@@ -730,11 +726,10 @@ export function SalaryRulesView() {
                 <button
                     type="button"
                     onClick={() => setActiveTab('bonus')}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${
-                        activeTab === 'bonus'
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${activeTab === 'bonus'
                             ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs border border-slate-200 dark:border-slate-700'
                             : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                    }`}
+                        }`}
                 >
                     <Gift className="w-4 h-4 text-indigo-500" />
                     <span>Bonus Presets</span>
@@ -746,11 +741,10 @@ export function SalaryRulesView() {
                 <button
                     type="button"
                     onClick={() => setActiveTab('deduction')}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${
-                        activeTab === 'deduction'
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${activeTab === 'deduction'
                             ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs border border-slate-200 dark:border-slate-700'
                             : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                    }`}
+                        }`}
                 >
                     <AlertOctagon className="w-4 h-4 text-rose-500" />
                     <span>Deduction & Fine Presets</span>
@@ -762,11 +756,10 @@ export function SalaryRulesView() {
                 <button
                     type="button"
                     onClick={() => setActiveTab('leave_types')}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${
-                        activeTab === 'leave_types'
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${activeTab === 'leave_types'
                             ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs border border-slate-200 dark:border-slate-700'
                             : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                    }`}
+                        }`}
                 >
                     <Calendar className="w-4 h-4 text-purple-500" />
                     <span>Leave Types & Policies</span>
@@ -779,11 +772,10 @@ export function SalaryRulesView() {
             {/* Notification alert */}
             {feedback && (
                 <div
-                    className={`p-4 rounded-xl text-xs font-medium flex items-center justify-between border ${
-                        feedback.type === 'error'
+                    className={`p-4 rounded-xl text-xs font-medium flex items-center justify-between border ${feedback.type === 'error'
                             ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300 border-rose-200 dark:border-rose-800'
                             : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                    }`}
+                        }`}
                 >
                     <div className="flex items-center gap-2">
                         {feedback.type === 'error' ? (
@@ -834,11 +826,10 @@ export function SalaryRulesView() {
                                     </td>
                                     <td className="py-3.5 px-4">
                                         <span
-                                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                                                rule.category === 'deduction'
+                                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${rule.category === 'deduction'
                                                     ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 border border-rose-200/80'
                                                     : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200/80'
-                                            }`}
+                                                }`}
                                         >
                                             {rule.category}
                                         </span>
@@ -918,10 +909,10 @@ export function SalaryRulesView() {
                             {activeTab === 'overtime'
                                 ? 'Configured Overtime Multipliers & Benefit Basis Formulae'
                                 : activeTab === 'task_benefit'
-                                ? 'Locked Piece-Rate Task, Trip & Mission Categories'
-                                : activeTab === 'bonus'
-                                ? 'Fixed & Basis-Linked Incentive Categories'
-                                : 'Audited Disciplinary Fine & Recovery Policies'}
+                                    ? 'Locked Piece-Rate Task, Trip & Mission Categories'
+                                    : activeTab === 'bonus'
+                                        ? 'Fixed & Basis-Linked Incentive Categories'
+                                        : 'Audited Disciplinary Fine & Recovery Policies'}
                         </span>
                         <span className="text-slate-400 text-[11px]">
                             {filteredPresets.length} presets configured
@@ -1003,8 +994,8 @@ export function SalaryRulesView() {
                                             </td>
                                             <td className="py-3.5 px-4 text-[11px]">
                                                 {rule.calculation_mode === 'hourly_multiplier' ||
-                                                rule.calculation_mode === 'daily_rate' ||
-                                                rule.calculation_mode === 'percentage_of_basis' ? (
+                                                    rule.calculation_mode === 'daily_rate' ||
+                                                    rule.calculation_mode === 'percentage_of_basis' ? (
                                                     <div className="flex flex-wrap items-center gap-1">
                                                         <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-mono text-[10px]">
                                                             Basic
@@ -1109,8 +1100,8 @@ export function SalaryRulesView() {
                                         payPct >= 100.0
                                             ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border-emerald-200'
                                             : payPct > 0.0
-                                            ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border-amber-200'
-                                            : 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 border-rose-200';
+                                                ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border-amber-200'
+                                                : 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 border-rose-200';
 
                                     return (
                                         <tr key={lt.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition">
@@ -1197,7 +1188,7 @@ export function SalaryRulesView() {
                 <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs overflow-hidden">
                     <div className="p-4 bg-slate-50/70 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
                         <span className="font-bold text-slate-700 dark:text-slate-300">
-                            Corporate Employee Grades & Hierarchical Allowance Bands
+                            Employee Grades & Hierarchical Allowance Bands
                         </span>
                         <span className="text-slate-400 text-[11px]">
                             Used to automatically resolve grade-based allowances on Employee Contracts
@@ -1244,11 +1235,10 @@ export function SalaryRulesView() {
                                             </span>
                                         </td>
                                         <td className="py-3.5 px-4">
-                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                                g.is_active !== false
+                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${g.is_active !== false
                                                     ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200/80'
                                                     : 'bg-slate-100 text-slate-500 border border-slate-200'
-                                            }`}>
+                                                }`}>
                                                 {g.is_active !== false ? 'Active' : 'Inactive'}
                                             </span>
                                         </td>
@@ -1365,8 +1355,8 @@ export function SalaryRulesView() {
                                         {salaryRuleForm.calculation_type === 'percentage_of_base'
                                             ? 'Percentage Rate (%)'
                                             : salaryRuleForm.calculation_type === 'grade_based'
-                                            ? 'Fallback Default (QAR)'
-                                            : 'Default Amount (QAR)'}
+                                                ? 'Fallback Default (QAR)'
+                                                : 'Default Amount (QAR)'}
                                     </label>
                                     <input
                                         type="number"
@@ -1557,8 +1547,8 @@ export function SalaryRulesView() {
                                 </div>
 
                                 {presetForm.calculation_mode === 'hourly_multiplier' ||
-                                presetForm.calculation_mode === 'daily_rate' ||
-                                presetForm.calculation_mode === 'percentage_of_basis' ? (
+                                    presetForm.calculation_mode === 'daily_rate' ||
+                                    presetForm.calculation_mode === 'percentage_of_basis' ? (
                                     <div>
                                         <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
                                             Multiplier Ratio (%)
@@ -1634,54 +1624,54 @@ export function SalaryRulesView() {
                             {(presetForm.calculation_mode === 'hourly_multiplier' ||
                                 presetForm.calculation_mode === 'daily_rate' ||
                                 presetForm.calculation_mode === 'percentage_of_basis') && (
-                                <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                                    <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300 font-semibold">
-                                        <Layers className="w-3.5 h-3.5 text-blue-500" />
-                                        <span>Benefits Included in Calculation Basis</span>
-                                    </div>
-                                    <p className="text-[11px] text-slate-400">
-                                        Select which employee allowances are aggregated with Basic Salary to form the hourly/daily denominator.
-                                    </p>
+                                    <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                                        <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300 font-semibold">
+                                            <Layers className="w-3.5 h-3.5 text-blue-500" />
+                                            <span>Benefits Included in Calculation Basis</span>
+                                        </div>
+                                        <p className="text-[11px] text-slate-400">
+                                            Select which employee allowances are aggregated with Basic Salary to form the hourly/daily denominator.
+                                        </p>
 
-                                    <div className="space-y-1.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
-                                        {/* Basic Salary is always included */}
-                                        <label className="flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-not-allowed opacity-90">
-                                            <input
-                                                type="checkbox"
-                                                checked={true}
-                                                disabled={true}
-                                                className="w-3.5 h-3.5 rounded text-blue-600 accent-blue-600"
-                                            />
-                                            <span className="font-semibold">Basic Salary</span>
-                                            <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono">
-                                                (Always Included)
-                                            </span>
-                                        </label>
+                                        <div className="space-y-1.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
+                                            {/* Basic Salary is always included */}
+                                            <label className="flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-not-allowed opacity-90">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={true}
+                                                    disabled={true}
+                                                    className="w-3.5 h-3.5 rounded text-blue-600 accent-blue-600"
+                                                />
+                                                <span className="font-semibold">Basic Salary</span>
+                                                <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono">
+                                                    (Always Included)
+                                                </span>
+                                            </label>
 
-                                        {/* Dynamic Checkboxes for each active allowance rule */}
-                                        {activeAllowanceRules.map((alw) => {
-                                            const isChecked = presetForm.included_benefit_rules.includes(alw.id);
-                                            return (
-                                                <label
-                                                    key={alw.id}
-                                                    className="flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-pointer hover:text-blue-600 dark:hover:text-blue-400"
-                                                >
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={isChecked}
-                                                        onChange={() => handleToggleBenefitInBasis(alw.id)}
-                                                        className="w-3.5 h-3.5 rounded text-blue-600 accent-blue-600 cursor-pointer"
-                                                    />
-                                                    <span className="font-medium">{alw.name}</span>
-                                                    <span className="text-[10px] text-slate-400 font-mono">
-                                                        ({alw.id})
-                                                    </span>
-                                                </label>
-                                            );
-                                        })}
+                                            {/* Dynamic Checkboxes for each active allowance rule */}
+                                            {activeAllowanceRules.map((alw) => {
+                                                const isChecked = presetForm.included_benefit_rules.includes(alw.id);
+                                                return (
+                                                    <label
+                                                        key={alw.id}
+                                                        className="flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-pointer hover:text-blue-600 dark:hover:text-blue-400"
+                                                    >
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={isChecked}
+                                                            onChange={() => handleToggleBenefitInBasis(alw.id)}
+                                                            className="w-3.5 h-3.5 rounded text-blue-600 accent-blue-600 cursor-pointer"
+                                                        />
+                                                        <span className="font-medium">{alw.name}</span>
+                                                        <span className="text-[10px] text-slate-400 font-mono">
+                                                            ({alw.id})
+                                                        </span>
+                                                    </label>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
-                                </div>
-                            )}
+                                )}
 
                             <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-200 dark:border-slate-800">
                                 <button

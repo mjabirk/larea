@@ -19,7 +19,9 @@ import {
   Filter,
   RefreshCw,
   ChevronRight,
+  ChevronLeft,
   Eye,
+  EyeOff,
   X,
   Building2,
   Briefcase,
@@ -29,9 +31,32 @@ import {
   AlertTriangle,
   Layers,
   Sparkles,
+  ChevronDown,
+  Mail,
+  MessageCircle
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useAccessControl } from '../../context/AccessControlContext';
+import { SendEmailModal } from '../common/SendEmailModal';
+import { SendMessageModal } from '../common/SendMessageModal';
+
+function formatMonthName(ym) {
+  if (!ym) return 'N/A';
+  const parts = ym.split('-');
+  if (parts.length < 2) return ym;
+  const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
+  return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+}
+
+function formatDateDisplay(dStr) {
+  if (!dStr) return '—';
+  try {
+    const d = new Date(dStr);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch {
+    return dStr;
+  }
+}
 
 export function PayrollBatchesView() {
   const auth = useAuth();
@@ -48,6 +73,13 @@ export function PayrollBatchesView() {
   const canManagePayroll = hasPermission('payroll.manage');
   const canReadPayroll = hasPermission('payroll.read');
 
+  // Master-Detail View Mode: 'registry' (default list) | 'detail' (deep-dive payslips)
+  const [viewMode, setViewMode] = useState('registry');
+  const [selectedYearTab, setSelectedYearTab] = useState('ALL');
+  const [registryStatusFilter, setRegistryStatusFilter] = useState('ALL');
+  const [registrySearch, setRegistrySearch] = useState('');
+  const [batchToDelete, setBatchToDelete] = useState(null);
+
   // State
   const [batches, setBatches] = useState([]);
   const [selectedBatchId, setSelectedBatchId] = useState(null);
@@ -61,6 +93,7 @@ export function PayrollBatchesView() {
   const [searchTerm, setSearchTerm] = useState('');
   const [wpsFilter, setWpsFilter] = useState('ALL'); // 'ALL' | 'ready' | 'missing'
   const [deptFilter, setDeptFilter] = useState('ALL');
+  const [showDetailSummary, setShowDetailSummary] = useState(false);
 
   // Modals
   const [isGenerateModalOpen, setIsGenerateModalOpen] = useState(false);
@@ -88,9 +121,55 @@ export function PayrollBatchesView() {
   const [isLockConfirmOpen, setIsLockConfirmOpen] = useState(false);
   const [isLocking, setIsLocking] = useState(false);
 
-  // Delete confirmation
+  // Delete confirmation modal
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Send by Email modal
+  const [emailPayslipModalOpen, setEmailPayslipModalOpen] = useState(false);
+  const [emailPayslipTarget, setEmailPayslipTarget] = useState(null);
+
+  // Send by WhatsApp / SMS modal
+  const [messagePayslipModalOpen, setMessagePayslipModalOpen] = useState(false);
+  const [messagePayslipTarget, setMessagePayslipTarget] = useState(null);
+
+  // Global Escape Key Listener for Modals
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (isDeleteConfirmOpen) {
+          setIsDeleteConfirmOpen(false);
+          setBatchToDelete(null);
+        } else if (isLockConfirmOpen) {
+          setIsLockConfirmOpen(false);
+        } else if (isPrintModalOpen) {
+          setIsPrintModalOpen(false);
+        } else if (editingPayslip) {
+          setEditingPayslip(null);
+        } else if (isGenerateModalOpen) {
+          setIsGenerateModalOpen(false);
+        } else if (emailPayslipModalOpen) {
+          setEmailPayslipModalOpen(false);
+          setEmailPayslipTarget(null);
+        } else if (messagePayslipModalOpen) {
+          setMessagePayslipModalOpen(false);
+          setMessagePayslipTarget(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isDeleteConfirmOpen, isLockConfirmOpen, isPrintModalOpen, editingPayslip, isGenerateModalOpen, emailPayslipModalOpen, messagePayslipModalOpen]);
+
+  const openEmailPayslip = (p) => {
+    setEmailPayslipTarget(p);
+    setEmailPayslipModalOpen(true);
+  };
+
+  const openMessagePayslip = (p) => {
+    setMessagePayslipTarget(p);
+    setMessagePayslipModalOpen(true);
+  };
 
   const getAuthHeaders = useCallback(() => {
     const headers = { 'Content-Type': 'application/json' };
@@ -101,7 +180,7 @@ export function PayrollBatchesView() {
   }, [sessionToken]);
 
   // Fetch batches list
-  const fetchBatches = useCallback(async (selectNewest = false) => {
+  const fetchBatches = useCallback(async (preferredBatchId = null) => {
     setIsLoadingBatches(true);
     try {
       const res = await fetch('/api/v1/payroll/batches', {
@@ -111,11 +190,9 @@ export function PayrollBatchesView() {
         const data = await res.json();
         const batchList = data.batches || [];
         setBatches(batchList);
-        if (batchList.length > 0) {
-          if (selectNewest || !selectedBatchId) {
-            setSelectedBatchId(batchList[0].id);
-          }
-        } else {
+        if (preferredBatchId) {
+          setSelectedBatchId(preferredBatchId);
+        } else if (selectedBatchId && !batchList.some((b) => b.id === selectedBatchId)) {
           setSelectedBatchId(null);
           setCurrentBatchData(null);
         }
@@ -155,8 +232,8 @@ export function PayrollBatchesView() {
   }, [getAuthHeaders]);
 
   useEffect(() => {
-    fetchBatches(true);
-  }, []);
+    fetchBatches();
+  }, [fetchBatches]);
 
   useEffect(() => {
     if (selectedBatchId) {
@@ -171,6 +248,60 @@ export function PayrollBatchesView() {
       return () => clearTimeout(timer);
     }
   }, [actionMessage]);
+
+  // Dynamic Financial Years derived from batches
+  const availableYears = useMemo(() => {
+    const yearSet = new Set(['2026', '2025']);
+    batches.forEach((b) => {
+      if (b.salary_year_month) {
+        const y = b.salary_year_month.split('-')[0];
+        if (y) yearSet.add(y);
+      }
+    });
+    return ['ALL', ...Array.from(yearSet).sort().reverse()];
+  }, [batches]);
+
+  // Filtered batches for Registry View
+  const filteredBatches = useMemo(() => {
+    return batches.filter((b) => {
+      // Year filter
+      if (selectedYearTab !== 'ALL') {
+        const y = (b.salary_year_month || '').split('-')[0];
+        if (y !== selectedYearTab) return false;
+      }
+      // Status filter
+      if (registryStatusFilter !== 'ALL' && b.status !== registryStatusFilter) {
+        return false;
+      }
+      // Search
+      if (registrySearch.trim()) {
+        const q = registrySearch.toLowerCase();
+        const code = (b.batch_code || '').toLowerCase();
+        const title = (b.title || '').toLowerCase();
+        const ym = (b.salary_year_month || '').toLowerCase();
+        const monthName = formatMonthName(b.salary_year_month).toLowerCase();
+        if (!code.includes(q) && !title.includes(q) && !ym.includes(q) && !monthName.includes(q)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [batches, selectedYearTab, registryStatusFilter, registrySearch]);
+
+  const [registryPage, setRegistryPage] = useState(1);
+  const registryPageSize = 80;
+
+  useEffect(() => {
+    setRegistryPage(1);
+  }, [selectedYearTab, registryStatusFilter, registrySearch]);
+
+  const totalRegistryRecords = filteredBatches.length;
+  const totalRegistryPages = Math.max(1, Math.ceil(totalRegistryRecords / registryPageSize));
+  const startRegistryIndex = (registryPage - 1) * registryPageSize;
+  const endRegistryIndex = Math.min(startRegistryIndex + registryPageSize, totalRegistryRecords);
+  const pagedBatches = useMemo(() => {
+    return filteredBatches.slice(startRegistryIndex, endRegistryIndex);
+  }, [filteredBatches, startRegistryIndex, endRegistryIndex]);
 
   // Quick Metrics (KPIs)
   const kpiMetrics = useMemo(() => {
@@ -220,9 +351,10 @@ export function PayrollBatchesView() {
         });
         setIsGenerateModalOpen(false);
         setGenerateTitle('');
-        await fetchBatches();
+        await fetchBatches(data.batch?.id);
         if (data.batch?.id) {
           setSelectedBatchId(data.batch.id);
+          setViewMode('detail');
         }
       } else {
         setActionMessage({ type: 'error', text: data.detail || 'Failed to generate payroll batch.' });
@@ -266,10 +398,11 @@ export function PayrollBatchesView() {
 
   // Delete Batch Handler
   const handleDeleteBatch = async () => {
-    if (!selectedBatchId) return;
+    const targetId = batchToDelete?.id || selectedBatchId;
+    if (!targetId) return;
     setIsDeleting(true);
     try {
-      const res = await fetch(`/api/v1/payroll/batches/${selectedBatchId}`, {
+      const res = await fetch(`/api/v1/payroll/batches/${targetId}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
@@ -277,7 +410,13 @@ export function PayrollBatchesView() {
       if (res.ok) {
         setActionMessage({ type: 'success', text: data.message || 'Draft batch deleted.' });
         setIsDeleteConfirmOpen(false);
-        fetchBatches(true);
+        setBatchToDelete(null);
+        if (selectedBatchId === targetId) {
+          setSelectedBatchId(null);
+          setCurrentBatchData(null);
+          setViewMode('registry');
+        }
+        fetchBatches();
       } else {
         setActionMessage({ type: 'error', text: data.detail || 'Failed to delete batch.' });
       }
@@ -290,13 +429,14 @@ export function PayrollBatchesView() {
   };
 
   // Export SIF file Handler
-  const handleExportSIF = async () => {
-    if (!selectedBatchId) return;
+  const handleExportSIF = async (targetBatchId = selectedBatchId, targetBatchCode = null) => {
+    const bId = targetBatchId || selectedBatchId;
+    if (!bId) return;
     try {
       const headers = {};
       if (sessionToken) headers['Authorization'] = `Bearer ${sessionToken}`;
 
-      const res = await fetch(`/api/v1/payroll/batches/${selectedBatchId}/export-sif`, {
+      const res = await fetch(`/api/v1/payroll/batches/${bId}/export-sif`, {
         headers,
       });
 
@@ -306,7 +446,7 @@ export function PayrollBatchesView() {
       }
 
       const disposition = res.headers.get('Content-Disposition');
-      let filename = `SIF_${currentBatchData?.batch?.batch_code || 'payroll'}.sif`;
+      let filename = `SIF_${targetBatchCode || currentBatchData?.batch?.batch_code || 'payroll'}.sif`;
       if (disposition && disposition.includes('filename=')) {
         const match = disposition.match(/filename="?([^"]+)"?/);
         if (match && match[1]) filename = match[1];
@@ -326,9 +466,10 @@ export function PayrollBatchesView() {
         type: 'success',
         text: `Official Qatar WPS file "${filename}" downloaded successfully.`,
       });
-      // Refresh batch status if it transitioned to 'exported'
       fetchBatches();
-      fetchBatchDetails(selectedBatchId);
+      if (selectedBatchId === bId) {
+        fetchBatchDetails(bId);
+      }
     } catch (err) {
       console.error('Export SIF error:', err);
       setActionMessage({ type: 'error', text: err.message || 'Error exporting WPS .SIF file.' });
@@ -451,64 +592,10 @@ export function PayrollBatchesView() {
 
   return (
     <div className="space-y-6">
-      {/* 1. Header & Quick Actions */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold">
-              <Banknote className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-lg font-bold text-slate-900 dark:text-white">
-                  Qatar WPS Payroll Engine
-                </h1>
-                <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 font-bold border border-amber-200 dark:border-amber-900">
-                  QCB Law No. 1 / 2015
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Automated attendance reconciliation, contract benefit computation, and official Qatar Central Bank .SIF file generation.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2.5">
-          <button
-            type="button"
-            onClick={() => {
-              fetchBatches();
-              if (selectedBatchId) fetchBatchDetails(selectedBatchId);
-            }}
-            disabled={isLoadingBatches || isLoadingDetails}
-            className="p-2.5 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-            title="Refresh Data"
-          >
-            <RefreshCw className={`w-4 h-4 ${(isLoadingBatches || isLoadingDetails) ? 'animate-spin' : ''}`} />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              const now = new Date();
-              const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-              setGenerateYearMonth(ym);
-              setGenerateTitle(`Payroll Reconciliation - ${ym}`);
-              setIsGenerateModalOpen(true);
-            }}
-            className="flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold rounded-xl bg-amber-600 hover:bg-amber-700 text-white shadow-xs transition-colors cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Generate Monthly Batch</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Action Notification Alert */}
+      {/* Action Notification Alert (Global across views) */}
       {actionMessage && (
         <div
-          className={`flex items-center justify-between p-4 rounded-xl border text-xs font-medium ${
+          className={`flex items-center justify-between p-4 rounded-xl border text-xs font-medium animate-fadeIn ${
             actionMessage.type === 'success'
               ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
               : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
@@ -525,537 +612,765 @@ export function PayrollBatchesView() {
           <button
             type="button"
             onClick={() => setActionMessage(null)}
-            className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/5"
+            className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
       )}
 
-      {/* 2. KPI Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs space-y-1">
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 font-medium">
-            <span>Total Payroll Batches</span>
-            <Calendar className="w-4 h-4 text-blue-500" />
-          </div>
-          <div className="text-2xl font-bold text-slate-900 dark:text-white">
-            {kpiMetrics.totalBatches}
-          </div>
-          <div className="text-[11px] text-slate-400">
-            {kpiMetrics.lockedBatches} sealed or exported
-          </div>
-        </div>
+      {viewMode === 'registry' ? (
+        /* BATCH REGISTRY VIEW (Default list view) */
+        <div className="space-y-2 animate-fadeIn">
+          {/* 1. Slim 44px Control Bar */}
+          <div className="h-11 min-h-[44px] flex items-center justify-between gap-2 px-3 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-lg shadow-2xs">
+            {/* Left: Action Button, Title & Refresh */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  const now = new Date();
+                  const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+                  setGenerateYearMonth(ym);
+                  setGenerateTitle(`Payroll Reconciliation - ${ym}`);
+                  setIsGenerateModalOpen(true);
+                }}
+                className="h-7 px-2.5 text-[11px] font-bold rounded-md bg-amber-600 hover:bg-amber-700 text-white flex items-center gap-1 shadow-xs transition cursor-pointer"
+                title="Generate Monthly Batch"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>+ Generate Batch</span>
+              </button>
 
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs space-y-1">
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 font-medium">
-            <span>Active Month Disbursement</span>
-            <DollarSign className="w-4 h-4 text-emerald-500" />
-          </div>
-          <div className="text-2xl font-bold text-slate-900 dark:text-white">
-            {kpiMetrics.latestNet.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-xs font-normal text-slate-400">QAR</span>
-          </div>
-          <div className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
-            Period: {kpiMetrics.latestMonth}
-          </div>
-        </div>
+              <button
+                type="button"
+                onClick={() => fetchBatches()}
+                disabled={isLoadingBatches}
+                className="h-7 w-7 rounded-md text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition cursor-pointer"
+                title="Refresh Batches"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingBatches ? 'animate-spin' : ''}`} />
+              </button>
 
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs space-y-1">
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 font-medium">
-            <span>WPS Compliance Score</span>
-            <ShieldCheck className="w-4 h-4 text-amber-500" />
-          </div>
-          <div className="text-2xl font-bold text-slate-900 dark:text-white">
-            {kpiMetrics.wpsPct}%
-          </div>
-          <div className="text-[11px] text-slate-400">
-            {kpiMetrics.readyCount} of {kpiMetrics.totalSlips} employees ready for WPS
-          </div>
-        </div>
+              <span className="font-bold text-[13px] text-slate-900 dark:text-white shrink-0 ml-1">
+                Payroll Batches
+              </span>
 
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs space-y-1">
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 font-medium">
-            <span>Locked & Audited Batches</span>
-            <Lock className="w-4 h-4 text-purple-500" />
-          </div>
-          <div className="text-2xl font-bold text-slate-900 dark:text-white">
-            {kpiMetrics.lockedBatches}
-          </div>
-          <div className="text-[11px] text-purple-600 dark:text-purple-400 font-medium">
-            Attendance hours synchronized
-          </div>
-        </div>
-      </div>
-
-      {/* 3. Main Workspace: Batches Selector & Interactive Batch Details */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Batches List Sidebar (4 cols) */}
-        <div className="lg:col-span-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-              Payroll Batches ({batches.length})
-            </h2>
-          </div>
-
-          <div className="space-y-2.5 max-h-[750px] overflow-y-auto pr-1">
-            {batches.length === 0 ? (
-              <div className="p-6 text-center rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-400 text-xs">
-                No payroll batches created yet. Click "+ Generate Monthly Batch" to compute your first batch.
-              </div>
-            ) : (
-              batches.map((b) => {
-                const isSelected = b.id === selectedBatchId;
-                const statusColor =
-                  b.status === 'locked'
-                    ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800'
-                    : b.status === 'exported'
-                    ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                    : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800';
-
-                return (
-                  <div
-                    key={b.id}
-                    onClick={() => setSelectedBatchId(b.id)}
-                    className={`p-4 rounded-xl border transition-all cursor-pointer ${
-                      isSelected
-                        ? 'bg-amber-50/60 dark:bg-amber-950/20 border-amber-500 shadow-xs'
-                        : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-mono text-xs font-bold text-slate-900 dark:text-white">
-                            {b.batch_code}
-                          </span>
-                          <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border ${statusColor}`}>
-                            {b.status}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-600 dark:text-slate-400 font-medium line-clamp-1 mt-0.5">
-                          {b.title}
-                        </p>
-                      </div>
-                      <ChevronRight className={`w-4 h-4 shrink-0 transition-transform ${isSelected ? 'text-amber-600 rotate-90' : 'text-slate-400'}`} />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 mt-3 pt-3 border-t border-slate-100 dark:border-slate-800/80 text-[11px]">
-                      <div>
-                        <span className="text-slate-400 block">Period</span>
-                        <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">
-                          {b.salary_year_month}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block">Employees</span>
-                        <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">
-                          {b.total_employees} active
-                        </span>
-                      </div>
-                      <div className="col-span-2 flex items-center justify-between text-xs font-bold text-slate-900 dark:text-white pt-1">
-                        <span>Net Disbursement:</span>
-                        <span className="font-mono text-amber-600 dark:text-amber-400">
-                          {Number(b.total_net_salary || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-
-        {/* Right Column: Interactive Batch Detail & Payslips Table (8 cols) */}
-        <div className="lg:col-span-8 space-y-4">
-          {!selectedBatch ? (
-            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-12 text-center text-slate-400 text-xs">
-              Select a payroll batch from the left to view detailed payslips and generate WPS files.
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 font-semibold">
+                Registry
+              </span>
             </div>
-          ) : (
-            <>
-              {/* Batch Detail Header Card */}
-              <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-base font-bold text-slate-900 dark:text-white">
-                        {selectedBatch.title}
-                      </h2>
-                      <span className="font-mono text-xs font-bold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
-                        {selectedBatch.batch_code}
-                      </span>
-                      <span
-                        className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border ${
-                          selectedBatch.status === 'locked'
-                            ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border-purple-200'
-                            : selectedBatch.status === 'exported'
-                            ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200'
-                            : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200'
-                        }`}
-                      >
-                        {selectedBatch.status}
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-400 mt-1">
-                      Salary Month: <strong className="text-slate-700 dark:text-slate-300">{selectedBatch.salary_year_month}</strong> • Created by {selectedBatch.created_by_name || 'System Admin'}
-                      {selectedBatch.locked_at && ` • Sealed on ${new Date(selectedBatch.locked_at).toLocaleString()}`}
-                    </p>
-                  </div>
 
-                  {/* Batch Action Buttons */}
-                  <div className="flex items-center flex-wrap gap-2">
-                    {/* Sync Approved Adjustments Button */}
-                    {isDraft && (
-                      <button
-                        type="button"
-                        onClick={handleSyncAdjustments}
-                        disabled={isSyncingAdjustments}
-                        className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-xs transition-colors cursor-pointer disabled:opacity-50"
-                        title="Recalculate and pull approved overtime, trips, bonuses and deductions into draft payslips"
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 ${isSyncingAdjustments ? 'animate-spin' : ''}`} />
-                        <span>Sync Approved Adjustments</span>
-                      </button>
-                    )}
-
-                    {/* Lock Batch Button */}
-                    {isDraft && (
-                      <button
-                        type="button"
-                        onClick={() => setIsLockConfirmOpen(true)}
-                        className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl bg-slate-800 dark:bg-slate-700 hover:bg-slate-900 text-white shadow-xs transition-colors cursor-pointer"
-                        title="Seal batch and sync attendance hours"
-                      >
-                        <Lock className="w-3.5 h-3.5" />
-                        <span>Lock & Seal Batch</span>
-                      </button>
-                    )}
-
-                    {/* Export SIF Button */}
-                    <button
-                      type="button"
-                      onClick={handleExportSIF}
-                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
-                      title="Download official Qatar Central Bank .SIF file"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Export WPS (.SIF)</span>
-                    </button>
-
-                    {/* Print Payslips Button */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPrintSinglePayslip(null);
-                        setIsPrintModalOpen(true);
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                    >
-                      <Printer className="w-3.5 h-3.5 text-blue-500" />
-                      <span>Print All Payslips</span>
-                    </button>
-
-                    {/* Delete Batch (Draft only) */}
-                    {isDraft && (
-                      <button
-                        type="button"
-                        onClick={() => setIsDeleteConfirmOpen(true)}
-                        className="p-2 text-xs rounded-xl border border-rose-200 dark:border-rose-900/60 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer"
-                        title="Delete Draft Batch"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Batch Breakdown Metrics */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-xs">
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50">
-                    <span className="text-slate-400 block text-[10px] uppercase font-bold">Base Salaries</span>
-                    <span className="font-mono font-bold text-slate-900 dark:text-white">
-                      {Number(selectedBatch.total_base_salary || 0).toLocaleString()} QAR
-                    </span>
-                  </div>
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50">
-                    <span className="text-slate-400 block text-[10px] uppercase font-bold">Allowances</span>
-                    <span className="font-mono font-bold text-slate-900 dark:text-white">
-                      +{Number(selectedBatch.total_allowances || 0).toLocaleString()} QAR
-                    </span>
-                  </div>
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50">
-                    <span className="text-slate-400 block text-[10px] uppercase font-bold">Overtime Pay</span>
-                    <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                      +{Number(selectedBatch.total_overtime_pay || 0).toLocaleString()} QAR
-                    </span>
-                  </div>
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50">
-                    <span className="text-slate-400 block text-[10px] uppercase font-bold">Deductions</span>
-                    <span className="font-mono font-bold text-rose-600 dark:text-rose-400">
-                      -{Number(selectedBatch.total_deductions || 0).toLocaleString()} QAR
-                    </span>
-                  </div>
-                  <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 col-span-2">
-                    <span className="text-amber-700 dark:text-amber-400 block text-[10px] uppercase font-bold">Total Net Disbursement</span>
-                    <span className="font-mono text-sm font-bold text-amber-700 dark:text-amber-300">
-                      {Number(selectedBatch.total_net_salary || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR
-                    </span>
-                  </div>
-                </div>
-
-                {/* WPS Ready Warning / Indicator */}
-                {currentBatchData && currentBatchData.wps_missing_count > 0 && (
-                  <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/80 flex items-start gap-2.5 text-xs text-amber-800 dark:text-amber-300">
-                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
-                    <div>
-                      <strong>WPS Validation Warning:</strong> {currentBatchData.wps_missing_count} employee(s) in this batch are missing a valid 29-character Qatar IBAN (starting with QA) or QID/Visa number. The Ministry of Labour WPS portal will reject lines with invalid bank credentials.
-                    </div>
-                  </div>
+            {/* Center: Slim Search & Inline Dropdowns */}
+            <div className="flex items-center gap-1.5 flex-1 max-w-xl mx-2">
+              <div className="relative flex-1">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={registrySearch}
+                  onChange={(e) => setRegistrySearch(e.target.value)}
+                  placeholder="Search batch code, title, month..."
+                  className="w-full h-7 text-[12px] font-normal pl-8 pr-6 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+                {registrySearch && (
+                  <button
+                    type="button"
+                    onClick={() => setRegistrySearch('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
                 )}
               </div>
 
-              {/* Payslips Search, Filter & Table */}
-              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
-                {/* Table Filter Toolbar */}
-                <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="relative flex-1 max-w-sm">
-                    <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input
-                      type="text"
-                      placeholder="Search employee, ID, QID, department..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-amber-500"
-                    />
-                  </div>
+              {/* Financial Year Selector */}
+              <select
+                value={selectedYearTab}
+                onChange={(e) => setSelectedYearTab(e.target.value)}
+                className="h-7 text-[11.5px] font-medium px-2 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer shrink-0"
+              >
+                {availableYears.map((yr) => (
+                  <option key={yr} value={yr}>
+                    {yr === 'ALL' ? 'All Years' : yr}
+                  </option>
+                ))}
+              </select>
 
-                  <div className="flex items-center gap-2">
-                    {/* WPS Status Filter */}
-                    <select
-                      value={wpsFilter}
-                      onChange={(e) => setWpsFilter(e.target.value)}
-                      className="px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-slate-900 dark:text-white focus:outline-hidden"
-                    >
-                      <option value="ALL">All WPS Statuses</option>
-                      <option value="ready">WPS Ready</option>
-                      <option value="missing">Missing QA IBAN / QID</option>
-                    </select>
+              {/* Status Filter */}
+              <select
+                value={registryStatusFilter}
+                onChange={(e) => setRegistryStatusFilter(e.target.value)}
+                className="h-7 text-[11.5px] font-medium px-2 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer shrink-0"
+              >
+                <option value="ALL">Status: All</option>
+                <option value="draft">Draft</option>
+                <option value="locked">Locked</option>
+                <option value="exported">Exported</option>
+              </select>
+            </div>
 
-                    {/* Department Filter */}
-                    <select
-                      value={deptFilter}
-                      onChange={(e) => setDeptFilter(e.target.value)}
-                      className="px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-slate-900 dark:text-white focus:outline-hidden"
-                    >
-                      <option value="ALL">All Departments</option>
-                      {uniqueDepts.map((d) => (
-                        <option key={d} value={d}>
-                          {d}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
+            {/* Right: Odoo Pager */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <div className="flex items-center gap-1 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-md px-1.5 h-7">
+                <span className="text-[11.5px] font-mono text-slate-600 dark:text-slate-300 font-semibold tracking-tight">
+                  {totalRegistryRecords === 0 ? '0-0 / 0' : `${startRegistryIndex + 1}-${endRegistryIndex} / ${totalRegistryRecords}`}
+                </span>
+                <button
+                  type="button"
+                  disabled={registryPage <= 1}
+                  onClick={() => setRegistryPage((p) => Math.max(1, p - 1))}
+                  className="p-0.5 rounded text-slate-500 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                  title="Previous Page"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  disabled={registryPage >= totalRegistryPages}
+                  onClick={() => setRegistryPage((p) => Math.min(totalRegistryPages, p + 1))}
+                  className="p-0.5 rounded text-slate-500 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                  title="Next Page"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          </div>
 
-                {/* Table */}
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="bg-slate-50/80 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 font-bold uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
-                        <th className="py-3 px-4">Employee</th>
-                        <th className="py-3 px-3">WPS Status</th>
-                        <th className="py-3 px-3">Days</th>
-                        <th className="py-3 px-3">Hours / OT</th>
-                        <th className="py-3 px-3">Base</th>
-                        <th className="py-3 px-3">Allowances</th>
-                        <th className="py-3 px-3">Variable / OT</th>
-                        <th className="py-3 px-3">Deductions</th>
-                        <th className="py-3 px-3 font-extrabold text-slate-900 dark:text-white">Net (QAR)</th>
-                        <th className="py-3 px-4 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {filteredPayslips.length === 0 ? (
-                        <tr>
-                          <td colSpan={10} className="py-8 text-center text-slate-400 text-xs">
-                            No employee payslips found matching current filters.
+          {/* Batches Table */}
+          <div className="bg-white dark:bg-slate-900 rounded-lg border border-slate-200/80 dark:border-slate-800 shadow-2xs overflow-hidden">
+            <div className="max-h-[calc(100vh-140px)] overflow-y-auto">
+              <table className="w-full text-left border-collapse">
+                <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-[11.5px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
+                  <tr className="h-8">
+                    <th className="py-1 px-2.5">Batch Code & Title</th>
+                    <th className="py-1 px-2.5">Target Month</th>
+                    <th className="py-1 px-2.5">Status</th>
+                    <th className="py-1 px-2.5">Employees</th>
+                    <th className="py-1 px-2.5 text-right">Total Net Payout</th>
+                    <th className="py-1 px-2.5">WPS Compliance</th>
+                    <th className="py-1 px-2.5">Date Created</th>
+                    <th className="py-1 px-2.5 text-right w-44">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-[12.5px] text-slate-800 dark:text-slate-200">
+                  {pagedBatches.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="py-8 text-center text-slate-400 text-xs">
+                        <div className="flex flex-col items-center justify-center gap-1">
+                          <FileSpreadsheet className="w-6 h-6 text-slate-300 dark:text-slate-600" />
+                          <span>No payroll batches match the selected filters.</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const now = new Date();
+                              const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+                              setGenerateYearMonth(ym);
+                              setGenerateTitle(`Payroll Reconciliation - ${ym}`);
+                              setIsGenerateModalOpen(true);
+                            }}
+                            className="mt-1 text-amber-600 dark:text-amber-400 font-semibold hover:underline cursor-pointer text-xs"
+                          >
+                            + Generate a new monthly batch
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    pagedBatches.map((b) => {
+                      const totalEmp = Number(b.total_employees || b.total_payslips_count || 0);
+                      const readyCount = b.wps_ready_count !== undefined
+                        ? Number(b.wps_ready_count)
+                        : (b.status === 'exported' ? totalEmp : 0);
+                      const wpsPct = totalEmp > 0 ? Math.round((readyCount / totalEmp) * 100) : 100;
+                      const isDraftBatch = b.status === 'draft';
+
+                      return (
+                        <tr
+                          key={b.id}
+                          onClick={() => {
+                            setSelectedBatchId(b.id);
+                            setViewMode('detail');
+                          }}
+                          className="h-8 odd:bg-white dark:odd:bg-slate-900 even:bg-slate-50/40 dark:even:bg-slate-800/40 hover:bg-amber-50/30 dark:hover:bg-slate-800/70 border-b border-slate-200/60 dark:border-slate-800/60 transition-colors cursor-pointer"
+                        >
+                          {/* Batch Code & Title */}
+                          <td className="py-1 px-2.5 align-middle">
+                            <span
+                              className="font-mono font-bold text-[12px] text-amber-600 dark:text-amber-400 truncate max-w-[220px] block"
+                              title={`${b.batch_code} - ${b.title || 'Payroll Reconciliation'}`}
+                            >
+                              {b.batch_code}
+                            </span>
+                          </td>
+
+                          {/* Target Month */}
+                          <td className="py-1 px-2.5 align-middle font-mono text-[12px] text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                            {formatMonthName(b.salary_year_month)}
+                          </td>
+
+                          {/* Status badge */}
+                          <td className="py-1 px-2.5 align-middle whitespace-nowrap">
+                            <span
+                              className={`inline-flex items-center justify-center h-5 text-[10.5px] font-semibold uppercase px-1.5 rounded border ${
+                                b.status === 'locked'
+                                  ? 'bg-purple-500/10 text-purple-600 border-purple-500/20'
+                                  : b.status === 'exported'
+                                  ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
+                                  : 'bg-amber-500/10 text-amber-600 border-amber-500/20'
+                              }`}
+                            >
+                              {b.status}
+                            </span>
+                          </td>
+
+                          {/* Employees count */}
+                          <td className="py-1 px-2.5 align-middle font-mono text-[12px] text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                            {totalEmp} Staff
+                          </td>
+
+                          {/* Total Net Payout */}
+                          <td className="py-1 px-2.5 align-middle text-right font-mono font-bold text-[12px] text-slate-900 dark:text-white whitespace-nowrap">
+                            {Number(b.total_net_salary || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} QAR
+                          </td>
+
+                          {/* WPS Compliance % */}
+                          <td className="py-1 px-2.5 align-middle whitespace-nowrap">
+                            <span
+                              className={`inline-flex items-center justify-center h-5 text-[10.5px] font-semibold px-1.5 rounded border ${
+                                wpsPct === 100 || b.status === 'exported'
+                                  ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
+                                  : 'bg-amber-500/10 text-amber-600 border-amber-500/20'
+                              }`}
+                            >
+                              {wpsPct}% Ready
+                            </span>
+                          </td>
+
+                          {/* Date Created / Sealed */}
+                          <td
+                            className="py-1 px-2.5 align-middle text-slate-500 dark:text-slate-400 font-mono text-[11.5px] whitespace-nowrap truncate max-w-[120px]"
+                            title={`Created: ${b.created_at}${b.locked_at ? ` | Sealed: ${b.locked_at}` : ''}`}
+                          >
+                            {formatDateDisplay(b.created_at)}
+                          </td>
+
+                          {/* Actions */}
+                          <td className="py-1 px-2.5 align-middle text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center justify-end gap-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedBatchId(b.id);
+                                  setViewMode('detail');
+                                }}
+                                className="h-6 px-2 rounded text-[11px] font-semibold bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 transition-colors cursor-pointer"
+                              >
+                                Open
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleExportSIF(b.id, b.batch_code)}
+                                className="h-6 px-2 rounded text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
+                                title="Export WPS (.SIF)"
+                              >
+                                SIF
+                              </button>
+
+                              {isDraftBatch && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setBatchToDelete(b);
+                                    setIsDeleteConfirmOpen(true);
+                                  }}
+                                  className="h-6 w-6 flex items-center justify-center rounded text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 border border-transparent hover:border-rose-200 transition-colors cursor-pointer"
+                                  title="Delete Draft Batch"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
-                      ) : (
-                        filteredPayslips.map((p) => {
-                          const isWpsReady = p.wps_status === 'ready';
-                          const totAllowances =
-                            Number(p.housing_allowance || 0) +
-                            Number(p.transport_allowance || 0) +
-                            Number(p.other_allowances || 0);
-
-                          const breakdown = Array.isArray(p.adjustments_breakdown)
-                            ? p.adjustments_breakdown
-                            : (typeof p.adjustments_breakdown === 'string'
-                                ? (function() { try { return JSON.parse(p.adjustments_breakdown || '[]'); } catch { return []; } })()
-                                : []);
-
-                          return (
-                            <tr
-                              key={p.id}
-                              className="hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition-colors"
-                            >
-                              <td className="py-3 px-4">
-                                <div className="font-bold text-slate-900 dark:text-white">
-                                  {p.employee_name}
-                                </div>
-                                <div className="text-[11px] text-slate-400 font-mono">
-                                  {p.employee_number || 'EMP'} • {p.department || 'General'}
-                                </div>
-                                <div className="text-[10px] text-slate-500">
-                                  QID: {p.national_id_number || 'None'}
-                                </div>
-                                {breakdown.length > 0 && (
-                                  <div className="mt-1 flex flex-wrap gap-1">
-                                    <span
-                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800"
-                                      title={`${breakdown.length} approved variable adjustment(s) applied`}
-                                    >
-                                      <span>{breakdown.length} Adj.</span>
-                                    </span>
-                                  </div>
-                                )}
-                              </td>
-
-                              <td className="py-3 px-3">
-                                {isWpsReady ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                                    <Check className="w-3 h-3" />
-                                    <span>WPS Ready</span>
-                                  </span>
-                                ) : (
-                                  <span
-                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800"
-                                    title="Missing 29-char Qatar IBAN or QID"
-                                  >
-                                    <AlertCircle className="w-3 h-3" />
-                                    <span>Missing QA IBAN / QID</span>
-                                  </span>
-                                )}
-                              </td>
-
-                              <td className="py-3 px-3 font-mono font-medium text-slate-700 dark:text-slate-300">
-                                {p.working_days ?? 30}
-                              </td>
-
-                              <td className="py-3 px-3 font-mono text-[11px]">
-                                <div>{Number(p.verified_attendance_hours || 0).toFixed(1)} hrs</div>
-                                {Number(p.overtime_hours || 0) > 0 && (
-                                  <div className="text-emerald-600 dark:text-emerald-400 font-bold">
-                                    +{Number(p.overtime_hours).toFixed(1)} OT
-                                  </div>
-                                )}
-                              </td>
-
-                              <td className="py-3 px-3 font-mono font-medium text-slate-700 dark:text-slate-300">
-                                {Number(p.base_salary || 0).toLocaleString()}
-                              </td>
-
-                              <td className="py-3 px-3 font-mono font-medium text-slate-700 dark:text-slate-300">
-                                {totAllowances > 0 ? `+${totAllowances.toLocaleString()}` : '0'}
-                              </td>
-
-                              <td className="py-3 px-3 font-mono text-[11px]">
-                                {Number(p.overtime_pay || 0) > 0 && (
-                                  <div className="font-medium text-emerald-600 dark:text-emerald-400">
-                                    +{Number(p.overtime_pay).toLocaleString()} OT
-                                  </div>
-                                )}
-                                {Number(p.task_benefit_pay || 0) > 0 && (
-                                  <div className="text-cyan-600 dark:text-cyan-400 font-semibold text-[10px]">
-                                    +{Number(p.task_benefit_pay).toLocaleString()} Task
-                                  </div>
-                                )}
-                                {Number(p.bonus_pay || 0) > 0 && (
-                                  <div className="text-indigo-600 dark:text-indigo-400 font-semibold text-[10px]">
-                                    +{Number(p.bonus_pay).toLocaleString()} Bonus
-                                  </div>
-                                )}
-                                {Number(p.overtime_pay || 0) === 0 && Number(p.task_benefit_pay || 0) === 0 && Number(p.bonus_pay || 0) === 0 && (
-                                  <span className="text-slate-400">0</span>
-                                )}
-                              </td>
-
-                              <td className="py-3 px-3 font-mono text-[11px]">
-                                {Number(p.deductions || 0) > 0 ? (
-                                  <div className="font-medium text-rose-600 dark:text-rose-400">
-                                    -{Number(p.deductions).toLocaleString()}
-                                  </div>
-                                ) : (
-                                  <span className="text-slate-400">0</span>
-                                )}
-                                {Number(p.loan_deduction || 0) > 0 && (
-                                  <div className="text-rose-500 text-[10px]">
-                                    (Loan: -{Number(p.loan_deduction).toLocaleString()})
-                                  </div>
-                                )}
-                                {Number(p.penalty_deduction || 0) > 0 && (
-                                  <div className="text-rose-500 text-[10px]">
-                                    (Penalty: -{Number(p.penalty_deduction).toLocaleString()})
-                                  </div>
-                                )}
-                                {Number(p.other_deductions || 0) > 0 && (
-                                  <div className="text-rose-500 text-[10px]">
-                                    (Recovery: -{Number(p.other_deductions).toLocaleString()})
-                                  </div>
-                                )}
-                              </td>
-
-                              <td className="py-3 px-3 font-mono font-bold text-amber-600 dark:text-amber-400">
-                                {Number(p.net_salary || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                              </td>
-
-                              <td className="py-3 px-4 text-right">
-                                <div className="flex items-center justify-end gap-1.5">
-                                  {/* Edit button (draft only) */}
-                                  {isDraft && (
-                                    <button
-                                      type="button"
-                                      onClick={() => openEditPayslip(p)}
-                                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                                      title="Adjust payslip components"
-                                    >
-                                      <Edit3 className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                                    </button>
-                                  )}
-
-                                  {/* Print single payslip */}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setPrintSinglePayslip(p);
-                                      setIsPrintModalOpen(true);
-                                    }}
-                                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                                    title="View & Print Official Payslip"
-                                  >
-                                    <Printer className="w-3.5 h-3.5 text-blue-500" />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* BATCH DETAIL / PAYSLIPS VIEW */
+        <div className="space-y-6 animate-fadeIn">
+          {/* Breadcrumb Header & Sub-Header Actions */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-4 sm:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs">
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Breadcrumb Navigation */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setViewMode('registry')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-slate-700 dark:text-slate-300 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  title="Return to Batch Registry"
+                >
+                  <span>← Back to All Batches</span>
+                </button>
+                <span className="text-slate-300 dark:text-slate-700 font-bold">/</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm sm:text-base font-bold text-slate-900 dark:text-white font-mono">
+                    {selectedBatch?.batch_code || 'Batch'}
+                  </span>
+                  <span className="text-xs sm:text-sm font-medium text-slate-500 dark:text-slate-400">
+                    ({formatMonthName(selectedBatch?.salary_year_month)})
+                  </span>
                 </div>
               </div>
-            </>
-          )}
+
+              {/* Status Badge */}
+              {selectedBatch && (
+                <span
+                  className={`text-[11px] font-bold uppercase px-2.5 py-1 rounded-full border ${
+                    selectedBatch.status === 'locked'
+                      ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800'
+                      : selectedBatch.status === 'exported'
+                      ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                      : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                  }`}
+                >
+                  {selectedBatch.status}
+                </span>
+              )}
+            </div>
+
+            {/* Pinned Sub-Header Action Buttons */}
+            <div className="flex items-center flex-wrap gap-2">
+              {selectedBatch && isDraft && (
+                <button
+                  type="button"
+                  onClick={handleSyncAdjustments}
+                  disabled={isSyncingAdjustments}
+                  className="flex items-center gap-1.5 h-10 px-3 py-2 text-xs font-semibold rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
+                  title="Recalculate and pull approved overtime, bonuses and deductions into draft payslips"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingAdjustments ? 'animate-spin' : ''}`} />
+                  <span className="hidden sm:inline">Sync Adjustments</span>
+                </button>
+              )}
+
+              {selectedBatch && isDraft && (
+                <button
+                  type="button"
+                  onClick={() => setIsLockConfirmOpen(true)}
+                  className="flex items-center gap-1.5 h-10 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-800 dark:bg-slate-700 hover:bg-slate-900 text-white shadow-2xs transition-colors cursor-pointer"
+                  title="Seal batch and sync attendance hours"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Lock & Seal</span>
+                </button>
+              )}
+
+              {selectedBatch && (
+                <button
+                  type="button"
+                  onClick={() => handleExportSIF(selectedBatch.id, selectedBatch.batch_code)}
+                  className="flex items-center gap-1.5 h-10 px-3 py-2 text-xs font-semibold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs transition-colors cursor-pointer"
+                  title="Download official Qatar Central Bank .SIF file"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Export WPS (.SIF)</span>
+                </button>
+              )}
+
+              {selectedBatch && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPrintSinglePayslip(null);
+                    setIsPrintModalOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 h-10 px-3 py-2 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  title="Print All Payslips"
+                >
+                  <Printer className="w-3.5 h-3.5 text-blue-500" />
+                  <span className="hidden sm:inline">Print All</span>
+                </button>
+              )}
+
+              {selectedBatch && isDraft && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBatchToDelete(selectedBatch);
+                    setIsDeleteConfirmOpen(true);
+                  }}
+                  className="h-10 p-2.5 text-xs rounded-xl border border-rose-200 dark:border-rose-900/60 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer"
+                  title="Delete Draft Batch"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setShowDetailSummary((prev) => !prev)}
+                className={`h-10 px-3 text-xs font-semibold rounded-xl border transition-colors cursor-pointer flex items-center gap-1.5 ${
+                  showDetailSummary
+                    ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-900'
+                    : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-50'
+                }`}
+                title="Toggle Metrics Summary"
+              >
+                {showDetailSummary ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                <span>Summary</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  fetchBatches();
+                  if (selectedBatchId) fetchBatchDetails(selectedBatchId);
+                }}
+                disabled={isLoadingBatches || isLoadingDetails}
+                className="h-10 p-2.5 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Refresh Data"
+              >
+                <RefreshCw className={`w-4 h-4 ${(isLoadingBatches || isLoadingDetails) ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+          </div>
+
+      {/* 2. Metrics Bar: Slim Single-Line 28px by default or full grid when toggled */}
+      {showDetailSummary ? (
+        <div className="bg-slate-50 dark:bg-slate-900/70 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-2xs">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 lg:divide-x divide-slate-200 dark:divide-slate-800 text-xs">
+            <div className="px-2">
+              <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400 block">Employees</span>
+              <span className="text-[16px] font-bold text-slate-900 dark:text-white font-mono mt-0.5 block">
+                {selectedBatch ? selectedBatch.total_employees : 0} <span className="text-[11px] font-normal text-slate-500 font-sans">active</span>
+              </span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 block mt-0.5">
+                {kpiMetrics.readyCount} WPS Ready ({kpiMetrics.wpsPct}%)
+              </span>
+            </div>
+
+            <div className="px-2 lg:pl-4">
+              <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400 block">Base Salaries</span>
+              <span className="text-[15px] font-bold text-slate-900 dark:text-white font-mono mt-0.5 block">
+                {Number(selectedBatch?.total_base_salary || 0).toLocaleString()} QAR
+              </span>
+              <span className="text-[11px] text-slate-400 block mt-0.5">Contract Base</span>
+            </div>
+
+            <div className="px-2 lg:pl-4">
+              <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400 block">Allowances</span>
+              <span className="text-[15px] font-bold text-slate-900 dark:text-white font-mono mt-0.5 block">
+                +{Number(selectedBatch?.total_allowances || 0).toLocaleString()} QAR
+              </span>
+              <span className="text-[11px] text-slate-400 block mt-0.5">Housing & Transport</span>
+            </div>
+
+            <div className="px-2 lg:pl-4">
+              <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400 block">Overtime & Variable</span>
+              <span className="text-[15px] font-bold text-emerald-600 dark:text-emerald-400 font-mono mt-0.5 block">
+                +{Number(selectedBatch?.total_overtime_pay || 0).toLocaleString()} QAR
+              </span>
+              <span className="text-[11px] text-emerald-600/80 dark:text-emerald-400/80 block mt-0.5">Attn & Tasks</span>
+            </div>
+
+            <div className="px-2 lg:pl-4">
+              <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400 block">Deductions</span>
+              <span className="text-[15px] font-bold text-rose-600 dark:text-rose-400 font-mono mt-0.5 block">
+                -{Number(selectedBatch?.total_deductions || 0).toLocaleString()} QAR
+              </span>
+              <span className="text-[11px] text-rose-600/80 dark:text-rose-400/80 block mt-0.5">Unpaid & Loans</span>
+            </div>
+
+            <div className="px-2 lg:pl-4 col-span-2 sm:col-span-1">
+              <span className="text-[12px] font-medium text-slate-700 dark:text-slate-300 block">Net Disbursement</span>
+              <span className="text-[17px] font-extrabold text-amber-600 dark:text-amber-400 font-mono mt-0.5 block">
+                {Number(selectedBatch?.total_net_salary || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR
+              </span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 block mt-0.5">
+                Period: {selectedBatch?.salary_year_month || 'N/A'}
+              </span>
+            </div>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="h-7 min-h-[28px] px-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg flex items-center justify-between text-[11.5px] text-slate-600 dark:text-slate-400">
+          <div className="flex items-center gap-4">
+            <span>Staff: <strong className="font-mono text-slate-900 dark:text-white">{selectedBatch ? selectedBatch.total_employees : 0}</strong> ({kpiMetrics.readyCount} WPS Ready)</span>
+            <span>Base: <strong className="font-mono text-slate-900 dark:text-white">{Number(selectedBatch?.total_base_salary || 0).toLocaleString()} QAR</strong></span>
+            <span>Allowances: <strong className="font-mono text-slate-900 dark:text-white">+{Number(selectedBatch?.total_allowances || 0).toLocaleString()} QAR</strong></span>
+            <span>OT/Var: <strong className="font-mono text-emerald-600 dark:text-emerald-400">+{Number(selectedBatch?.total_overtime_pay || 0).toLocaleString()} QAR</strong></span>
+            <span>Deductions: <strong className="font-mono text-rose-600 dark:text-rose-400">-{Number(selectedBatch?.total_deductions || 0).toLocaleString()} QAR</strong></span>
+            <span>Net: <strong className="font-mono text-amber-600 dark:text-amber-400">{Number(selectedBatch?.total_net_salary || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR</strong></span>
+          </div>
+          <span className="text-[10.5px] text-slate-400">{selectedBatch?.salary_year_month || ''}</span>
+        </div>
+      )}
+
+      {/* 3. Slim Single-Line WPS Validation Warning Banner */}
+      {currentBatchData && currentBatchData.wps_missing_count > 0 && (
+        <div className="flex items-center justify-between px-4 py-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-800/80 text-xs text-amber-800 dark:text-amber-300 animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span className="font-medium">
+              {currentBatchData.wps_missing_count} employee{currentBatchData.wps_missing_count > 1 ? 's' : ''} missing valid Qatar IBAN or QID.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setWpsFilter((prev) => (prev === 'missing' ? 'ALL' : 'missing'))}
+            className="px-2.5 py-1 rounded-lg bg-amber-200/60 dark:bg-amber-900/60 hover:bg-amber-200 text-amber-900 dark:text-amber-100 font-semibold text-[11px] transition cursor-pointer shrink-0"
+          >
+            {wpsFilter === 'missing' ? 'Show All Employees' : 'View Missing'}
+          </button>
+        </div>
+      )}
+
+      {/* 4. Full-Width Employee Payslips Table */}
+      {!selectedBatch ? (
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-12 text-center text-slate-400 text-xs">
+          Select or generate a payroll batch above to view detailed payslips and generate WPS files.
+        </div>
+      ) : (
+        <div className="bg-white dark:bg-slate-900 rounded-lg border border-slate-200/80 dark:border-slate-800 shadow-2xs overflow-hidden">
+          {/* Table Filter Toolbar */}
+          <div className="h-9 min-h-[36px] px-3 bg-slate-50/60 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search employee, ID, QID, department..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full h-7 pl-8 pr-2 text-[12px] rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-amber-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              {/* WPS Status Filter */}
+              <select
+                value={wpsFilter}
+                onChange={(e) => setWpsFilter(e.target.value)}
+                className="h-7 text-[11.5px] font-medium px-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none"
+              >
+                <option value="ALL">WPS: All</option>
+                <option value="ready">WPS Ready</option>
+                <option value="missing">Missing IBAN / QID</option>
+              </select>
+
+              {/* Department Filter */}
+              <select
+                value={deptFilter}
+                onChange={(e) => setDeptFilter(e.target.value)}
+                className="h-7 text-[11.5px] font-medium px-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none max-w-[130px] truncate"
+              >
+                <option value="ALL">Dept: All</option>
+                {uniqueDepts.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* High-Density Table with Sticky Header */}
+          <div className="max-h-[calc(100vh-140px)] overflow-y-auto">
+            <table className="w-full text-left border-collapse">
+              <thead className="sticky top-0 z-20 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-[11.5px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
+                <tr className="h-8">
+                  <th className="py-1 px-2.5">Employee</th>
+                  <th className="py-1 px-2.5">WPS Status</th>
+                  <th className="py-1 px-2.5">Days</th>
+                  <th className="py-1 px-2.5">Hours / OT</th>
+                  <th className="py-1 px-2.5 text-right">Base Wage</th>
+                  <th className="py-1 px-2.5 text-right">Allowances</th>
+                  <th className="py-1 px-2.5 text-right">Variable / OT</th>
+                  <th className="py-1 px-2.5 text-right">Deductions</th>
+                  <th className="py-1 px-2.5 text-right font-bold text-slate-900 dark:text-white">Net (QAR)</th>
+                  <th className="py-1 px-2.5 text-right w-16">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-[12.5px] text-slate-800 dark:text-slate-200">
+                {filteredPayslips.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="py-8 text-center text-slate-400 text-xs">
+                      No employee payslips found matching current filters.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredPayslips.map((p) => {
+                    const isWpsReady = p.wps_status === 'ready';
+                    const totAllowances =
+                      Number(p.housing_allowance || 0) +
+                      Number(p.transport_allowance || 0) +
+                      Number(p.other_allowances || 0);
+
+                    const breakdown = Array.isArray(p.adjustments_breakdown)
+                      ? p.adjustments_breakdown
+                      : (typeof p.adjustments_breakdown === 'string'
+                          ? (function() { try { return JSON.parse(p.adjustments_breakdown || '[]'); } catch { return []; } })()
+                          : []);
+
+                    const totalVar =
+                      Number(p.overtime_pay || 0) +
+                      Number(p.task_benefit_pay || 0) +
+                      Number(p.bonus_pay || 0);
+
+                    return (
+                      <tr
+                        key={p.id}
+                        className="h-8 odd:bg-white dark:odd:bg-slate-900 even:bg-slate-50/40 dark:even:bg-slate-800/40 hover:bg-slate-50 dark:hover:bg-slate-800/70 border-b border-slate-200/60 dark:border-slate-800/60 transition-colors"
+                      >
+                        {/* Employee Column */}
+                        <td className="py-1 px-2.5 align-middle">
+                          <span
+                            className="font-medium text-slate-900 dark:text-white truncate max-w-[170px] block"
+                            title={`${p.employee_name} (${p.employee_number || 'EMP'}) • ${p.department || 'General'} • QID: ${p.national_id_number || 'None'}${breakdown.length > 0 ? ` • ${breakdown.length} Adj.` : ''}`}
+                          >
+                            {p.employee_name}
+                          </span>
+                        </td>
+
+                        {/* WPS Status */}
+                        <td className="py-1 px-2.5 align-middle whitespace-nowrap">
+                          <span
+                            className={`inline-flex items-center justify-center h-5 text-[10.5px] font-semibold px-1.5 rounded border ${
+                              isWpsReady
+                                ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
+                                : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+                            }`}
+                            title={isWpsReady ? 'Valid Qatar IBAN & QID' : 'Missing 29-char Qatar IBAN or QID'}
+                          >
+                            {isWpsReady ? 'Ready' : 'Missing'}
+                          </span>
+                        </td>
+
+                        {/* Days */}
+                        <td className="py-1 px-2.5 align-middle font-mono text-[12px] text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                          {p.working_days ?? 30}d
+                        </td>
+
+                        {/* Hours / OT */}
+                        <td className="py-1 px-2.5 align-middle font-mono text-[12px] text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                          <span title={Number(p.overtime_hours || 0) > 0 ? `+${Number(p.overtime_hours).toFixed(1)} OT` : ''}>
+                            {Number(p.verified_attendance_hours || 0).toFixed(1)}h{Number(p.overtime_hours || 0) > 0 ? ` (+${Number(p.overtime_hours).toFixed(1)})` : ''}
+                          </span>
+                        </td>
+
+                        {/* Base Wage */}
+                        <td className="py-1 px-2.5 align-middle text-right font-mono text-[12px] whitespace-nowrap">
+                          {Number(p.base_salary || 0).toLocaleString()}
+                        </td>
+
+                        {/* Allowances */}
+                        <td className="py-1 px-2.5 align-middle text-right font-mono text-[12px] whitespace-nowrap">
+                          {totAllowances > 0 ? `+${totAllowances.toLocaleString()}` : '0'}
+                        </td>
+
+                        {/* Variable / OT */}
+                        <td className="py-1 px-2.5 align-middle text-right font-mono text-[12px] whitespace-nowrap">
+                          {totalVar > 0 ? (
+                            <span
+                              className="text-emerald-600 dark:text-emerald-400 font-medium"
+                              title={`OT: ${Number(p.overtime_pay || 0).toLocaleString()} | Task: ${Number(p.task_benefit_pay || 0).toLocaleString()} | Bonus: ${Number(p.bonus_pay || 0).toLocaleString()}`}
+                            >
+                              +{totalVar.toLocaleString()}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">0</span>
+                          )}
+                        </td>
+
+                        {/* Deductions */}
+                        <td className="py-1 px-2.5 align-middle text-right font-mono text-[12px] whitespace-nowrap">
+                          {Number(p.deductions || 0) > 0 ? (
+                            <span
+                              className="text-rose-600 dark:text-rose-400 font-medium"
+                              title={`Loan: ${Number(p.loan_deduction || 0).toLocaleString()} | Penalty: ${Number(p.penalty_deduction || 0).toLocaleString()} | Other: ${Number(p.other_deductions || 0).toLocaleString()}`}
+                            >
+                              -{Number(p.deductions).toLocaleString()}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">0</span>
+                          )}
+                        </td>
+
+                        {/* Net (QAR) */}
+                        <td className="py-1 px-2.5 align-middle text-right font-mono font-bold text-[12px] text-amber-600 dark:text-amber-400 whitespace-nowrap">
+                          {Number(p.net_salary || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} QAR
+                        </td>
+
+                        {/* Actions */}
+                        <td className="py-1 px-2.5 align-middle text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-1">
+                            {isDraft && (
+                              <button
+                                type="button"
+                                onClick={() => openEditPayslip(p)}
+                                className="h-6 w-6 flex items-center justify-center rounded text-slate-500 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/40 transition cursor-pointer"
+                                title="Adjust payslip components"
+                              >
+                                <Edit3 className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPrintSinglePayslip(p);
+                                setIsPrintModalOpen(true);
+                              }}
+                              className="h-6 w-6 flex items-center justify-center rounded text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition cursor-pointer"
+                              title="View & Print Official Payslip"
+                            >
+                              <Printer className="w-3.5 h-3.5 text-blue-500" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openEmailPayslip(p)}
+                              className="h-6 w-6 flex items-center justify-center rounded text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition cursor-pointer"
+                              title="Send Payslip by Email"
+                            >
+                              <Mail className="w-3.5 h-3.5 text-indigo-500" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openMessagePayslip(p)}
+                              className="h-6 w-6 flex items-center justify-center rounded text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition cursor-pointer"
+                              title="Send Payslip via WhatsApp / SMS"
+                            >
+                              <MessageCircle className="w-3.5 h-3.5 text-emerald-500" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+        </div>
+      )}
 
       {/* 4. MODAL: Generate Monthly Payroll Batch */}
       {isGenerateModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fadeIn"
+          onClick={() => setIsGenerateModalOpen(false)}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-600 flex items-center justify-center">
@@ -1068,8 +1383,13 @@ export function PayrollBatchesView() {
               <button
                 type="button"
                 onClick={() => setIsGenerateModalOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                className="flex items-center gap-1.5 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer group"
+                title="Close (Esc)"
+                aria-label="Close dialog"
               >
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 group-hover:border-slate-300">
+                  Esc
+                </span>
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -1134,8 +1454,14 @@ export function PayrollBatchesView() {
 
       {/* 5. MODAL: Edit Payslip (Draft only) */}
       {editingPayslip && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fadeIn"
+          onClick={() => setEditingPayslip(null)}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
               <div>
                 <h3 className="text-sm font-bold text-slate-900 dark:text-white">
@@ -1148,8 +1474,13 @@ export function PayrollBatchesView() {
               <button
                 type="button"
                 onClick={() => setEditingPayslip(null)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                className="flex items-center gap-1.5 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer group"
+                title="Close (Esc)"
+                aria-label="Close dialog"
               >
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 group-hover:border-slate-300">
+                  Esc
+                </span>
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -1281,8 +1612,14 @@ export function PayrollBatchesView() {
 
       {/* 6. MODAL: Official Qatar Payslip Printable View */}
       {isPrintModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-4xl rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fadeIn"
+          onClick={() => setIsPrintModalOpen(false)}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 w-full max-w-4xl rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* Header controls (hidden on print) */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800 print:hidden">
               <div className="flex items-center gap-2">
@@ -1300,11 +1637,36 @@ export function PayrollBatchesView() {
                   <Printer className="w-4 h-4" />
                   <span>Print / Save PDF</span>
                 </button>
+                {printSinglePayslip && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => openEmailPayslip(printSinglePayslip)}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 text-xs font-bold shadow-xs cursor-pointer"
+                    >
+                      <Mail className="w-4 h-4 text-indigo-600" />
+                      <span>Send by Email</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openMessagePayslip(printSinglePayslip)}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 text-emerald-700 dark:text-emerald-300 text-xs font-bold shadow-xs cursor-pointer"
+                    >
+                      <MessageCircle className="w-4 h-4 text-emerald-600" />
+                      <span>Send WhatsApp / SMS</span>
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   onClick={() => setIsPrintModalOpen(false)}
-                  className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                  className="flex items-center gap-1.5 p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer group"
+                  title="Close (Esc)"
+                  aria-label="Close dialog"
                 >
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 group-hover:border-slate-300">
+                    Esc
+                  </span>
                   <X className="w-5 h-5" />
                 </button>
               </div>
@@ -1580,16 +1942,36 @@ export function PayrollBatchesView() {
 
       {/* 7. MODAL: Lock Batch Confirmation */}
       {isLockConfirmOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4">
-            <div className="flex items-center gap-3 text-purple-600">
-              <Lock className="w-6 h-6" />
-              <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                Seal & Lock Payroll Batch?
-              </h3>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fadeIn"
+          onClick={() => setIsLockConfirmOpen(false)}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2.5 text-purple-600 dark:text-purple-400">
+                <Lock className="w-5 h-5 shrink-0" />
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  Seal & Lock Payroll Batch?
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsLockConfirmOpen(false)}
+                className="flex items-center gap-1.5 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer group"
+                title="Close (Esc)"
+                aria-label="Close dialog"
+              >
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 group-hover:border-slate-300">
+                  Esc
+                </span>
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Locking this batch marks it as finalized and converts matching verified attendance records for {selectedBatch?.salary_year_month} to <strong>synced</strong>. Once locked, payslip amounts cannot be modified.
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              Locking this batch marks it as finalized and converts matching verified attendance records for <strong>{selectedBatch?.salary_year_month}</strong> to <strong>synced</strong>. Once locked, payslip amounts cannot be modified.
             </p>
             <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
               <button
@@ -1615,21 +1997,50 @@ export function PayrollBatchesView() {
 
       {/* 8. MODAL: Delete Batch Confirmation */}
       {isDeleteConfirmOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4">
-            <div className="flex items-center gap-3 text-rose-600">
-              <Trash2 className="w-6 h-6" />
-              <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                Delete Draft Batch?
-              </h3>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fadeIn"
+          onClick={() => {
+            setIsDeleteConfirmOpen(false);
+            setBatchToDelete(null);
+          }}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2.5 text-rose-600 dark:text-rose-400">
+                <Trash2 className="w-5 h-5 shrink-0" />
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  Delete Draft Batch?
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDeleteConfirmOpen(false);
+                  setBatchToDelete(null);
+                }}
+                className="flex items-center gap-1.5 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer group"
+                title="Close (Esc)"
+                aria-label="Close dialog"
+              >
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 group-hover:border-slate-300">
+                  Esc
+                </span>
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Are you sure you want to delete batch <strong>{selectedBatch?.batch_code}</strong>? All generated employee payslips in this batch will be permanently deleted.
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              Are you sure you want to delete batch <strong>{(batchToDelete || selectedBatch)?.batch_code}</strong>? All generated employee payslips in this batch will be permanently deleted.
             </p>
             <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
               <button
                 type="button"
-                onClick={() => setIsDeleteConfirmOpen(false)}
+                onClick={() => {
+                  setIsDeleteConfirmOpen(false);
+                  setBatchToDelete(null);
+                }}
                 className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-200 cursor-pointer"
               >
                 Cancel
@@ -1646,6 +2057,53 @@ export function PayrollBatchesView() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 8. Send Payslip by Email Modal */}
+      {emailPayslipModalOpen && emailPayslipTarget && (
+        <SendEmailModal
+          isOpen={emailPayslipModalOpen}
+          onClose={() => {
+            setEmailPayslipModalOpen(false);
+            setEmailPayslipTarget(null);
+          }}
+          recordModel="payroll.payslip"
+          recordId={emailPayslipTarget.id}
+          recordData={{
+            ...emailPayslipTarget,
+            month: selectedBatch?.salary_year_month || 'October 2026',
+          }}
+          defaultRecipient={emailPayslipTarget.work_email || ''}
+          defaultRecipientName={emailPayslipTarget.employee_name}
+          onSuccess={() => {
+            setActionMessage({ type: 'success', text: `Payslip email dispatched for ${emailPayslipTarget.employee_name}.` });
+          }}
+        />
+      )}
+
+      {/* 9. Send Payslip by WhatsApp / SMS Modal */}
+      {messagePayslipModalOpen && messagePayslipTarget && (
+        <SendMessageModal
+          isOpen={messagePayslipModalOpen}
+          onClose={() => {
+            setMessagePayslipModalOpen(false);
+            setMessagePayslipTarget(null);
+          }}
+          recordModel="payroll.payslip"
+          recordId={messagePayslipTarget.id}
+          recordData={{
+            ...messagePayslipTarget,
+            month: selectedBatch?.salary_year_month || 'October 2026',
+            salary_month: selectedBatch?.salary_year_month || 'October 2026',
+            net_salary_qar: messagePayslipTarget.net_salary || 0,
+            employee_name: messagePayslipTarget.employee_name,
+            phone: messagePayslipTarget.mobile || messagePayslipTarget.phone || '+974 5599 8877',
+          }}
+          defaultChannel="whatsapp"
+          onSuccess={() => {
+            setActionMessage({ type: 'success', text: `Message dispatched for ${messagePayslipTarget.employee_name}.` });
+          }}
+        />
       )}
     </div>
   );

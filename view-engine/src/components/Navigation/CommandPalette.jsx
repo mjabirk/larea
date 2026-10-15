@@ -78,7 +78,7 @@ export function CommandPalette({
             setEmployees(data.employees);
           }
         })
-        .catch(() => {});
+        .catch(() => { });
     }
   }, [isOpen]);
 
@@ -258,7 +258,7 @@ export function CommandPalette({
       id: 'action_biz_modal',
       scope: 'actions',
       scopeLabel: 'Quick Actions',
-      title: 'View Corporate Business Verification',
+      title: 'View Business Verification',
       subtitle: `${currentOrganization?.legal_name || 'Organization'} • Tax/CR: ${currentOrganization?.tax_id || 'TAX-12345678'}`,
       icon: Building2,
       iconBg: '#0284c7',
@@ -509,160 +509,156 @@ export function CommandPalette({
           className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[80vh] animate-scaleUp"
           onClick={(e) => e.stopPropagation()}
         >
-        {/* Search Input Bar */}
-        <div className="relative flex items-center px-4 py-3.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/90">
-          <Search className="w-5 h-5 text-slate-400 shrink-0 ml-1" />
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Type a command, search records, or jump to an app..."
-            className="w-full bg-transparent border-0 px-3 py-1 text-slate-900 dark:text-white placeholder-slate-400 text-sm focus:outline-none focus:ring-0"
-            aria-label="Command search input"
-          />
-          {query ? (
-            <button
-              type="button"
-              onClick={() => setQuery('')}
-              className="p-1 rounded text-slate-400 hover:text-slate-200 transition cursor-pointer"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          ) : (
-            <kbd className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-[10px] font-mono text-slate-500 dark:text-slate-400">
-              <Command className="w-2.5 h-2.5" /> K
-            </kbd>
-          )}
-        </div>
-
-        {/* Results List */}
-        <div
-          ref={listRef}
-          className="p-2 overflow-y-auto max-h-[60vh] space-y-4 divide-y divide-slate-100 dark:divide-slate-800/40"
-          role="listbox"
-        >
-          {filteredItems.length === 0 ? (
-            <div className="p-8 text-center text-slate-400">
-              <p className="text-sm font-medium">No results found for "{query}"</p>
-              <p className="text-xs text-slate-500 mt-1">
-                Try searching for apps (HR, IAM), actions (+ New Attendance), or employee names.
-              </p>
-            </div>
-          ) : (
-            groupedItems.map(([scopeKey, group]) => (
-              <div key={scopeKey} className="pt-2 first:pt-0">
-                <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-400 flex items-center justify-between">
-                  <span>{group.label}</span>
-                  <span className="font-mono text-[10px]">{group.items.length}</span>
-                </div>
-
-                <div className="space-y-1 mt-1">
-                  {group.items.map((item) => {
-                    const currentIndex = flatCounter++;
-                    const isSelected = currentIndex === selectedIndex;
-                    const ItemIcon = item.icon || Layers;
-
-                    return (
-                      <div
-                        key={item.id}
-                        role="option"
-                        aria-selected={isSelected}
-                        onMouseEnter={() => setSelectedIndex(currentIndex)}
-                        onClick={item.action}
-                        className={`px-3 py-2.5 rounded-xl transition cursor-pointer flex items-center justify-between gap-3 text-xs ${
-                          isSelected
-                            ? 'bg-blue-600 text-white shadow-xs'
-                            : 'hover:bg-slate-100 dark:hover:bg-slate-800/70 text-slate-700 dark:text-slate-300'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3 truncate">
-                          <div
-                            className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 shadow-2xs ${
-                              isSelected
-                                ? 'bg-white/20 text-white'
-                                : 'text-white'
-                            }`}
-                            style={!isSelected && item.iconBg ? { backgroundColor: item.iconBg } : {}}
-                          >
-                            <ItemIcon className="w-3.5 h-3.5" />
-                          </div>
-
-                          <div className="truncate text-left rtl:text-right">
-                            <div className="font-semibold text-xs leading-snug truncate">
-                              {item.title}
-                            </div>
-                            <div
-                              className={`text-[11px] truncate leading-tight mt-0.5 ${
-                                isSelected ? 'text-blue-100' : 'text-slate-400'
-                              }`}
-                            >
-                              {item.subtitle}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          {item.badge && (
-                            <span
-                              className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
-                                isSelected
-                                  ? 'bg-white/20 text-white'
-                                  : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
-                              }`}
-                            >
-                              {item.badge}
-                            </span>
-                          )}
-
-                          {isSelected && (
-                            <kbd className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/20 text-white text-[10px] font-mono">
-                              <CornerDownLeft className="w-2.5 h-2.5" />
-                            </kbd>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-
-        {/* Command Palette Keyboard Ergonomics Footer */}
-        <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1">
-              <kbd className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-mono text-[10px]">
-                ↑
+          {/* Search Input Bar */}
+          <div className="relative flex items-center px-4 py-3.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/90">
+            <Search className="w-5 h-5 text-slate-400 shrink-0 ml-1" />
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Type a command, search records, or jump to an app..."
+              className="w-full bg-transparent border-0 px-3 py-1 text-slate-900 dark:text-white placeholder-slate-400 text-sm focus:outline-none focus:ring-0"
+              aria-label="Command search input"
+            />
+            {query ? (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                className="p-1 rounded text-slate-400 hover:text-slate-200 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            ) : (
+              <kbd className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                <Command className="w-2.5 h-2.5" /> K
               </kbd>
-              <kbd className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-mono text-[10px]">
-                ↓
-              </kbd>{' '}
-              Navigate
-            </span>
-            <span className="flex items-center gap-1">
-              <kbd className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-mono text-[10px]">
-                ↵
-              </kbd>{' '}
-              Select
-            </span>
-            <span className="flex items-center gap-1">
-              <kbd className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-mono text-[10px]">
-                Esc
-              </kbd>{' '}
-              Close
-            </span>
+            )}
           </div>
 
-          <div className="font-mono text-[10px] text-slate-400 hidden sm:block">
-            {filteredItems.length} actions available
+          {/* Results List */}
+          <div
+            ref={listRef}
+            className="p-2 overflow-y-auto max-h-[60vh] space-y-4 divide-y divide-slate-100 dark:divide-slate-800/40"
+            role="listbox"
+          >
+            {filteredItems.length === 0 ? (
+              <div className="p-8 text-center text-slate-400">
+                <p className="text-sm font-medium">No results found for "{query}"</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Try searching for apps (HR, IAM), actions (+ New Attendance), or employee names.
+                </p>
+              </div>
+            ) : (
+              groupedItems.map(([scopeKey, group]) => (
+                <div key={scopeKey} className="pt-2 first:pt-0">
+                  <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-400 flex items-center justify-between">
+                    <span>{group.label}</span>
+                    <span className="font-mono text-[10px]">{group.items.length}</span>
+                  </div>
+
+                  <div className="space-y-1 mt-1">
+                    {group.items.map((item) => {
+                      const currentIndex = flatCounter++;
+                      const isSelected = currentIndex === selectedIndex;
+                      const ItemIcon = item.icon || Layers;
+
+                      return (
+                        <div
+                          key={item.id}
+                          role="option"
+                          aria-selected={isSelected}
+                          onMouseEnter={() => setSelectedIndex(currentIndex)}
+                          onClick={item.action}
+                          className={`px-3 py-2.5 rounded-xl transition cursor-pointer flex items-center justify-between gap-3 text-xs ${isSelected
+                              ? 'bg-blue-600 text-white shadow-xs'
+                              : 'hover:bg-slate-100 dark:hover:bg-slate-800/70 text-slate-700 dark:text-slate-300'
+                            }`}
+                        >
+                          <div className="flex items-center gap-3 truncate">
+                            <div
+                              className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 shadow-2xs ${isSelected
+                                  ? 'bg-white/20 text-white'
+                                  : 'text-white'
+                                }`}
+                              style={!isSelected && item.iconBg ? { backgroundColor: item.iconBg } : {}}
+                            >
+                              <ItemIcon className="w-3.5 h-3.5" />
+                            </div>
+
+                            <div className="truncate text-left rtl:text-right">
+                              <div className="font-semibold text-xs leading-snug truncate">
+                                {item.title}
+                              </div>
+                              <div
+                                className={`text-[11px] truncate leading-tight mt-0.5 ${isSelected ? 'text-blue-100' : 'text-slate-400'
+                                  }`}
+                              >
+                                {item.subtitle}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {item.badge && (
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${isSelected
+                                    ? 'bg-white/20 text-white'
+                                    : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
+                                  }`}
+                              >
+                                {item.badge}
+                              </span>
+                            )}
+
+                            {isSelected && (
+                              <kbd className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/20 text-white text-[10px] font-mono">
+                                <CornerDownLeft className="w-2.5 h-2.5" />
+                              </kbd>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Command Palette Keyboard Ergonomics Footer */}
+          <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
+            <div className="flex items-center gap-3">
+              <span className="flex items-center gap-1">
+                <kbd className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-mono text-[10px]">
+                  ↑
+                </kbd>
+                <kbd className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-mono text-[10px]">
+                  ↓
+                </kbd>{' '}
+                Navigate
+              </span>
+              <span className="flex items-center gap-1">
+                <kbd className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-mono text-[10px]">
+                  ↵
+                </kbd>{' '}
+                Select
+              </span>
+              <span className="flex items-center gap-1">
+                <kbd className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-mono text-[10px]">
+                  Esc
+                </kbd>{' '}
+                Close
+              </span>
+            </div>
+
+            <div className="font-mono text-[10px] text-slate-400 hidden sm:block">
+              {filteredItems.length} actions available
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  </ErrorBoundary>,
-  document.body
-);
+    </ErrorBoundary>,
+    document.body
+  );
 }

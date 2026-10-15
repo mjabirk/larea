@@ -10,11 +10,19 @@ import { PrintReportModal } from './PrintReportModal';
 import { formatDateTime } from './Widgets';
 import { useTenancy } from '../../context/TenancyContext';
 
-export function ViewEngine({ schema, initialData = [], onRecordCreated, onRecordUpdated, onRecordDeleted }) {
+export function ViewEngine({
+  schema,
+  initialData = [],
+  initialView = null,
+  onRecordCreated,
+  onRecordUpdated,
+  onRecordDeleted,
+}) {
   const tenancy = useTenancy();
   const currentUser = tenancy?.currentUser;
 
-  const [currentView, setCurrentView] = useState('list');
+  const [currentView, setCurrentView] = useState(() => initialView || schema?.default_view || 'list');
+  const [previousView, setPreviousView] = useState('list');
   const [records, setRecords] = useState(initialData);
   const [activeRecordId, setActiveRecordId] = useState(initialData[0]?.id || null);
   const [draftRecord, setDraftRecord] = useState(null);
@@ -26,11 +34,37 @@ export function ViewEngine({ schema, initialData = [], onRecordCreated, onRecord
   const [sortConfig, setSortConfig] = useState({ field: 'check_in', direction: 'desc' });
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
   const [notification, setNotification] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 80;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, activeFilter, currentView]);
 
   // Sync records if initialData updates
   useEffect(() => {
     setRecords(initialData);
   }, [initialData]);
+
+  // Sync currentView if initialView or schema default_view updates
+  useEffect(() => {
+    if (initialView) {
+      setCurrentView(initialView);
+    } else if (schema?.default_view) {
+      setCurrentView(schema.default_view);
+    }
+  }, [initialView, schema?.default_view]);
+
+  // Notify operational form state to hide compliance footer when in form mode
+  useEffect(() => {
+    const isForm = currentView === 'form';
+    window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: isForm } }));
+    return () => {
+      if (isForm) {
+        window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: false } }));
+      }
+    };
+  }, [currentView]);
 
   const showNotification = (msg, type = 'success') => {
     setNotification({ msg, type });
@@ -43,6 +77,9 @@ export function ViewEngine({ schema, initialData = [], onRecordCreated, onRecord
   }, [records, activeRecordId]);
 
   const openFormView = (record) => {
+    if (currentView !== 'form') {
+      setPreviousView(currentView);
+    }
     setActiveRecordId(record.id);
     setDraftRecord({ ...record });
     setIsDirty(false);
@@ -103,9 +140,17 @@ export function ViewEngine({ schema, initialData = [], onRecordCreated, onRecord
       });
     }
 
-    // Filter chip: All, Draft, Verified, Synced
+    // Filter chip: All, Draft, Verified, Synced, Published, Confirmed
     if (activeFilter !== 'all') {
-      result = result.filter((r) => (r.status || '').toLowerCase() === activeFilter.toLowerCase());
+      const q = activeFilter.toLowerCase();
+      result = result.filter((r) => {
+        const s = (r.status || '').toLowerCase();
+        if (q === 'confirmed') return s === 'confirmed' || s === 'synced';
+        if (q === 'published') return s === 'published' || s === 'verified';
+        if (q === 'verified') return s === 'verified' || s === 'published';
+        if (q === 'synced') return s === 'synced' || s === 'confirmed';
+        return s === q;
+      });
     }
 
     // Sorting
@@ -139,57 +184,99 @@ export function ViewEngine({ schema, initialData = [], onRecordCreated, onRecord
     }
   };
 
-  // New Record
+  // New Record / Shift Assignment
   const handleNew = () => {
-    const newId = records.length > 0 ? Math.max(...records.map((r) => r.id), 0) + 1 : 101;
+    if (currentView !== 'form') {
+      setPreviousView(currentView);
+    }
+
+    // Correctly parse sequence counter to prevent ATT-2026-NaN
+    const currentYear = new Date().getFullYear();
+    let maxSeq = 0;
+    records.forEach((r) => {
+      if (r.code && typeof r.code === 'string') {
+        const match = r.code.match(/(\d+)$/);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (!isNaN(num) && num > maxSeq) maxSeq = num;
+        }
+      }
+      if (typeof r.id === 'number' && !isNaN(r.id) && r.id > maxSeq && r.id < 100000) {
+        maxSeq = r.id;
+      } else if (typeof r.id === 'string') {
+        const match = r.id.match(/(\d+)$/);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (!isNaN(num) && num > maxSeq && num < 100000) maxSeq = num;
+        }
+      }
+    });
+
+    const nextSeq = (maxSeq > 0 ? maxSeq : records.length) + 1;
+    const formattedCode = `ATT-${currentYear}-${String(nextSeq).padStart(4, '0')}`;
+    const newId = nextSeq;
     const now = new Date();
     const nowIso = now.toISOString();
+
     const newRecord = {
       id: newId,
-      code: `ATT-2026-${newId}`,
-      employee_name: currentUser?.full_name || 'Staff Member',
-      department: currentUser?.department || 'Operations',
+      code: formattedCode,
+      isNew: true,
+      employee_id: null,
+      employeeId: null,
+      employee_name: '',
+      employeeName: '',
+      department: '',
       terminal_id: 'Terminal #01 (Main Lobby Gate)',
       check_in: nowIso,
       check_out: null,
-      duration_hours: 0,
+      duration_hours: 8,
       status: 'draft',
-      notes: 'New attendance entry initialized.',
+      notes: '',
       machine_ip: '127.0.0.1',
       ingestion_source: 'Manual HR Entry',
       ingestion_time: formatDateTime(nowIso),
       last_modified_by: currentUser?.full_name || 'Administrator',
     };
-    setRecords((prev) => [newRecord, ...prev]);
-    if (tenancy?.addAttendanceRecord) {
-      tenancy.addAttendanceRecord(newRecord);
-    }
-    if (onRecordCreated) {
-      onRecordCreated(newRecord);
-    }
-    openFormView(newRecord);
-    showNotification('New attendance record created');
+
+    setActiveRecordId(newId);
+    setDraftRecord({ ...newRecord });
+    setIsDirty(false);
+    setCurrentView('form');
   };
 
   // Save changes from Form
   const handleSave = () => {
     if (!draftRecord) return;
-    setRecords((prev) =>
-      prev.map((r) => (r.id === draftRecord.id ? draftRecord : r))
-    );
-    if (tenancy?.updateAttendanceRecord) {
-      tenancy.updateAttendanceRecord(draftRecord.id, draftRecord);
+    const exists = records.some((r) => r.id === draftRecord.id);
+    let updatedRecords;
+    if (exists) {
+      updatedRecords = records.map((r) => (r.id === draftRecord.id ? draftRecord : r));
+      if (tenancy?.updateAttendanceRecord) {
+        tenancy.updateAttendanceRecord(draftRecord.id, draftRecord);
+      }
+      if (onRecordUpdated) {
+        onRecordUpdated(draftRecord);
+      }
+    } else {
+      updatedRecords = [draftRecord, ...records];
+      if (tenancy?.addAttendanceRecord) {
+        tenancy.addAttendanceRecord(draftRecord);
+      }
+      if (onRecordCreated) {
+        onRecordCreated(draftRecord);
+      }
     }
+    setRecords(updatedRecords);
     setIsDirty(false);
     showNotification('Changes saved successfully');
   };
 
-  // Discard changes
+  // Discard changes and return smoothly to previously active view
   const handleDiscard = () => {
-    if (currentRecord) {
-      setDraftRecord({ ...currentRecord });
-      setIsDirty(false);
-    }
+    setIsDirty(false);
+    setDraftRecord(null);
+    setCurrentView(previousView || initialView || schema?.default_view || 'list');
   };
 
   // Bulk actions
@@ -225,24 +312,66 @@ export function ViewEngine({ schema, initialData = [], onRecordCreated, onRecord
     }
   };
 
-  // Breadcrumbs builder
+  const parentTitle = schema?.title?.includes('Roster') || initialView === 'gantt'
+    ? 'Shift Rosters'
+    : 'Attendances';
+
+  const returnTargetView = previousView || initialView || schema?.default_view || 'list';
+
+  // Breadcrumbs builder with clickable return navigation
   const breadcrumbs = useMemo(() => {
-    return [{ label: 'Attendances', onClick: () => setCurrentView('list') }];
-  }, []);
+    if (currentView === 'form') {
+      const isNew = draftRecord?.isNew || !draftRecord?.id;
+      const recordLabel = isNew
+        ? (schema?.title?.includes('Roster') || initialView === 'gantt' ? 'New Shift' : 'New Attendance')
+        : (draftRecord?.code && !draftRecord.code.includes('NaN') ? draftRecord.code : `Record #${draftRecord?.id || ''}`);
+
+      return [
+        {
+          label: `← ${parentTitle}`,
+          onClick: () => {
+            setIsDirty(false);
+            setDraftRecord(null);
+            setCurrentView(returnTargetView);
+          },
+        },
+        {
+          label: recordLabel,
+          onClick: null,
+        },
+      ];
+    }
+
+    return [
+      {
+        label: parentTitle,
+        onClick: () => setCurrentView(initialView || schema?.default_view || 'list'),
+      },
+    ];
+  }, [currentView, parentTitle, returnTargetView, draftRecord, initialView, schema?.default_view]);
 
   const activeRecordPill = currentView === 'form'
     ? draftRecord?.code || currentRecord?.code || `ATT-${activeRecordId}`
     : null;
 
+  const paginatedRecords = useMemo(() => {
+    if (currentView !== 'list') return filteredRecords;
+    const start = (currentPage - 1) * pageSize;
+    return filteredRecords.slice(start, start + pageSize);
+  }, [filteredRecords, currentPage, currentView, pageSize]);
+
   // Pager builder
   const pager = useMemo(() => {
     if (currentView !== 'form') {
+      const total = filteredRecords.length;
+      const start = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+      const end = Math.min(currentPage * pageSize, total);
       return {
-        label: `1-${filteredRecords.length} of ${filteredRecords.length}`,
-        canPrev: false,
-        canNext: false,
-        onPrev: () => {},
-        onNext: () => {},
+        label: `${start}-${end} / ${total}`,
+        canPrev: currentPage > 1,
+        canNext: currentPage * pageSize < total,
+        onPrev: () => setCurrentPage((p) => Math.max(1, p - 1)),
+        onNext: () => setCurrentPage((p) => p + 1),
       };
     }
 
@@ -274,7 +403,7 @@ export function ViewEngine({ schema, initialData = [], onRecordCreated, onRecord
         }
       },
     };
-  }, [currentView, filteredRecords, draftRecord, currentRecord]);
+  }, [currentView, filteredRecords, draftRecord, currentRecord, currentPage, pageSize]);
 
   return (
     <div className="flex-1 flex flex-col font-sans">
@@ -302,8 +431,14 @@ export function ViewEngine({ schema, initialData = [], onRecordCreated, onRecord
         schema={schema}
         currentView={currentView}
         onViewChange={(v) => {
+          if (currentView !== 'form') {
+            setPreviousView(currentView);
+          }
           if (v === 'form' && !draftRecord && currentRecord) {
             setDraftRecord({ ...currentRecord });
+          } else if (v !== 'form') {
+            setDraftRecord(null);
+            setIsDirty(false);
           }
           setCurrentView(v);
         }}
@@ -328,7 +463,7 @@ export function ViewEngine({ schema, initialData = [], onRecordCreated, onRecord
         {currentView === 'list' && (
           <ListView
             schema={schema}
-            records={filteredRecords}
+            records={paginatedRecords}
             selectedIds={selectedIds}
             onToggleSelect={handleToggleSelect}
             onSelectAll={handleSelectAll}

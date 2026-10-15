@@ -41,6 +41,10 @@ import { OrganizationsView } from './components/Tenancy/OrganizationsView';
 import { AppGridOverlay } from './components/Navigation/AppGridOverlay';
 import { SubNavBar } from './components/Navigation/SubNavBar';
 import { CommandPalette } from './components/Navigation/CommandPalette';
+import { NotificationBell } from './components/Navigation/NotificationBell';
+import { ChatProvider } from './context/ChatContext';
+import ChatPopover from './components/Chat/ChatPopover';
+import ChatDock from './components/Chat/ChatDock';
 import { AccessControlProvider, useAccessControl } from './context/AccessControlContext';
 import { APP_MODULES, getModuleById, getMenuById } from './registry/moduleRegistry';
 import { useClickOutside } from './hooks/useClickOutside';
@@ -310,6 +314,24 @@ function MainAppShell() {
   const [policyModalOpen, setPolicyModalOpen] = useState(false);
   const [selectedPolicyKey, setSelectedPolicyKey] = useState('privacy');
   const [bizModalOpen, setBizModalOpen] = useState(false);
+  const [isOperationalFormActive, setIsOperationalFormActive] = useState(false);
+
+  React.useEffect(() => {
+    const handleFormEvent = (e) => {
+      setIsOperationalFormActive(Boolean(e.detail?.active));
+    };
+    window.addEventListener('larea-operational-form', handleFormEvent);
+    return () => window.removeEventListener('larea-operational-form', handleFormEvent);
+  }, []);
+
+  React.useEffect(() => {
+    setIsOperationalFormActive(false);
+  }, [activeMenuId, activeModuleId]);
+
+  const isOperationalForm =
+    isOperationalFormActive ||
+    (activeModuleId === 'iam' && activeMenuId === 'users' && userViewMode === 'form') ||
+    (activeModuleId === 'hr' && activeMenuId === 'new_employee');
 
   const handleOpenPolicy = (policyKey = 'privacy') => {
     setSelectedPolicyKey(policyKey);
@@ -322,10 +344,13 @@ function MainAppShell() {
 
   const branchMenuRef = useRef(null);
   const userMenuRef = useRef(null);
+  const moduleMenuRef = useRef(null);
+  const [showModuleMenu, setShowModuleMenu] = useState(false);
 
-  // Click-outside dismissal for Organization / Branch switcher and User menu
+  // Click-outside dismissal for Organization / Branch switcher, User menu, and Module switcher
   useClickOutside(branchMenuRef, () => setShowBranchMenu(false), showBranchMenu);
   useClickOutside(userMenuRef, () => setShowUserMenu(false), showUserMenu);
+  useClickOutside(moduleMenuRef, () => setShowModuleMenu(false), showModuleMenu);
 
   const activeModule = getModuleById(activeModuleId);
   const activeMenu = getMenuById(activeModuleId, activeMenuId);
@@ -399,6 +424,14 @@ function MainAppShell() {
     }
   };
 
+  const permittedMenus = React.useMemo(() => {
+    return (activeModule?.menus || []).filter((menu) => hasMenuAccess(menu.id));
+  }, [activeModule, hasMenuAccess]);
+
+  const permittedModules = React.useMemo(() => {
+    return APP_MODULES.filter((m) => hasAppAccess(m.id));
+  }, [hasAppAccess]);
+
   return (
     <div className="app-scalable-root min-h-screen bg-[#f8fafc] dark:bg-slate-950 flex flex-col font-sans text-slate-800 dark:text-slate-100 antialiased selection:bg-blue-100 selection:text-blue-900 transition-colors duration-150">
 
@@ -454,12 +487,12 @@ function MainAppShell() {
         />
       </ErrorBoundary>
 
-      {/* 4. PERMANENT GLOBAL TOP BAR (56px) - Always Mounted Across All Views */}
-      <header className="h-14 bg-[#0f172a] text-white flex items-center justify-between px-4 sticky top-0 z-30 border-b border-slate-800/80 shadow-xs select-none">
+      {/* 4. TIER 1: GLOBAL CONSOLIDATED TOP BAR (56px) - Always Mounted Across All Views */}
+      <header className="h-14 bg-[#0f172a] text-white flex items-center justify-between px-3 sm:px-4 sticky top-0 z-30 border-b border-slate-800/80 shadow-xs select-none gap-2">
         {/* ========================================================================= */}
-        {/* LEFT SIDE: Static 9-Dots App Launcher Icon + Dynamic Breadcrumb */}
+        {/* LEFT SIDE: Brand Logo + Module Switcher + Main Module Links (Tier 1)      */}
         {/* ========================================================================= */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 mr-2">
           {/* Static 9-Dots App Launcher Icon */}
           <button
             type="button"
@@ -467,7 +500,7 @@ function MainAppShell() {
             aria-label={isLauncherOpen ? "Close Workspace Launcher (Esc)" : "Open Application Launcher (9-dots)"}
             aria-haspopup="dialog"
             aria-expanded={isLauncherOpen}
-            className={`p-2 rounded-lg transition cursor-pointer shadow-2xs group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${isLauncherOpen
+            className={`p-2 rounded-lg transition cursor-pointer shadow-2xs group shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${isLauncherOpen
               ? 'bg-blue-600 text-white border border-blue-500 shadow-blue-500/30'
               : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/60'
               }`}
@@ -476,9 +509,18 @@ function MainAppShell() {
             <LayoutGrid className="w-4 h-4 group-hover:scale-105 transition-transform" aria-hidden="true" />
           </button>
 
-          {/* Breadcrumb: Dynamic based on Workspace vs Launcher View */}
+          {/* Brand Logo */}
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-white text-xs shadow-xs tracking-wider">
+              L
+            </div>
+            <span className="font-bold text-slate-100 text-sm hidden lg:inline tracking-tight">
+              Larea ERP
+            </span>
+          </div>
+
           {isLauncherOpen ? (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
               <div className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
               <div className="flex items-center gap-1.5 text-xs">
                 <span className="font-bold text-slate-100 tracking-tight text-sm">
@@ -491,21 +533,84 @@ function MainAppShell() {
               </div>
             </div>
           ) : (
-            <div className="flex items-center gap-2">
-              <div
-                className="w-2.5 h-2.5 rounded-full"
-                style={{ backgroundColor: activeModule.color }}
-              />
-              <div className="flex items-center gap-1.5 text-xs">
-                <span className="font-bold text-slate-100 tracking-tight text-sm">
-                  {activeModule.name}
-                </span>
-                <span className="text-slate-500 font-light">/</span>
-                <span className="font-medium text-slate-300 text-xs truncate max-w-[150px] sm:max-w-none">
-                  {activeMenu.label}
-                </span>
+            <>
+              {/* Module Switcher Dropdown */}
+              <div className="relative shrink-0" ref={moduleMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setShowModuleMenu(!showModuleMenu)}
+                  aria-label={`Current module: ${activeModule?.name}. Click to switch module.`}
+                  aria-expanded={showModuleMenu}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800/70 hover:bg-slate-800 border border-slate-700/60 text-xs text-slate-200 hover:text-white transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                >
+                  <div
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{ backgroundColor: activeModule?.color || '#2563eb' }}
+                  />
+                  <span className="font-semibold text-slate-100 text-xs truncate max-w-[110px] sm:max-w-none">
+                    {activeModule?.name}
+                  </span>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                </button>
+
+                {showModuleMenu && (
+                  <div className="absolute left-0 mt-1.5 w-60 bg-slate-900 border border-slate-700 rounded-xl shadow-xl py-1.5 z-40 text-xs animate-fadeIn">
+                    <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                      Application Modules
+                    </div>
+                    {permittedModules.map((m) => {
+                      const isCurrent = m.id === activeModuleId;
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => {
+                            handleSelectModule(m.id);
+                            setShowModuleMenu(false);
+                          }}
+                          className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between hover:bg-slate-800 transition cursor-pointer ${
+                            isCurrent ? 'text-blue-400 font-semibold bg-slate-800/60' : 'text-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            <div
+                              className="w-2.5 h-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: m.color }}
+                            />
+                            <span className="truncate">{m.name}</span>
+                          </div>
+                          {isCurrent && <Check className="w-3.5 h-3.5 text-blue-400 shrink-0 ml-2" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            </div>
+
+              <div className="h-4 w-[1px] bg-slate-800 hidden sm:block shrink-0" />
+
+              {/* Main Module Links (Employees, Contracts, Attendance, etc.) directly in Tier 1 */}
+              <nav aria-label="Main Module Links" className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 min-w-0">
+                {permittedMenus.map((menu) => {
+                  const isActive = activeMenuId === menu.id;
+                  return (
+                    <button
+                      key={menu.id}
+                      type="button"
+                      onClick={() => handleSelectMenu(menu.id)}
+                      aria-current={isActive ? 'page' : undefined}
+                      className={`px-3 py-1.5 rounded-lg text-xs transition cursor-pointer shrink-0 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                        isActive
+                          ? 'bg-blue-600 text-white font-semibold shadow-xs'
+                          : 'text-slate-300 hover:text-white hover:bg-slate-800/80 font-medium'
+                      }`}
+                    >
+                      {menu.label}
+                    </button>
+                  );
+                })}
+              </nav>
+            </>
           )}
         </div>
 
@@ -650,17 +755,11 @@ function MainAppShell() {
             )}
           </button>
 
-          {/* 5. Notifications Bell */}
-          <button
-            type="button"
-            aria-label="Notifications (1 unread)"
-            aria-haspopup="true"
-            className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
-            title={t('notifications')}
-          >
-            <Bell className="w-4 h-4" aria-hidden="true" />
-            <span className="w-2 h-2 rounded-full bg-blue-500 absolute top-1.5 right-1.5" aria-hidden="true" />
-          </button>
+          {/* 5. Dynamic Enterprise Notifications Bell */}
+          <NotificationBell onNavigate={handleSelectMenu} />
+
+          {/* Real-time Internal Chat & Discuss Popover */}
+          <ChatPopover />
 
           {/* 6. User Profile Avatar & Dropdown (with Click-Outside) */}
           <div className="relative" ref={userMenuRef}>
@@ -759,15 +858,7 @@ function MainAppShell() {
         </div>
       </header>
 
-      {/* 5. SECONDARY SUB-BAR: Context-Aware Top Sub-Navigation (Hidden in Launcher View) */}
-      {!isLauncherOpen && (
-        <SubNavBar
-          activeModuleId={activeModuleId}
-          activeMenuId={activeMenuId}
-          onSelectMenu={handleSelectMenu}
-          onOpenLauncher={() => handleToggleLauncher(true)}
-        />
-      )}
+
 
       {/* 6. WORKSPACE RENDERER ACCORDING TO 2-TIER MODULE & SUB-MENU */}
       <ErrorBoundary title="Workspace Viewport Error">
@@ -803,7 +894,7 @@ function MainAppShell() {
           ) : (
             <>
               {/* Unified Configuration & Settings Screens */}
-              {['hr_config', 'salary_rules', 'wps_config', 'api_keys', 'orgs', 'compliance_alerts'].includes(activeMenuId) && (
+              {['hr_config', 'salary_rules', 'wps_config', 'api_keys', 'orgs', 'compliance_alerts', 'mail_servers', 'mail_templates', 'mail_logs', 'sms_gateways', 'whatsapp_configs', 'whatsapp_templates', 'communication_logs', 'automation_triggers'].includes(activeMenuId) && (
                 <div className="p-4 sm:p-6">
                   <ConfigurationView activeMenuId={activeMenuId} />
                 </div>
@@ -812,6 +903,8 @@ function MainAppShell() {
               {/* Module HR: Attendance Logs */}
               {activeModuleId === 'hr' && activeMenuId === 'attendances' && (
                 <ViewEngine
+                  key="hr-attendances"
+                  initialView="list"
                   schema={VIEW_SCHEMA}
                   initialData={attendanceRecords || []}
                 />
@@ -821,9 +914,19 @@ function MainAppShell() {
               {activeModuleId === 'hr' && activeMenuId === 'rosters' && (
                 <div className="p-4 sm:p-6 space-y-4">
                   <ViewEngine
+                    key="hr-rosters"
+                    initialView="gantt"
                     schema={{
                       ...VIEW_SCHEMA,
                       title: "Shift Rosters & Department Schedules",
+                      default_view: "gantt",
+                      newButtonLabel: "+ Assign Shift",
+                      filterChips: [
+                        { id: 'all', label: 'All' },
+                        { id: 'draft', label: 'Draft' },
+                        { id: 'published', label: 'Published' },
+                        { id: 'confirmed', label: 'Confirmed' },
+                      ],
                     }}
                     initialData={attendanceRecords || []}
                   />
@@ -922,10 +1025,15 @@ function MainAppShell() {
       </ErrorBoundary>
 
       {/* 7. ENTERPRISE STATUTORY COMPLIANCE & LEGAL FOOTER */}
-      <LegalFooter
-        onOpenPolicy={handleOpenPolicy}
-        onOpenBusinessModal={handleOpenBusinessModal}
-      />
+      {!isOperationalForm && (
+        <LegalFooter
+          onOpenPolicy={handleOpenPolicy}
+          onOpenBusinessModal={handleOpenBusinessModal}
+        />
+      )}
+
+      {/* 8. REAL-TIME FLOATING CHAT DOCK (ODOO PATTERN) */}
+      <ChatDock />
     </div>
   );
 }
@@ -1025,7 +1133,9 @@ function App() {
         <LocaleProvider>
           <AuthWrapper>
             <AccessControlProvider>
-              <AppContent />
+              <ChatProvider>
+                <AppContent />
+              </ChatProvider>
             </AccessControlProvider>
           </AuthWrapper>
         </LocaleProvider>

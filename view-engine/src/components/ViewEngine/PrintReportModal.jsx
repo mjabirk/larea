@@ -1,8 +1,11 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { X, Printer } from 'lucide-react';
 import { formatDateTime } from './Widgets';
+import { useModalEscape } from '../../hooks/useModalEscape';
 
 export function PrintReportModal({ isOpen, onClose, schema, records = [] }) {
+  useModalEscape(onClose, isOpen);
+
   if (!isOpen) return null;
 
   const totalHours = records.reduce((acc, r) => acc + (Number(r.duration_hours) || 0), 0);
@@ -15,8 +18,14 @@ export function PrintReportModal({ isOpen, onClose, schema, records = [] }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-fadeIn">
+    <div
+      className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-fadeIn"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-fadeIn"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Modal Toolbar (hidden when printing) */}
         <div className="px-6 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between print:hidden">
           <div className="flex items-center gap-2">
@@ -39,8 +48,13 @@ export function PrintReportModal({ isOpen, onClose, schema, records = [] }) {
             <button
               type="button"
               onClick={onClose}
-              className="p-1.5 rounded-md hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition cursor-pointer"
+              className="flex items-center gap-1.5 p-1.5 rounded-md hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition cursor-pointer group"
+              title="Close (Esc)"
+              aria-label="Close modal"
             >
+              <span className="text-[10px] font-mono px-1 py-0.5 rounded bg-slate-200/80 text-slate-600 border border-slate-300">
+                Esc
+              </span>
               <X className="w-4 h-4" />
             </button>
           </div>

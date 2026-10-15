@@ -22,6 +22,17 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
   const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState(null);
 
+  // Notify operational form state to hide compliance footer when in form mode
+  useEffect(() => {
+    const isForm = viewMode === 'form';
+    window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: isForm } }));
+    return () => {
+      if (isForm) {
+        window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: false } }));
+      }
+    };
+  }, [viewMode]);
+
   // Search & Filter state for ControlPanel
   const [searchTerm, setSearchTerm] = useState('');
   const [activeFilter, setActiveFilter] = useState('all');
@@ -374,13 +385,16 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Standard ControlPanel Container (Odoo-Style Generic View Shell) */}
+      {/* Standard Tier 2 Sticky Record Toolbar Container */}
       <ControlPanel
         schema={employeeSchema}
         currentView={viewMode}
         onViewChange={handleViewChange}
         breadcrumbs={breadcrumbs}
         activeRecordPill={activeRecordPill}
+        recordTitle={viewMode === 'form' ? (selectedEmployee?.full_name || 'New Employee Profile') : null}
+        recordCode={viewMode === 'form' ? (selectedEmployee?.employee_number || 'NEW') : null}
+        recordStatus={viewMode === 'form' ? (selectedEmployee?.status || 'Active') : null}
         pager={pager}
         selectedCount={selectedEmployee ? 1 : 0}
         isDirty={isDirty}

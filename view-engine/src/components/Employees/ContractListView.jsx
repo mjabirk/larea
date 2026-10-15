@@ -14,6 +14,9 @@ import {
   Lock,
   DollarSign,
   ChevronRight,
+  ChevronLeft,
+  Eye,
+  EyeOff,
   ShieldCheck,
   RefreshCw,
   ExternalLink,
@@ -49,6 +52,24 @@ export function ContractListView({ onSelectEmployee }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [detailContract, setDetailContract] = useState(null);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(80);
+  const [showSummary, setShowSummary] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (detailContract) setDetailContract(null);
+        if (isPrintModalOpen) setIsPrintModalOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [detailContract, isPrintModalOpen]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, deptFilter, expiringSoonFilter]);
 
   // Helper for expiry countdown
   const getDaysRemaining = (expiryDateStr) => {
@@ -147,10 +168,19 @@ export function ContractListView({ onSelectEmployee }) {
     return { total, active, drafts, expiringSoon };
   }, [contracts]);
 
+  // Pagination calculations
+  const totalCount = filteredContracts.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, totalCount);
+  const pagedContracts = useMemo(() => {
+    return filteredContracts.slice(startIndex, endIndex);
+  }, [filteredContracts, startIndex, endIndex]);
+
   // Selection handlers
   const handleSelectAll = (e) => {
     if (e.target.checked) {
-      setSelectedIds(new Set(filteredContracts.map((c) => c.id)));
+      setSelectedIds(new Set(pagedContracts.map((c) => c.id)));
     } else {
       setSelectedIds(new Set());
     }
@@ -234,137 +264,85 @@ export function ContractListView({ onSelectEmployee }) {
     : filteredContracts;
 
   return (
-    <div className="space-y-6">
-      {/* 1. Header & Quick Metrics */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold">
-              <FileText className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-lg font-bold text-slate-900 dark:text-white">
-                  Corporate Employment Contracts
-                </h1>
-                <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 font-bold border border-blue-200 dark:border-blue-900">
-                  Global Overview
-                </span>
-                {!canReadSalary && (
-                  <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                    <Lock className="w-2.5 h-2.5" />
-                    Salary Redacted
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Centralized lifecycle oversight, milestone tenure tracking, and compensation governance
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Global Action Buttons */}
-        <div className="flex items-center gap-2.5">
-          <button
-            type="button"
-            onClick={fetchContracts}
-            disabled={isLoading}
-            className="p-2 rounded-xl text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
-            title="Refresh contracts"
-          >
-            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-          </button>
-
+    <div className="space-y-2">
+      {/* 1. Slim 44px Control Bar */}
+      <div className="h-11 min-h-[44px] flex items-center justify-between gap-2 px-3 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-lg shadow-2xs">
+        {/* Left: Action Buttons & Title */}
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
             onClick={handleExportCSV}
-            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition cursor-pointer"
+            className="h-7 px-2 text-[11px] font-medium rounded-md bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1 transition cursor-pointer"
+            title="Export CSV"
           >
-            <Download className="w-3.5 h-3.5" />
+            <Download className="w-3 h-3 text-slate-500" />
             <span>Export CSV</span>
           </button>
 
           <button
             type="button"
             onClick={handlePrintSlips}
-            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-xl bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition cursor-pointer"
+            className="h-7 px-2 text-[11px] font-medium rounded-md bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-1 shadow-xs transition cursor-pointer"
+            title="Print Slips"
           >
-            <Printer className="w-3.5 h-3.5" />
-            <span>Print Contract Slips</span>
+            <Printer className="w-3 h-3" />
+            <span>Print Slips</span>
           </button>
-        </div>
-      </div>
 
-      {/* 2. Top Metric Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
-          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
-            Total Contracts
-          </span>
-          <span className="text-2xl font-bold font-mono text-slate-900 dark:text-white mt-1 block">
-            {stats.total}
-          </span>
-        </div>
+          <button
+            type="button"
+            onClick={fetchContracts}
+            disabled={isLoading}
+            className="h-7 w-7 rounded-md text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition cursor-pointer"
+            title="Refresh contracts"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+          </button>
 
-        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
-          <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider block">
-            Active Agreements
+          <span className="font-bold text-[13px] text-slate-900 dark:text-white shrink-0 ml-1">
+            Contracts
           </span>
-          <span className="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400 mt-1 block">
-            {stats.active}
-          </span>
-        </div>
 
-        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
-          <span className="text-[11px] font-bold text-amber-500 uppercase tracking-wider flex items-center gap-1">
-            <AlertTriangle className="w-3 h-3" />
-            Expiring &lt;30 Days
-          </span>
-          <span className="text-2xl font-bold font-mono text-amber-500 mt-1 block">
-            {stats.expiringSoon}
-          </span>
+          {!canReadSalary && (
+            <span className="inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+              <Lock className="w-2.5 h-2.5" />
+              Redacted
+            </span>
+          )}
+
+          {selectedIds.size > 0 && (
+            <span className="text-[10.5px] font-mono font-semibold px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900">
+              {selectedIds.size} sel
+            </span>
+          )}
         </div>
 
-        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
-          <span className="text-[11px] font-bold text-blue-500 uppercase tracking-wider block">
-            Draft Versions
-          </span>
-          <span className="text-2xl font-bold font-mono text-blue-500 mt-1 block">
-            {stats.drafts}
-          </span>
-        </div>
-      </div>
-
-      {/* 3. Filter Bar & Search */}
-      <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
-        <div className="flex flex-1 items-center gap-2">
-          {/* Search Box */}
-          <div className="relative flex-1 max-w-md">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+        {/* Center: Slim Search & Inline Filter Dropdowns */}
+        <div className="flex items-center gap-1.5 flex-1 max-w-xl mx-2">
+          <div className="relative flex-1">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search reference, employee, job title..."
-              className="w-full text-xs pl-9 pr-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search reference, employee, job..."
+              className="w-full h-7 text-[12px] font-normal pl-8 pr-6 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             {searchTerm && (
               <button
                 type="button"
                 onClick={() => setSearchTerm('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
               >
-                <X className="w-3.5 h-3.5" />
+                <X className="w-3 h-3" />
               </button>
             )}
           </div>
 
-          {/* Status Dropdown */}
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="text-xs px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="h-7 text-[11.5px] font-medium px-2 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer shrink-0"
           >
             <option value="ALL">Status: All</option>
             <option value="active">Active</option>
@@ -372,87 +350,132 @@ export function ContractListView({ onSelectEmployee }) {
             <option value="expired">Expired</option>
           </select>
 
-          {/* Department Dropdown */}
           <select
             value={deptFilter}
             onChange={(e) => setDeptFilter(e.target.value)}
-            className="text-xs px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="h-7 text-[11.5px] font-medium px-2 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer shrink-0 max-w-[130px] truncate"
           >
-            <option value="ALL">Department: All</option>
+            <option value="ALL">Dept: All</option>
             <option value="Operations">Operations</option>
-            <option value="Human Resources">Human Resources</option>
+            <option value="Human Resources">HR</option>
             <option value="Engineering">Engineering</option>
-            <option value="Finance & Accounts">Finance & Accounts</option>
-            <option value="General Administration">General Administration</option>
-            <option value="Sales & Business Dev">Sales & Business Dev</option>
+            <option value="Finance & Accounts">Finance</option>
+            <option value="General Administration">Admin</option>
+            <option value="Sales & Business Dev">Sales</option>
           </select>
-        </div>
 
-        {/* Expiring Soon Toggle */}
-        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setExpiringSoonFilter(!expiringSoonFilter)}
-            className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl border transition cursor-pointer ${
+            className={`h-7 inline-flex items-center gap-1 px-2 text-[11px] font-medium rounded-md border transition cursor-pointer shrink-0 ${
               expiringSoonFilter
-                ? 'bg-amber-500 text-white border-amber-500 shadow-xs'
+                ? 'bg-amber-500 text-white border-amber-500 shadow-2xs'
                 : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100'
             }`}
+            title="Filter contracts expiring in <30 days"
           >
-            <AlertTriangle className="w-3.5 h-3.5" />
-            <span>Expiring Soon (&lt; 30d)</span>
+            <AlertTriangle className="w-3 h-3" />
+            <span>&lt;30d</span>
+          </button>
+        </div>
+
+        {/* Right: Summary toggle & Odoo Pager */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowSummary((v) => !v)}
+            className={`h-7 px-2 text-[11px] font-medium rounded-md border transition cursor-pointer flex items-center gap-1 ${
+              showSummary
+                ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-900'
+                : 'bg-slate-50 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:text-slate-900'
+            }`}
+          >
+            {showSummary ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+            <span>Summary</span>
           </button>
 
-          {selectedIds.size > 0 && (
-            <span className="text-xs font-mono font-semibold px-2.5 py-1.5 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900">
-              {selectedIds.size} selected
+          <div className="flex items-center gap-1 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-md px-1.5 h-7">
+            <span className="text-[11.5px] font-mono text-slate-600 dark:text-slate-300 font-semibold tracking-tight">
+              {totalCount === 0 ? '0-0 / 0' : `${startIndex + 1}-${endIndex} / ${totalCount}`}
             </span>
-          )}
+            <button
+              type="button"
+              disabled={currentPage <= 1}
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              className="p-0.5 rounded text-slate-500 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+              title="Previous Page"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              disabled={currentPage >= totalPages}
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              className="p-0.5 rounded text-slate-500 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+              title="Next Page"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* 4. Contracts Table */}
-      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 font-semibold border-b border-slate-200 dark:border-slate-800 text-[11px] uppercase tracking-wider">
-              <tr>
-                <th className="px-4 py-3.5 w-10">
+      {/* Collapsible 28px Metric Summary Ribbon */}
+      {showSummary && (
+        <div className="h-7 min-h-[28px] px-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 rounded-md flex items-center justify-between text-[11.5px] text-slate-600 dark:text-slate-400">
+          <div className="flex items-center gap-4">
+            <span>Total: <strong className="font-mono text-slate-900 dark:text-white">{stats.total}</strong></span>
+            <span>Active: <strong className="font-mono text-emerald-600 dark:text-emerald-400">{stats.active}</strong></span>
+            <span>Expiring (&lt;30d): <strong className="font-mono text-amber-600 dark:text-amber-400">{stats.expiringSoon}</strong></span>
+            <span>Drafts: <strong className="font-mono text-blue-600 dark:text-blue-400">{stats.drafts}</strong></span>
+          </div>
+          <span className="text-[10.5px] text-slate-400">Page {currentPage} of {totalPages}</span>
+        </div>
+      )}
+
+      {/* 2. Contracts Table */}
+      <div className="bg-white dark:bg-slate-900 rounded-lg border border-slate-200/80 dark:border-slate-800 shadow-2xs overflow-hidden">
+        <div className="max-h-[calc(100vh-140px)] overflow-y-auto">
+          <table className="w-full text-left border-collapse">
+            <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-[11.5px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
+              <tr className="h-8">
+                <th className="py-1 px-2.5 w-8">
                   <input
                     type="checkbox"
-                    checked={filteredContracts.length > 0 && selectedIds.size === filteredContracts.length}
+                    checked={pagedContracts.length > 0 && pagedContracts.every((c) => selectedIds.has(c.id))}
                     onChange={handleSelectAll}
-                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                   />
                 </th>
-                <th className="px-4 py-3.5">Contract Reference</th>
-                <th className="px-4 py-3.5">Employee Name</th>
-                <th className="px-4 py-3.5">Job Title & Dept</th>
-                <th className="px-4 py-3.5">Start Date</th>
-                <th className="px-4 py-3.5">End Date</th>
-                <th className="px-4 py-3.5">Status</th>
-                <th className="px-4 py-3.5 text-right">Wage / Net Package</th>
-                <th className="px-4 py-3.5 text-right">Actions</th>
+                <th className="py-1 px-2.5">Reference</th>
+                <th className="py-1 px-2.5">Employee</th>
+                <th className="py-1 px-2.5">Job Title</th>
+                <th className="py-1 px-2.5">Department</th>
+                <th className="py-1 px-2.5">Start Date</th>
+                <th className="py-1 px-2.5">End Date</th>
+                <th className="py-1 px-2.5">Status</th>
+                <th className="py-1 px-2.5 text-right">Wage / Package</th>
+                <th className="py-1 px-2.5 text-right w-16">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-[12.5px] text-slate-800 dark:text-slate-200">
               {isLoading ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400">
-                    <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-blue-500" />
-                    <span>Loading corporate contracts...</span>
+                  <td colSpan={10} className="py-8 text-center text-[12px] text-slate-400">
+                    <RefreshCw className="w-4 h-4 animate-spin mx-auto mb-1 text-blue-500" />
+                    <span>Loading contracts...</span>
                   </td>
                 </tr>
-              ) : filteredContracts.length === 0 ? (
+              ) : pagedContracts.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400">
-                    <FileText className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                    <p className="font-semibold text-slate-600 dark:text-slate-400">No contracts found</p>
-                    <p className="text-[11px] mt-0.5">Try adjusting your filters or search keywords.</p>
+                  <td colSpan={10} className="py-8 text-center text-[12px] text-slate-400">
+                    <FileText className="w-6 h-6 mx-auto mb-1 opacity-40" />
+                    <p className="font-semibold text-slate-700 dark:text-slate-300">No contracts found</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">Try adjusting your filters or search keywords.</p>
                   </td>
                 </tr>
               ) : (
-                filteredContracts.map((c) => {
+                pagedContracts.map((c) => {
                   const isSelected = selectedIds.has(c.id);
                   const daysLeft = getDaysRemaining(c.end_date);
                   const isExpiringSoon = daysLeft !== null && daysLeft <= 30 && daysLeft >= 0;
@@ -461,79 +484,81 @@ export function ContractListView({ onSelectEmployee }) {
                   return (
                     <tr
                       key={c.id}
-                      className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition cursor-pointer ${
-                        isSelected ? 'bg-blue-50/40 dark:bg-blue-950/20' : ''
+                      className={`h-8 odd:bg-white dark:odd:bg-slate-900 even:bg-slate-50/40 dark:even:bg-slate-800/40 hover:bg-blue-50/40 dark:hover:bg-slate-800/70 border-b border-slate-200/60 dark:border-slate-800/60 transition-colors cursor-pointer ${
+                        isSelected ? 'bg-blue-50/50 dark:bg-blue-950/30' : ''
                       }`}
                       onClick={() => setDetailContract(c)}
                     >
                       <td
-                        className="px-4 py-3.5"
+                        className="py-1 px-2.5 align-middle"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <input
                           type="checkbox"
                           checked={isSelected}
                           onChange={() => handleToggleSelect(c.id)}
-                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                          className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                         />
                       </td>
 
-                      {/* Contract Reference */}
-                      <td className="px-4 py-3.5">
-                        <div className="flex items-center gap-2">
-                          <span className="w-7 h-7 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold shrink-0">
-                            <FileText className="w-3.5 h-3.5" />
-                          </span>
-                          <div>
-                            <span className="font-mono font-bold text-slate-900 dark:text-white block">
-                              {c.contract_reference}
-                            </span>
-                            <span className="text-[11px] text-slate-400 block truncate max-w-[180px]">
-                              {c.title}
-                            </span>
-                          </div>
-                        </div>
-                      </td>
-
-                      {/* Employee Name */}
-                      <td className="px-4 py-3.5">
-                        <div className="font-semibold text-slate-900 dark:text-white">
-                          {c.employee_name || 'Staff Member'}
-                        </div>
-                        <span className="font-mono text-[10px] text-slate-400">
-                          {c.employee_number || 'EMP-XXXX'}
+                      {/* Reference */}
+                      <td className="py-1 px-2.5 align-middle">
+                        <span
+                          className="font-mono font-semibold text-[12px] text-blue-600 dark:text-blue-400 truncate max-w-[140px] block"
+                          title={`${c.contract_reference} - ${c.title || ''}`}
+                        >
+                          {c.contract_reference}
                         </span>
                       </td>
 
-                      {/* Job Title & Department */}
-                      <td className="px-4 py-3.5">
-                        <div className="text-slate-900 dark:text-slate-200 font-medium truncate max-w-[160px]">
-                          {c.job_title || 'Designation'}
-                        </div>
-                        <span className="text-[11px] text-slate-400">
-                          {c.department || 'Operations'}
+                      {/* Employee Name */}
+                      <td className="py-1 px-2.5 align-middle">
+                        <span
+                          className="font-medium text-slate-900 dark:text-white truncate max-w-[170px] block"
+                          title={`${c.employee_name || 'Staff Member'} (${c.employee_number || 'EMP-XXXX'})`}
+                        >
+                          {c.employee_name || 'Staff Member'}
+                        </span>
+                      </td>
+
+                      {/* Job Title */}
+                      <td className="py-1 px-2.5 align-middle">
+                        <span
+                          className="text-slate-600 dark:text-slate-300 truncate max-w-[130px] block"
+                          title={c.job_title || ''}
+                        >
+                          {c.job_title || '—'}
+                        </span>
+                      </td>
+
+                      {/* Department */}
+                      <td className="py-1 px-2.5 align-middle">
+                        <span
+                          className="text-slate-500 dark:text-slate-400 truncate max-w-[110px] block"
+                          title={c.department || ''}
+                        >
+                          {c.department || '—'}
                         </span>
                       </td>
 
                       {/* Start Date */}
-                      <td className="px-4 py-3.5 font-mono text-slate-600 dark:text-slate-400">
-                        {c.start_date || 'N/A'}
+                      <td className="py-1 px-2.5 align-middle font-mono text-[12px] text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                        {c.start_date || '—'}
                       </td>
 
-                      {/* End Date + Warning Pills */}
-                      <td className="px-4 py-3.5">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="font-mono text-slate-900 dark:text-slate-200">
+                      {/* End Date */}
+                      <td className="py-1 px-2.5 align-middle whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 font-mono text-[12px]">
+                          <span className="text-slate-900 dark:text-slate-200">
                             {c.end_date ? c.end_date : 'Open-Ended'}
                           </span>
                           {isExpiringSoon && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                              <AlertTriangle className="w-2.5 h-2.5" />
-                              {daysLeft}d left
+                            <span className="h-4 px-1 rounded text-[10px] font-bold bg-amber-500/10 text-amber-600 border border-amber-500/30 flex items-center gap-0.5">
+                              {daysLeft}d
                             </span>
                           )}
                           {isExpired && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/20">
+                            <span className="h-4 px-1 rounded text-[10px] font-bold bg-rose-500/10 text-rose-600 border border-rose-500/30">
                               Expired
                             </span>
                           )}
@@ -541,53 +566,43 @@ export function ContractListView({ onSelectEmployee }) {
                       </td>
 
                       {/* Status */}
-                      <td className="px-4 py-3.5">
+                      <td className="py-1 px-2.5 align-middle whitespace-nowrap">
                         <span
-                          className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                          className={`inline-flex items-center justify-center h-5 text-[10.5px] font-semibold px-1.5 rounded uppercase ${
                             c.status === 'active'
-                              ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                              ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20'
                               : c.status === 'draft'
-                              ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20'
-                              : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                                ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-500 border border-slate-300/50 dark:border-slate-700'
                           }`}
                         >
                           {c.status}
                         </span>
                       </td>
 
-                      {/* Wage / Net Package (Salary Masking Engine) */}
-                      <td className="px-4 py-3.5 text-right font-mono">
+                      {/* Wage / Net Package */}
+                      <td className="py-1 px-2.5 align-middle text-right font-mono text-[12px] whitespace-nowrap">
                         {canReadSalary ? (
-                          <div>
-                            <span className="font-bold text-slate-900 dark:text-white block">
-                              {Number(c.wage_base || 0).toLocaleString()} {c.currency}
-                            </span>
-                            {c.net_package_total !== null && c.net_package_total !== undefined && (
-                              <span className="text-[10px] text-slate-400 block">
-                                Net: {Number(c.net_package_total).toLocaleString()} {c.currency}
-                              </span>
-                            )}
-                          </div>
+                          <span
+                            className="font-semibold text-slate-900 dark:text-white"
+                            title={c.net_package_total ? `Net: ${Number(c.net_package_total).toLocaleString()} ${c.currency}` : ''}
+                          >
+                            {Number(c.wage_base || 0).toLocaleString()} {c.currency}
+                          </span>
                         ) : (
-                          <div className="flex flex-col items-end gap-0.5">
-                            <span className="font-bold text-slate-400">•••••• {c.currency || 'QAR'}</span>
-                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                              <Lock className="w-2.5 h-2.5" />
-                              Restricted
-                            </span>
-                          </div>
+                          <span className="text-slate-400 text-[11px]">••••••</span>
                         )}
                       </td>
 
                       {/* Action */}
                       <td
-                        className="px-4 py-3.5 text-right"
+                        className="py-1 px-2.5 align-middle text-right whitespace-nowrap"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <button
                           type="button"
                           onClick={() => setDetailContract(c)}
-                          className="px-2.5 py-1 rounded-lg text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/60 transition cursor-pointer"
+                          className="h-6 px-2 rounded text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/60 transition cursor-pointer"
                         >
                           View
                         </button>
@@ -603,8 +618,14 @@ export function ContractListView({ onSelectEmployee }) {
 
       {/* 5. Detail Drawer / Modal */}
       {detailContract && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-fadeIn">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-5 max-h-[90vh] overflow-y-auto">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-fadeIn"
+          onClick={() => setDetailContract(null)}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-5 max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-3">
@@ -617,11 +638,10 @@ export function ContractListView({ onSelectEmployee }) {
                       {detailContract.contract_reference}
                     </h3>
                     <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${
-                        detailContract.status === 'active'
-                          ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20'
-                          : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                      }`}
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${detailContract.status === 'active'
+                        ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                        }`}
                     >
                       {detailContract.status}
                     </span>
@@ -633,9 +653,11 @@ export function ContractListView({ onSelectEmployee }) {
               <button
                 type="button"
                 onClick={() => setDetailContract(null)}
-                className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="flex items-center gap-1 px-2 py-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 text-xs transition cursor-pointer"
+                title="Close (Esc)"
               >
-                <X className="w-5 h-5" />
+                <span className="text-[10px] font-mono text-slate-400">(Esc)</span>
+                <X className="w-4 h-4" />
               </button>
             </div>
 
@@ -762,8 +784,14 @@ export function ContractListView({ onSelectEmployee }) {
 
       {/* 6. Printable Contract Slips Modal */}
       {isPrintModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-3xl rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs"
+          onClick={() => setIsPrintModalOpen(false)}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 w-full max-w-3xl rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800 print:hidden">
               <div className="flex items-center gap-2">
                 <Printer className="w-5 h-5 text-blue-600" />
@@ -782,8 +810,10 @@ export function ContractListView({ onSelectEmployee }) {
                 <button
                   type="button"
                   onClick={() => setIsPrintModalOpen(false)}
-                  className="p-2 rounded-xl text-slate-400 hover:text-slate-700"
+                  className="flex items-center gap-1 p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white transition cursor-pointer"
+                  title="Close (Esc)"
                 >
+                  <span className="text-[10px] font-mono text-slate-400">(Esc)</span>
                   <X className="w-5 h-5" />
                 </button>
               </div>

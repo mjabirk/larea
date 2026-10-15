@@ -149,6 +149,54 @@ export const APP_MODULES = [
         label: "QID & Visa Alert Rules",
         model: "compliance_settings",
         required_groups: ["org.manage", "hr.manager"]
+      },
+      {
+        id: "mail_servers",
+        label: "Email Servers",
+        model: "mail_servers",
+        required_groups: ["org.manage"]
+      },
+      {
+        id: "mail_templates",
+        label: "Email Templates",
+        model: "mail_templates",
+        required_groups: ["org.manage"]
+      },
+      {
+        id: "mail_logs",
+        label: "Outgoing & Incoming Mail Logs",
+        model: "mail_messages",
+        required_groups: ["org.manage"]
+      },
+      {
+        id: "sms_gateways",
+        label: "SMS Gateways",
+        model: "sms_gateways",
+        required_groups: ["org.manage"]
+      },
+      {
+        id: "whatsapp_configs",
+        label: "WhatsApp Accounts (Cloud API)",
+        model: "whatsapp_configs",
+        required_groups: ["org.manage"]
+      },
+      {
+        id: "whatsapp_templates",
+        label: "WhatsApp Templates",
+        model: "whatsapp_templates",
+        required_groups: ["org.manage"]
+      },
+      {
+        id: "communication_logs",
+        label: "SMS & WhatsApp Logs",
+        model: "communication_logs",
+        required_groups: ["org.manage"]
+      },
+      {
+        id: "automation_triggers",
+        label: "Automation Triggers",
+        model: "automation_triggers",
+        required_groups: ["org.manage"]
       }
     ]
   }

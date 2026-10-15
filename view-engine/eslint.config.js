@@ -17,7 +17,10 @@ export default defineConfig([
       pluginSecurity.configs.recommended,
     ],
     languageOptions: {
-      globals: globals.browser,
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+      },
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
   },

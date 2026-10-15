@@ -5,8 +5,11 @@ import {
   ATTENDANCE_LIST_VIEW,
   ATTENDANCE_FORM_VIEW,
 } from '../../schema/attendanceSchema';
+import { useModalEscape } from '../../hooks/useModalEscape';
 
 export function SchemaViewerModal({ isOpen, onClose }) {
+  useModalEscape(onClose, isOpen);
+
   const [format, setFormat] = useState('xml');
   const [copied, setCopied] = useState(false);
 
@@ -121,8 +124,14 @@ export function SchemaViewerModal({ isOpen, onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-slate-900 text-slate-100 rounded-xl shadow-2xl border border-slate-700 w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden animate-fadeIn">
+    <div
+      className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn"
+      onClick={onClose}
+    >
+      <div
+        className="bg-slate-900 text-slate-100 rounded-xl shadow-2xl border border-slate-700 w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden animate-fadeIn"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Modal Header */}
         <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -131,10 +140,10 @@ export function SchemaViewerModal({ isOpen, onClose }) {
             </div>
             <div>
               <h3 className="font-semibold text-slate-100">
-                Declarative View Engine Architecture
+                View Architecture & Schema
               </h3>
               <p className="text-xs text-slate-400">
-                Odoo XML Architecture and dynamic JSON Schema definition
+                XML Layout Architecture and dynamic JSON Schema definition
               </p>
             </div>
           </div>
@@ -146,12 +155,12 @@ export function SchemaViewerModal({ isOpen, onClose }) {
                 onClick={() => setFormat('xml')}
                 className={`px-3 py-1 rounded transition cursor-pointer flex items-center gap-1.5 ${
                   format === 'xml'
-                    ? 'bg-[#714B67] text-white font-medium'
+                    ? 'bg-blue-600 text-white font-medium'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
                 <Code className="w-3.5 h-3.5" />
-                <span>Odoo XML Arch</span>
+                <span>Layout XML</span>
               </button>
               <button
                 type="button"
@@ -183,8 +192,13 @@ export function SchemaViewerModal({ isOpen, onClose }) {
             <button
               type="button"
               onClick={onClose}
-              className="p-1.5 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+              className="flex items-center gap-1.5 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer group"
+              title="Close (Esc)"
+              aria-label="Close dialog"
             >
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                Esc
+              </span>
               <X className="w-5 h-5" />
             </button>
           </div>

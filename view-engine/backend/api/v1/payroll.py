@@ -2,11 +2,14 @@ import uuid
 import json
 import datetime
 import re
+import logging
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query, Response
 from pydantic import BaseModel
 from backend.core.database import get_db_pool
 from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, check_permission
+
+logger = logging.getLogger("payroll")
 
 router = APIRouter(prefix="/api/v1/payroll", tags=["Qatar Payroll & WPS Engine"])
 
@@ -350,15 +353,19 @@ async def list_payroll_batches(
     org_id = session.get("organization_id")
 
     query = """
-        SELECT * FROM payroll_batches
+        SELECT b.*,
+               COUNT(p.id) as total_payslips_count,
+               COUNT(CASE WHEN p.wps_status = 'ready' THEN 1 END) as wps_ready_count
+        FROM payroll_batches b
+        LEFT JOIN payslips p ON p.batch_id = b.id
         WHERE 1=1
     """
     params: List[Any] = []
     if not session.get("is_superadmin") and org_id:
-        query += " AND organization_id = $1::uuid"
+        query += " AND b.organization_id = $1::uuid"
         params.append(org_id)
 
-    query += " ORDER BY salary_year_month DESC, created_at DESC;"
+    query += " GROUP BY b.id ORDER BY b.salary_year_month DESC, b.created_at DESC;"
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *params)
@@ -740,6 +747,52 @@ async def lock_payroll_batch(
             f"Locked and sealed payroll batch {batch['batch_code']} ({ym}) with {batch['total_employees']} payslips.",
             client_ip
         )
+
+        # Automated communication trigger execution
+        try:
+            from backend.core.communication_engine import execute_automation_trigger
+            # 1. Trigger for payroll_batch_locked
+            await execute_automation_trigger(
+                event_type="payroll_batch_locked",
+                record_model="payroll.batch",
+                record_id=str(b_uuid),
+                record_data={
+                    "batch_code": batch["batch_code"],
+                    "month": ym,
+                    "total_employees": batch["total_employees"],
+                    "total_net_salary": f"{float(batch['total_net_salary'] or 0):,.2f}"
+                },
+                author_name=author_name
+            )
+
+            # 2. Trigger for payslip_confirmed for each employee
+            p_rows = await conn.fetch("""
+                SELECT p.*, e.phone_number, e.work_email, e.full_name as emp_name
+                FROM payslips p
+                LEFT JOIN employees e ON p.employee_id = e.id
+                WHERE p.batch_id = $1::uuid;
+            """, b_uuid)
+
+            for p in p_rows:
+                await execute_automation_trigger(
+                    event_type="payslip_confirmed",
+                    record_model="payroll.payslip",
+                    record_id=str(p["id"]),
+                    record_data={
+                        "employee_id": str(p["employee_id"]),
+                        "employee_name": p["employee_name"] or p["emp_name"],
+                        "employee_number": p["employee_number"],
+                        "phone_number": p["phone_number"],
+                        "month": ym,
+                        "base_salary": float(p['base_salary'] or 0),
+                        "net_salary": float(p['net_salary'] or 0),
+                        "deductions": float(p['deductions'] or 0),
+                        "department": p["department"] or "Operations"
+                    },
+                    author_name=author_name
+                )
+        except Exception as e:
+            logger.exception("Error executing automated triggers on payroll batch lock: %s", e)
 
         updated_batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", b_uuid)
         return {

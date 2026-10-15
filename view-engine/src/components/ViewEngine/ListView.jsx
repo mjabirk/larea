@@ -16,27 +16,33 @@ export function StatusBadge({ status }) {
 
   let style = 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700';
   let dot = 'bg-slate-600 dark:bg-slate-400';
-  let label = status;
+  
+  const normalized = String(status || '').toLowerCase();
+  let label = status ? status.charAt(0).toUpperCase() + status.slice(1) : '';
 
-  if (status === 'synced' || status === 'Synced to Payroll') {
+  if (normalized === 'present') {
     style = 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700';
     dot = 'bg-emerald-600 dark:bg-emerald-400';
-    label = t('synced');
-  } else if (status === 'verified') {
+    label = 'Present';
+  } else if (normalized === 'synced' || normalized === 'synced to payroll') {
+    style = 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700';
+    dot = 'bg-emerald-600 dark:bg-emerald-400';
+    label = t('synced') || 'Synced to Payroll';
+  } else if (normalized === 'verified') {
     style = 'bg-indigo-100 dark:bg-indigo-950/70 text-indigo-800 dark:text-indigo-200 border border-indigo-300 dark:border-indigo-700';
     dot = 'bg-indigo-600 dark:bg-indigo-400';
-    label = t('verified');
-  } else if (status === 'draft') {
+    label = t('verified') || 'Verified';
+  } else if (normalized === 'draft') {
     style = 'bg-amber-100 dark:bg-amber-950/70 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700';
     dot = 'bg-amber-600 dark:bg-amber-400';
-    label = t('draft');
+    label = t('draft') || 'Draft';
   }
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold ${style}`}
+      className={`inline-flex items-center gap-1 h-5 px-1.5 py-0 rounded text-[10.5px] font-bold ${style}`}
     >
-      <span className={`w-1.5 h-1.5 rounded-full ${dot}`} aria-hidden="true" />
+      <span className={`w-1 h-1 rounded-full ${dot}`} aria-hidden="true" />
       <span>{label}</span>
     </span>
   );
@@ -72,13 +78,13 @@ export function ListView({
   }
 
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-2xs overflow-hidden animate-fadeIn">
+    <div className="max-h-[calc(100vh-140px)] overflow-y-auto bg-slate-900 rounded-xl border border-slate-800 shadow-2xs animate-fadeIn">
       <div className="overflow-x-auto">
         <table className="w-full text-left rtl:text-right border-collapse">
-          <thead>
-            <tr className="text-slate-300 font-semibold tracking-wider uppercase bg-slate-900 border-b border-slate-800 text-xs">
+          <thead className="sticky top-0 z-10 bg-slate-900 border-b border-slate-800 shadow-2xs">
+            <tr className="h-8 text-slate-400 font-semibold uppercase text-[11.5px] tracking-wider">
               {/* Checkbox */}
-              <th className="py-3 px-3.5 w-10 text-center">
+              <th className="py-1 px-2.5 w-8 text-center">
                 <input
                   type="checkbox"
                   checked={allSelected}
@@ -87,29 +93,14 @@ export function ListView({
                   }}
                   onChange={onSelectAll}
                   aria-label="Select all table records"
-                  className="rounded border-slate-700 bg-slate-950 text-blue-600 focus:ring-blue-500 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                  className="rounded border-slate-700 bg-slate-950 text-blue-600 focus:ring-blue-500 cursor-pointer"
                 />
-              </th>
-
-              {/* ID / Code (Right-Aligned Numeric/Pill) */}
-              <th
-                onClick={() => onSort && onSort('id')}
-                className="py-3 px-4 text-right rtl:text-left cursor-pointer hover:text-slate-100 select-none transition w-28"
-              >
-                <div className="flex items-center justify-end rtl:justify-start gap-1">
-                  <span>{t('record_id')}</span>
-                  {sortConfig?.field === 'id' && (
-                    <span className="text-blue-500">
-                      {sortConfig.direction === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                    </span>
-                  )}
-                </div>
               </th>
 
               {/* Employee (Left-Aligned) */}
               <th
                 onClick={() => onSort && onSort('employee_name')}
-                className="py-3 px-4 text-left rtl:text-right cursor-pointer hover:text-slate-100 select-none transition"
+                className="py-1 px-2.5 text-left rtl:text-right cursor-pointer hover:text-slate-100 select-none transition"
               >
                 <div className="flex items-center gap-1">
                   <span>{t('employee')}</span>
@@ -124,7 +115,7 @@ export function ListView({
               {/* Department (Left-Aligned) */}
               <th
                 onClick={() => onSort && onSort('department')}
-                className="py-3 px-4 text-left rtl:text-right cursor-pointer hover:text-slate-100 select-none transition"
+                className="py-1 px-2.5 text-left rtl:text-right cursor-pointer hover:text-slate-100 select-none transition"
               >
                 <div className="flex items-center gap-1">
                   <span>{t('department')}</span>
@@ -139,7 +130,7 @@ export function ListView({
               {/* Check In Date & Time */}
               <th
                 onClick={() => onSort && onSort('check_in')}
-                className="py-3 px-4 text-left rtl:text-right cursor-pointer hover:text-slate-100 select-none transition"
+                className="py-1 px-2.5 text-left rtl:text-right cursor-pointer hover:text-slate-100 select-none transition"
               >
                 <div className="flex items-center gap-1">
                   <span>{t('check_in_shift')}</span>
@@ -154,7 +145,7 @@ export function ListView({
               {/* Hours Worked (Right-Aligned Numeric with Tabular Figures) */}
               <th
                 onClick={() => onSort && onSort('duration_hours')}
-                className="py-3 px-4 text-right rtl:text-left cursor-pointer hover:text-slate-100 select-none transition w-32"
+                className="py-1 px-2.5 text-right rtl:text-left cursor-pointer hover:text-slate-100 select-none transition w-28"
               >
                 <div className="flex items-center justify-end rtl:justify-start gap-1">
                   <span>{t('hours_worked')}</span>
@@ -167,20 +158,19 @@ export function ListView({
               </th>
 
               {/* Status Badge */}
-              <th className="py-3 px-4 text-left rtl:text-right w-32">{t('status_label')}</th>
+              <th className="py-1 px-2.5 text-left rtl:text-right w-28">{t('status_label')}</th>
 
-              {/* Contextual Actions (Hover) */}
-              <th className="py-3 px-4 text-right rtl:text-left w-24"></th>
+              {/* Contextual Actions */}
+              <th className="py-1 px-2.5 text-right rtl:text-left w-16"></th>
             </tr>
           </thead>
 
-          <tbody className="divide-y divide-slate-800 text-sm">
+          <tbody className="text-[12.5px] text-slate-200 divide-y divide-slate-800/80">
             {records.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-12 text-center text-slate-400">
-                  <Clock className="w-8 h-8 mx-auto text-slate-500 mb-2" />
-                  <div className="font-medium text-slate-300">{t('no_records_found')}</div>
-                  <div className="text-xs text-slate-500">{t('no_records_sub')}</div>
+                <td colSpan={7} className="py-8 text-center text-slate-400">
+                  <Clock className="w-6 h-6 mx-auto text-slate-500 mb-1" />
+                  <div className="font-medium text-slate-300 text-xs">{t('no_records_found')}</div>
                 </td>
               </tr>
             ) : groupedData ? (
@@ -191,17 +181,17 @@ export function ListView({
                 );
                 return (
                   <React.Fragment key={groupKey}>
-                    <tr className="bg-slate-800/80 border-t border-slate-700 text-xs font-semibold text-slate-200">
-                      <td colSpan={8} className="py-2.5 px-4">
+                    <tr className="bg-slate-800/80 border-t border-slate-700 text-xs font-semibold text-slate-200 h-8">
+                      <td colSpan={7} className="py-1 px-2.5">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
-                            <Layers className="w-3.5 h-3.5 text-blue-500" />
-                            <span className="text-slate-100 font-bold text-sm">{groupKey}</span>
-                            <span className="px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300">
+                            <Layers className="w-3 h-3 text-blue-500" />
+                            <span className="text-slate-100 font-bold text-xs">{groupKey}</span>
+                            <span className="px-1.5 py-0 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[10.5px]">
                               {groupRecords.length}
                             </span>
                           </div>
-                          <div className="font-mono tabular-nums text-slate-300">
+                          <div className="font-mono tabular-nums text-slate-300 text-xs">
                             {t('subtotal')}: <strong className="text-slate-100">{groupHours.toFixed(1)} {t('hrs')}</strong>
                           </div>
                         </div>
@@ -240,26 +230,36 @@ export function ListView({
             )}
           </tbody>
 
-          {/* Table Footer */}
+          {/* Table Footer: Column-aligned summary metrics */}
           {records.length > 0 && (
             <tfoot>
-              <tr className="bg-slate-900 border-t border-slate-800 text-slate-200 font-semibold text-xs">
-                <td className="py-3 px-3.5"></td>
-                <td className="py-3 px-4 text-right rtl:text-left font-mono tabular-nums text-slate-400">
-                  {records.length} {t('records_count')}
+              <tr className="bg-slate-900 border-t border-slate-800 text-slate-300 font-semibold text-xs h-8">
+                {/* 1. Checkbox column */}
+                <td className="py-1 px-2.5 w-8"></td>
+
+                {/* 2. Employee column */}
+                <td className="py-1 px-2.5 text-left rtl:text-right font-mono tabular-nums text-slate-300 font-semibold text-xs">
+                  {records.length} {t('records_count') || 'records'}
                 </td>
-                <td className="py-3 px-4 font-semibold text-slate-200">
-                  {t('total_summary')}
+
+                {/* 3. Department column */}
+                <td className="py-1 px-2.5 text-left rtl:text-right text-slate-400 font-medium text-xs">
+                  {new Set(records.map((r) => r.department).filter(Boolean)).size} {t('departments') || 'Departments'}
                 </td>
-                <td className="py-3 px-4 text-slate-400 font-medium">
-                  {new Set(records.map((r) => r.department)).size} {t('departments')}
+
+                {/* 4. Check In / Shift column */}
+                <td className="py-1 px-2.5"></td>
+
+                {/* 5. Hours Worked column */}
+                <td className="py-1 px-2.5 text-right rtl:text-left font-mono tabular-nums font-bold text-slate-100 text-xs w-28">
+                  {totalDuration.toFixed(1)} {t('hrs') || 'hrs'}
                 </td>
-                <td className="py-3 px-4"></td>
-                {/* Hours Worked Sum */}
-                <td className="py-3 px-4 text-right rtl:text-left font-mono tabular-nums font-bold text-slate-100 text-sm">
-                  {totalDuration.toFixed(1)} {t('hrs')}
-                </td>
-                <td colSpan={2} className="py-3 px-4"></td>
+
+                {/* 6. Status column */}
+                <td className="py-1 px-2.5 w-28"></td>
+
+                {/* 7. Actions column */}
+                <td className="py-1 px-2.5 w-16"></td>
               </tr>
             </tfoot>
           )}
@@ -306,13 +306,13 @@ function RowItem({
   return (
     <tr
       onClick={() => onRecordClick(record)}
-      className={`group hover:bg-slate-800/60 transition cursor-pointer select-none border-b border-slate-800/60 ${
+      className={`group h-8 hover:bg-slate-800/60 odd:bg-slate-900 even:bg-slate-800/40 transition-colors cursor-pointer select-none border-b border-slate-800/60 ${
         isSelected ? 'bg-slate-800/80 ring-1 ring-blue-500/40' : ''
       }`}
     >
       {/* Checkbox */}
       <td
-        className="py-3 px-3.5 text-center"
+        className="py-1 px-2.5 text-center w-8"
         onClick={(e) => e.stopPropagation()}
       >
         <input
@@ -323,60 +323,39 @@ function RowItem({
         />
       </td>
 
-      {/* ID (Right-Aligned Numeric with font-mono / tabular-nums) */}
-      <td className="py-3 px-4 text-right rtl:text-left font-mono text-xs font-semibold text-slate-100 tabular-nums">
-        {record.code || `ATT-${record.id}`}
+      {/* Employee (Single-line, no bulky avatar to preserve 32px row height lock) */}
+      <td className="py-1 px-2.5 text-left rtl:text-right">
+        <span
+          className="font-semibold text-[12.5px] text-slate-100 truncate max-w-[200px] block"
+          title={`${record.employee_name}${record.terminal_id ? ` • Terminal: ${record.terminal_id}` : ''}`}
+        >
+          {record.employee_name}
+        </span>
       </td>
 
-      {/* Employee (Left-Aligned) */}
-      <td className="py-3 px-4 text-left rtl:text-right">
-        <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-full bg-slate-800 text-slate-200 font-bold text-xs flex items-center justify-center ring-1 ring-slate-700 shrink-0">
-            {record.employee_name ? record.employee_name.slice(0, 2).toUpperCase() : '??'}
-          </div>
-          <div>
-            <div className="font-bold text-sm text-slate-100 leading-tight">
-              {record.employee_name}
-            </div>
-            {record.terminal_id && (
-              <div className="text-[11px] text-slate-400 font-medium truncate max-w-[200px] leading-tight mt-0.5">
-                {record.terminal_id}
-              </div>
-            )}
-          </div>
-        </div>
-      </td>
-
-      {/* Department (Left-Aligned) */}
-      <td className="py-3 px-4 text-left rtl:text-right text-slate-400 font-medium text-xs">
+      {/* Department (Left-Aligned, single line) */}
+      <td className="py-1 px-2.5 text-left rtl:text-right text-slate-400 font-medium text-xs truncate max-w-[150px]">
         {record.department || 'General'}
       </td>
 
-      {/* Check In (Left-Aligned with subtle secondary color for time) */}
-      <td className="py-3 px-4 text-left rtl:text-right">
-        <div className="flex items-center gap-1.5 text-xs">
-          <span className="font-medium text-slate-200">{dateFormatted}</span>
-          {timeFormatted && (
-            <span className="font-mono text-slate-400 tabular-nums text-[11px]">
-              {timeFormatted}
-            </span>
-          )}
-        </div>
+      {/* Check In (Single-line monospace date & time) */}
+      <td className="py-1 px-2.5 text-left rtl:text-right font-mono text-[12px] text-slate-300 whitespace-nowrap">
+        {dateFormatted} {timeFormatted}
       </td>
 
-      {/* Hours Worked (Right-Aligned with tabular figures) */}
-      <td className="py-3 px-4 text-right rtl:text-left font-mono tabular-nums font-semibold text-slate-100 text-sm">
+      {/* Hours Worked (Right-Aligned monospace font-bold) */}
+      <td className="py-1 px-2.5 text-right rtl:text-left font-mono tabular-nums font-bold text-slate-100 text-[12px] w-28">
         {record.duration_hours ? `${record.duration_hours.toFixed(1)} ${t('hrs')}` : `0.0 ${t('hrs')}`}
       </td>
 
-      {/* Status Badge */}
-      <td className="py-3 px-4 text-left rtl:text-right">
+      {/* Status Badge (compact 20px) */}
+      <td className="py-1 px-2.5 text-left rtl:text-right w-28">
         <StatusBadge status={record.status} />
       </td>
 
       {/* Contextual Actions on Row Hover */}
       <td
-        className="py-3 px-4 text-right rtl:text-left"
+        className="py-1 px-2.5 text-right rtl:text-left w-16"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="opacity-0 group-hover:opacity-100 transition flex items-center justify-end rtl:justify-start gap-1">

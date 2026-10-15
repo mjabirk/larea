@@ -40,13 +40,20 @@ async def get_audit_trail(
     """Retrieve full chronological audit trail and internal notes for an entity."""
     pool = get_db_pool()
     async with pool.acquire() as conn:
+        variants = list({
+            entity_type,
+            entity_type[:-1] if entity_type.endswith("s") else f"{entity_type}s",
+            entity_type.replace("hr.", "").replace("payroll.", ""),
+            f"hr.{entity_type.replace('hr.', '')}",
+            f"payroll.{entity_type.replace('payroll.', '')}",
+        })
         rows = await conn.fetch("""
             SELECT id, entity_type, entity_id, action, changed_by_user_id, changed_by_name,
                    changes, note, ip_address, created_at
             FROM audit_logs
-            WHERE entity_type = $1 AND entity_id = $2
+            WHERE entity_type = ANY($1::text[]) AND entity_id = $2
             ORDER BY created_at DESC;
-        """, entity_type, entity_id)
+        """, variants, entity_id)
 
         events = []
         for r in rows:

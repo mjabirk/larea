@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   CheckCircle2,
   Calendar,
+  ChevronLeft,
 } from 'lucide-react';
 
 export function EmployeeListView({
@@ -28,6 +29,8 @@ export function EmployeeListView({
   const setSearchTerm = externalOnSearchChange || setInternalSearchTerm;
   const [deptFilter, setDeptFilter] = useState('ALL');
   const [complianceFilter, setComplianceFilter] = useState('ALL');
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 80;
 
   // Helper to calculate days remaining until expiry
   const getDaysRemaining = (expiryDateStr) => {
@@ -91,66 +94,62 @@ export function EmployeeListView({
     return matchSearch && matchDept && matchCompliance;
   });
 
-  const getInitials = (name) => {
-    if (!name) return 'EMP';
-    return name
-      .split(' ')
-      .map((n) => n[0])
-      .slice(0, 2)
-      .join('')
-      .toUpperCase();
-  };
+  // 80-record pagination
+  const totalRecords = filteredEmployees.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, totalRecords);
+  const pagedEmployees = filteredEmployees.slice(startIndex, endIndex);
 
   return (
-    <div className="space-y-4">
-      {/* 1. Standard Top Action Bar / Control Panel (Optional / Bespoke header) */}
+    <div className="space-y-2.5">
+      {/* 1. Top Action Bar (When standalone showHeader is true) */}
       {showHeader && (
-        <div className="h-14 min-h-[56px] bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs px-5 flex items-center justify-between gap-4">
-          {/* Left: Breadcrumbs / Title */}
-          <div className="flex items-center gap-2.5">
-            <div className="flex items-center gap-1.5 text-xs">
-              <span className="text-slate-400 font-medium">Human Resources</span>
-              <span className="text-slate-300 dark:text-slate-700">/</span>
-              <span className="font-bold text-slate-900 dark:text-white text-sm">
-                Employees Directory
+        <div className="h-11 min-h-[44px] bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs px-3 sm:px-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onNewEmployee}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-2xs transition cursor-pointer shrink-0"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>+ Create New Employee</span>
+            </button>
+            <div className="flex items-center gap-1.5 text-xs pl-2 border-l border-slate-200 dark:border-slate-700">
+              <span className="font-bold text-slate-900 dark:text-white">Employees Directory</span>
+              <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                {employees.length}
               </span>
             </div>
-            <span className="font-mono text-xs font-semibold px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-              {employees.length} Employees
-            </span>
           </div>
-
-          {/* Right: + Create New Employee button */}
-          <button
-            type="button"
-            onClick={onNewEmployee}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition cursor-pointer shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            <span>+ Create New Employee</span>
-          </button>
         </div>
       )}
 
-      {/* 2. Search & Filters Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs">
-        <div className="flex flex-1 items-center gap-3 flex-wrap">
-          <div className="relative flex-1 min-w-[240px] max-w-md">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+      {/* 2. Slim 36px Search & Filter Strip with Odoo-style Pager */}
+      <div className="h-9 min-h-[36px] bg-white dark:bg-slate-900 px-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs flex items-center justify-between gap-2.5">
+        <div className="flex flex-1 items-center gap-2 max-w-xl">
+          <div className="relative flex-1">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search by name, employee code, QID, job title..."
-              className="w-full text-xs pl-9 pr-4 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                setCurrentPage(1);
+              }}
+              placeholder="Search name, code, QID, title..."
+              className="w-full h-7 text-xs pl-7 pr-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
 
           {/* Department Filter */}
           <select
             value={deptFilter}
-            onChange={(e) => setDeptFilter(e.target.value)}
-            className="text-xs px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            onChange={(e) => {
+              setDeptFilter(e.target.value);
+              setCurrentPage(1);
+            }}
+            className="h-7 text-[11.5px] font-medium px-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0"
           >
             <option value="ALL">All Departments</option>
             <option value="Operations">Operations</option>
@@ -162,166 +161,164 @@ export function EmployeeListView({
           {/* Compliance Filter */}
           <select
             value={complianceFilter}
-            onChange={(e) => setComplianceFilter(e.target.value)}
-            className="text-xs px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            onChange={(e) => {
+              setComplianceFilter(e.target.value);
+              setCurrentPage(1);
+            }}
+            className="h-7 text-[11.5px] font-medium px-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0 hidden sm:block"
           >
-            <option value="ALL">All Compliance Statuses</option>
-            <option value="EXPIRING">⚠️ Expiring within 30 Days</option>
-            <option value="VALID">✓ Compliant & Valid</option>
+            <option value="ALL">All Compliance</option>
+            <option value="EXPIRING">⚠️ Expiring &lt;30d</option>
+            <option value="VALID">✓ Valid</option>
           </select>
+        </div>
+
+        {/* Right: Odoo-Style Pager [ 1-80 / N ] < > */}
+        <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 font-mono text-xs pl-2 border-l border-slate-200 dark:border-slate-700 shrink-0">
+          <span className="tabular-nums">
+            {totalRecords === 0 ? '0-0' : `${startIndex + 1}-${endIndex}`} / {totalRecords}
+          </span>
+          <div className="inline-flex items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+            <button
+              type="button"
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage <= 1}
+              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Previous 80 Records"
+            >
+              <ChevronLeft className="w-3.5 h-3.5 text-slate-700 dark:text-slate-300" />
+            </button>
+            <div className="w-[1px] h-3.5 bg-slate-200 dark:bg-slate-700" />
+            <button
+              type="button"
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              disabled={currentPage >= totalPages}
+              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Next 80 Records"
+            >
+              <ChevronRight className="w-3.5 h-3.5 text-slate-700 dark:text-slate-300" />
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Employees Table */}
-      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs text-slate-600 dark:text-slate-300">
-            <thead className="bg-slate-50/80 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 font-semibold border-b border-slate-200 dark:border-slate-800 uppercase tracking-wider text-[10px]">
+      {/* 3. High-Density Employees Table (32px row height, sticky header, 80 records per view) */}
+      <div className="max-h-[calc(100vh-140px)] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs bg-white dark:bg-slate-900">
+        <table className="w-full text-left border-collapse">
+          <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900 border-b border-slate-200/80 dark:border-slate-800 shadow-2xs">
+            <tr className="h-8 text-slate-600 dark:text-slate-400 font-semibold text-[11.5px] uppercase tracking-wider">
+              <th className="py-1 px-2.5">Employee</th>
+              <th className="py-1 px-2.5">Job Title</th>
+              <th className="py-1 px-2.5">Department</th>
+              <th className="py-1 px-2.5">Nationality</th>
+              <th className="py-1 px-2.5">Immigration & Visa</th>
+              <th className="py-1 px-2.5">Status</th>
+              <th className="py-1 px-2.5 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="text-[12.5px] text-slate-800 dark:text-slate-200 divide-y divide-slate-100 dark:divide-slate-800/80">
+            {isLoading ? (
               <tr>
-                <th className="px-5 py-3.5">Employee</th>
-                <th className="px-4 py-3.5">Job Title & Dept</th>
-                <th className="px-4 py-3.5">Branch / Nationality</th>
-                <th className="px-4 py-3.5">Immigration & Visa Status</th>
-                <th className="px-4 py-3.5">Status</th>
-                <th className="px-4 py-3.5 text-right">Actions</th>
+                <td colSpan={7} className="py-8 text-center text-xs text-slate-400">
+                  Loading workforce directory...
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-              {isLoading ? (
-                <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-400">
-                    Loading international workforce directory...
-                  </td>
-                </tr>
-              ) : filteredEmployees.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-400">
-                    No employee records match the active criteria.
-                  </td>
-                </tr>
-              ) : (
-                filteredEmployees.map((emp) => {
-                  const complianceIssues = getComplianceStatus(emp);
-                  const isExpiring = complianceIssues.length > 0;
+            ) : pagedEmployees.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="py-8 text-center text-xs text-slate-400">
+                  No employee records match the active criteria.
+                </td>
+              </tr>
+            ) : (
+              pagedEmployees.map((emp) => {
+                const complianceIssues = getComplianceStatus(emp);
+                const isExpiring = complianceIssues.length > 0;
 
-                  return (
-                    <tr
-                      key={emp.id}
-                      onClick={() => onSelectEmployee(emp)}
-                      className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition cursor-pointer group"
-                    >
-                      {/* Avatar + Name + Local Name + Code */}
-                      <td className="px-5 py-3.5">
-                        <div className="flex items-center gap-3">
-                          <div className="w-9 h-9 rounded-xl bg-blue-600 text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-2xs">
-                            {getInitials(emp.full_name)}
-                          </div>
-                          <div>
-                            <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                              <span>{emp.full_name}</span>
-                              {emp.display_name_local && (
-                                <span className="font-normal text-slate-400 text-[11px]" dir="rtl">
-                                  ({emp.display_name_local})
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-[11px] font-mono text-slate-400 mt-0.5">
-                              {emp.employee_number} • {emp.work_email || 'No email registered'}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
+                return (
+                  <tr
+                    key={emp.id}
+                    onClick={() => onSelectEmployee(emp)}
+                    className="h-8 hover:bg-slate-100/60 dark:hover:bg-slate-800/60 odd:bg-white dark:odd:bg-slate-900 even:bg-slate-50/40 dark:even:bg-slate-800/40 border-b border-slate-200/60 dark:border-slate-800/60 transition-colors cursor-pointer"
+                  >
+                    {/* Employee Name (Single-line truncate, ID & email in tooltip) */}
+                    <td className="py-1 px-2.5">
+                      <span
+                        className="truncate max-w-[200px] font-semibold text-slate-900 dark:text-white block cursor-default"
+                        title={`${emp.employee_number} • ${emp.work_email || 'No email'}${emp.display_name_local ? ` (${emp.display_name_local})` : ''}`}
+                      >
+                        {emp.full_name}
+                      </span>
+                    </td>
 
-                      {/* Job Title & Department */}
-                      <td className="px-4 py-3.5">
-                        <div className="font-medium text-slate-900 dark:text-slate-100 flex items-center gap-1.5 flex-wrap">
-                          <span>{emp.job_title || 'Staff Associate'}</span>
-                          {emp.grade_code && (
-                            <span
-                              className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20"
-                              title={emp.grade_name || emp.grade_code}
-                            >
-                              {emp.grade_code}
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[11px] text-slate-400 mt-0.5">
-                          {emp.department_id || 'Operations'} • {emp.employment_type || 'Full-Time'}
-                        </div>
-                      </td>
+                    {/* Job Title (Single line) */}
+                    <td className="py-1 px-2.5">
+                      <span className="truncate max-w-[150px] font-medium text-slate-800 dark:text-slate-200 block" title={emp.job_title}>
+                        {emp.job_title || 'Staff Associate'}
+                      </span>
+                    </td>
 
-                      {/* Branch & Nationality */}
-                      <td className="px-4 py-3.5">
-                        <div className="font-medium text-slate-800 dark:text-slate-200">
-                          {emp.nationality || 'Qatar'}
-                        </div>
-                        <div className="text-[11px] text-slate-400 mt-0.5">
-                          Doha Headquarters (HQ-01)
-                        </div>
-                      </td>
+                    {/* Department (Single line) */}
+                    <td className="py-1 px-2.5">
+                      <span className="truncate max-w-[120px] text-slate-600 dark:text-slate-300 block">
+                        {emp.department_id || 'Operations'}
+                      </span>
+                    </td>
 
-                      {/* Expat Residency & Visa Status with 30-Day Warning Pills */}
-                      <td className="px-4 py-3.5">
-                        {isExpiring ? (
-                          <div className="space-y-1">
-                            {complianceIssues.map((iss, i) => (
-                              <div
-                                key={i}
-                                className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
-                                  iss.urgent
-                                    ? 'bg-rose-50 text-rose-700 border-rose-300 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800'
-                                    : 'bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800'
-                                }`}
-                              >
-                                <AlertTriangle className="w-3 h-3" />
-                                <span>{iss.label}</span>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
-                            <CheckCircle2 className="w-3 h-3" />
-                            <span>Valid & Compliant</span>
-                          </div>
-                        )}
-                        <div className="text-[10px] font-mono text-slate-400 mt-0.5">
-                          QID: {emp.national_id_number || 'N/A'} • Visa: {emp.visa_number || 'N/A'}
-                        </div>
-                      </td>
+                    {/* Nationality (Single line) */}
+                    <td className="py-1 px-2.5">
+                      <span className="truncate max-w-[120px] text-slate-600 dark:text-slate-300 block">
+                        {emp.nationality || 'Qatar'}
+                      </span>
+                    </td>
 
-                      {/* Status Badge */}
-                      <td className="px-4 py-3.5">
+                    {/* Immigration / Visa Status (Compact 20px pill) */}
+                    <td className="py-1 px-2.5">
+                      {isExpiring ? (
                         <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${
-                            emp.status === 'Active'
-                              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-400'
-                              : emp.status === 'On Leave'
-                              ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-400'
-                              : emp.status === 'Terminated'
-                              ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-400'
-                              : 'bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-300'
-                          }`}
+                          className="inline-flex items-center gap-1 h-5 px-1.5 py-0 rounded text-[10.5px] font-bold bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 shrink-0"
+                          title={complianceIssues.map((i) => i.label).join(' | ')}
                         >
-                          {emp.status || 'Active'}
+                          <AlertTriangle className="w-3 h-3 text-amber-500" />
+                          <span>{complianceIssues[0]?.label || 'Expiring'}</span>
                         </span>
-                      </td>
+                      ) : (
+                        <span
+                          className="inline-flex items-center gap-1 h-5 px-1.5 py-0 rounded text-[10.5px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shrink-0"
+                          title={`QID: ${emp.national_id_number || 'N/A'} • Visa: ${emp.visa_number || 'N/A'}`}
+                        >
+                          <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                          <span>Valid</span>
+                        </span>
+                      )}
+                    </td>
 
-                      {/* Action Chevron */}
-                      <td className="px-4 py-3.5 text-right">
-                        <div className="inline-flex items-center text-slate-400 group-hover:text-blue-500 transition">
-                          <span className="text-[11px] font-medium mr-1 opacity-0 group-hover:opacity-100 transition">
-                            View Profile
-                          </span>
-                          <ChevronRight className="w-4 h-4" />
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                    {/* Status Pill (Compact 20px) */}
+                    <td className="py-1 px-2.5">
+                      <span
+                        className={`inline-flex items-center h-5 px-1.5 py-0 rounded text-[10.5px] font-bold border shrink-0 ${
+                          emp.status === 'Active'
+                            ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                            : emp.status === 'On Leave'
+                            ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                            : 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+                        }`}
+                      >
+                        {emp.status || 'Active'}
+                      </span>
+                    </td>
+
+                    {/* Action */}
+                    <td className="py-1 px-2.5 text-right">
+                      <span className="text-[11px] font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer">
+                        View →
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );

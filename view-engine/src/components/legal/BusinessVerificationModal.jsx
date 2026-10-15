@@ -74,7 +74,7 @@ export function BusinessVerificationModal({ isOpen, onClose }) {
                 Verified Business Entity Information
               </h3>
               <p className="text-[11px] text-slate-400">
-                Statutory corporate registration and compliance records
+                Statutory registration and compliance records
               </p>
             </div>
           </div>

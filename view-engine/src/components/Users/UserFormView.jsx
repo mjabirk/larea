@@ -239,39 +239,47 @@ export function UserFormView({ user, onBackToList }) {
         }}
       />
 
-      {/* Top 56px Control Bar with Back Button */}
-      <div className="h-14 min-h-[56px] bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs px-4 flex items-center justify-between gap-4">
+      {/* Top Sticky Tier 2 Control Bar with Back Button */}
+      <div className="sticky top-14 z-20 h-14 min-h-[56px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs px-4 flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           {onBackToList && (
             <button
               type="button"
               onClick={onBackToList}
-              className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5 transition cursor-pointer"
+              className="h-[36px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-[13px] font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5 transition cursor-pointer"
             >
               <ArrowLeft className="w-3.5 h-3.5 rtl:rotate-180" />
               <span>Back to Users</span>
             </button>
           )}
 
-          <div className="flex items-center gap-1.5 text-xs">
+          <div className="flex items-center gap-1.5 text-[13px]">
             <span className="text-slate-400">Users</span>
             <span className="text-slate-300 dark:text-slate-700">/</span>
-            <span className="font-bold text-slate-900 dark:text-white text-sm">
+            <span className="font-semibold text-slate-900 dark:text-white text-[15px]">
               {formData.full_name}
             </span>
           </div>
 
-          <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+          <span className="font-mono text-[12px] font-semibold px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
             {activeUser.id}
           </span>
         </div>
 
+        {/* Center: Record Status Badge */}
+        <div className="hidden sm:flex items-center">
+          <span className={formData.status === 'active' ? 'ui-badge-valid' : 'ui-badge-missing'}>
+            Status: {formData.status.toUpperCase()}
+          </span>
+        </div>
+
+        {/* Right: Actions */}
         <div className="flex items-center gap-2">
           {isDirty && (
             <button
               type="button"
               onClick={handleSaveUser}
-              className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+              className="h-[36px] px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs"
             >
               <Save className="w-3.5 h-3.5" />
               <span>Save Changes</span>
@@ -296,64 +304,64 @@ export function UserFormView({ user, onBackToList }) {
         </div>
       )}
 
-      {/* 70/30 ASYMMETRIC TWO-PANEL LAYOUT */}
-      <div className="grid grid-cols-1 lg:grid-cols-10 gap-6 items-start">
+      {/* 12-COLUMN RESPONSIVE LAYOUT (8 cols main form / 4 cols right rail) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* ========================================================================= */}
-        {/* LEFT PANEL (70%): Account Info, Assigned Role, Department, Superadmin */}
+        {/* MAIN FORM AREA (8 cols): Account Info, Assigned Role, Department, Superadmin */}
         {/* ========================================================================= */}
-        <div className="lg:col-span-7 space-y-6">
+        <div className="lg:col-span-8 space-y-6">
           {/* 1. Account Credentials & Tenancy Role */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xs space-y-5">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs space-y-5">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <div className="p-1.5 rounded-lg bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400">
                   <User className="w-4 h-4" />
                 </div>
-                <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white">
                   Identity Details & Tenancy Role
                 </h3>
               </div>
-              <span className="text-xs font-mono text-slate-400">
+              <span className="text-[12px] font-mono text-slate-400">
                 STATUS: <strong className="text-emerald-600 uppercase">{formData.status}</strong>
               </span>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Full Name */}
-              <div className="space-y-1.5">
-                <label className="font-semibold text-slate-700 dark:text-slate-300 block">
+              <div>
+                <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block mb-1.5">
                   Full Name <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="text"
                   value={formData.full_name}
                   onChange={(e) => handleFieldChange('full_name', e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  className="w-full h-[42px] text-[15px] font-normal px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-850 placeholder:text-slate-400 transition"
                 />
               </div>
 
               {/* Work Email */}
-              <div className="space-y-1.5">
-                <label className="font-semibold text-slate-700 dark:text-slate-300 block">
+              <div>
+                <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block mb-1.5">
                   Work Email <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="email"
                   value={formData.email}
                   onChange={(e) => handleFieldChange('email', e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono"
+                  className="w-full h-[42px] text-[15px] font-normal px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-850 font-mono placeholder:text-slate-400 transition"
                 />
               </div>
 
               {/* Assigned Role */}
-              <div className="space-y-1.5">
-                <label className="font-semibold text-slate-700 dark:text-slate-300 block">
+              <div>
+                <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block mb-1.5">
                   Assigned RBAC Role
                 </label>
                 <select
                   value={formData.role}
                   onChange={(e) => handleFieldChange('role', e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 cursor-pointer font-semibold"
+                  className="w-full h-[42px] text-[13px] font-medium px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 cursor-pointer transition"
                 >
                   {(roles || DEFAULT_ROLES).map((r) => (
                     <option key={r.id} value={r.name}>
@@ -364,14 +372,14 @@ export function UserFormView({ user, onBackToList }) {
               </div>
 
               {/* Department */}
-              <div className="space-y-1.5">
-                <label className="font-semibold text-slate-700 dark:text-slate-300 block">
+              <div>
+                <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block mb-1.5">
                   Department
                 </label>
                 <select
                   value={formData.department}
                   onChange={(e) => handleFieldChange('department', e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 cursor-pointer"
+                  className="w-full h-[42px] text-[13px] font-medium px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 cursor-pointer transition"
                 >
                   <option value="Operations">Operations</option>
                   <option value="Human Resources">Human Resources</option>
@@ -381,33 +389,32 @@ export function UserFormView({ user, onBackToList }) {
                 </select>
               </div>
 
-              {/* CIDR Subnet Allowlist */}
-              <div className="space-y-1.5 md:col-span-2">
-                <label className="font-semibold text-slate-700 dark:text-slate-300 block">
-                  Allowed Subnets (CIDR IP Allowlist)
+              {/* Allowed Office Networks */}
+              <div className="md:col-span-2">
+                <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block mb-1.5">
+                  Allowed Office Networks (IP Ranges)
                 </label>
                 <input
                   type="text"
                   value={formData.allowed_cidrs}
                   onChange={(e) => handleFieldChange('allowed_cidrs', e.target.value)}
                   placeholder="e.g. 192.168.10.0/24, 10.0.4.0/24"
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                  className="w-full h-10 text-[14px] font-normal px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-850 font-mono placeholder:text-slate-400 transition"
                 />
-                <span className="text-[10px] text-slate-400 block">
-                  Validates client subnet IP before allowing stateful session token generation.
+                <span className="text-[12px] text-slate-500 dark:text-slate-400 block mt-1">
+                  Restricts account access to designated networks or IP ranges.
                 </span>
               </div>
 
               {/* Date of Birth & Age Compliance */}
-              <div className="space-y-1.5 md:col-span-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-                <div className="flex items-center justify-between">
-                  <label htmlFor="user-dob" className="font-semibold text-slate-700 dark:text-slate-300 block">
+              <div className="md:col-span-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label htmlFor="user-dob" className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block">
                     Date of Birth (GDPR Art. 8 / Age Verification)
                   </label>
                   {currentAge !== null && (
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                      isMinor ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-200 border border-amber-300' : 'bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-200 border border-emerald-300'
-                    }`}>
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[12px] font-semibold ${isMinor ? 'ui-badge-pending' : 'ui-badge-valid'
+                      }`}>
                       {currentAge} years old {isMinor ? '• Minor (Guardian Consent Required)' : '• Verified Adult'}
                     </span>
                   )}
@@ -417,7 +424,7 @@ export function UserFormView({ user, onBackToList }) {
                   type="date"
                   value={formData.date_of_birth}
                   onChange={(e) => handleFieldChange('date_of_birth', e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 text-xs"
+                  className="w-full h-[42px] text-[15px] font-normal px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-850 transition"
                 />
               </div>
 
@@ -428,9 +435,9 @@ export function UserFormView({ user, onBackToList }) {
                     <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
                     <span>Statutory Child Privacy Protection & Guardian Consent (COPPA / GDPR Art. 8)</span>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
-                      <label htmlFor="guardian-name" className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                      <label htmlFor="guardian-name" className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block mb-1">
                         Parent / Legal Guardian Full Name
                       </label>
                       <input
@@ -439,11 +446,11 @@ export function UserFormView({ user, onBackToList }) {
                         value={formData.guardian_name}
                         onChange={(e) => handleFieldChange('guardian_name', e.target.value)}
                         placeholder="e.g. Robert Smith"
-                        className="w-full bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-700 rounded-lg px-3 py-1.5 text-xs text-slate-900 dark:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                        className="w-full h-[42px] text-[15px] font-normal px-3.5 rounded-xl border border-amber-200 dark:border-amber-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-slate-400"
                       />
                     </div>
                     <div>
-                      <label htmlFor="guardian-email" className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                      <label htmlFor="guardian-email" className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block mb-1">
                         Parent / Legal Guardian Email
                       </label>
                       <input
@@ -452,7 +459,7 @@ export function UserFormView({ user, onBackToList }) {
                         value={formData.guardian_email}
                         onChange={(e) => handleFieldChange('guardian_email', e.target.value)}
                         placeholder="guardian@example.com"
-                        className="w-full bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-700 rounded-lg px-3 py-1.5 text-xs text-slate-900 dark:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 font-mono"
+                        className="w-full h-[42px] text-[15px] font-normal px-3.5 rounded-xl border border-amber-200 dark:border-amber-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono placeholder:text-slate-400"
                       />
                     </div>
                   </div>
@@ -461,9 +468,9 @@ export function UserFormView({ user, onBackToList }) {
                       type="checkbox"
                       checked={formData.age_consent_verified}
                       onChange={(e) => handleFieldChange('age_consent_verified', e.target.checked)}
-                      className="w-4 h-4 rounded border-amber-300 text-blue-600 focus:ring-blue-600 mt-0.5 cursor-pointer focus-visible:ring-2 focus-visible:ring-blue-500"
+                      className="w-4 h-4 rounded border-amber-300 text-blue-600 focus:ring-blue-600 mt-0.5 cursor-pointer"
                     />
-                    <span className="text-[11px] text-slate-700 dark:text-slate-300 leading-tight">
+                    <span className="text-[12px] text-slate-700 dark:text-slate-300 leading-tight">
                       Confirmed written parental/guardian consent on file authorising processing of this minor's workforce and attendance data.
                     </span>
                   </label>
@@ -473,11 +480,10 @@ export function UserFormView({ user, onBackToList }) {
               {/* Superadmin Toggle (Disabled unless current logged in user is superadmin) */}
               <div className="md:col-span-2 pt-2">
                 <label
-                  className={`flex items-center gap-3 p-3.5 rounded-xl border transition ${
-                    !isCurrentSuperadmin
+                  className={`flex items-center gap-3 p-3.5 rounded-xl border transition ${!isCurrentSuperadmin
                       ? 'border-slate-200 dark:border-slate-800 bg-slate-100/60 dark:bg-slate-800/20 opacity-70 cursor-not-allowed'
                       : 'border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 cursor-pointer hover:bg-slate-100/60'
-                  }`}
+                    }`}
                 >
                   <input
                     type="checkbox"
@@ -488,17 +494,17 @@ export function UserFormView({ user, onBackToList }) {
                   />
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-slate-900 dark:text-white text-xs block">
+                      <span className="font-semibold text-slate-900 dark:text-white text-[13px] block">
                         Grant Root Superadmin Privileges
                       </span>
                       {!isCurrentSuperadmin && (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-mono text-amber-600 dark:text-amber-400 font-semibold">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-mono text-amber-600 dark:text-amber-400 font-semibold">
                           <Lock className="w-3 h-3" />
                           <span>Requires Superadmin Authority</span>
                         </span>
                       )}
                     </div>
-                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block mt-0.5">
+                    <span className="text-[12px] text-slate-500 dark:text-slate-400 block mt-0.5">
                       Provides unrestricted platform authority across all organizations and system audit trails.
                     </span>
                   </div>
@@ -509,16 +515,16 @@ export function UserFormView({ user, onBackToList }) {
         </div>
 
         {/* ========================================================================= */}
-        {/* RIGHT SIDEBAR (30%): Administrative Security Card + Active Sessions Table */}
+        {/* RIGHT SIDEBAR (4 cols): Administrative Security Card + Active Sessions Table */}
         {/* ========================================================================= */}
-        <div className="lg:col-span-3 space-y-6">
+        <div className="lg:col-span-4 space-y-6 sticky top-[72px]">
           {/* 1. Administrative Security Card (Prominent Set / Reset Password) */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs p-5 space-y-4">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs p-5 space-y-4">
             <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
               <KeyRound className="w-4 h-4 text-slate-400" />
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+              <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white">
                 Administrative Security
-              </h4>
+              </h3>
             </div>
 
             <div className="space-y-3">
@@ -530,11 +536,10 @@ export function UserFormView({ user, onBackToList }) {
                 type="button"
                 onClick={() => setIsResetPasswordModalOpen(true)}
                 disabled={!isCurrentSuperadmin}
-                className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition shadow-xs ${
-                  isCurrentSuperadmin
+                className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition shadow-xs ${isCurrentSuperadmin
                     ? 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
                     : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-600 cursor-not-allowed border border-slate-200 dark:border-slate-700'
-                }`}
+                  }`}
                 title={!isCurrentSuperadmin ? 'Only Superadmins can reset passwords' : ''}
               >
                 <KeyRound className="w-4 h-4" />
@@ -551,14 +556,14 @@ export function UserFormView({ user, onBackToList }) {
           </div>
 
           {/* 2. Active Sessions Panel */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs p-5 space-y-4">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs p-5 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div>
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white">
                   Active Sessions ({sessions.length})
-                </h4>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Stateful DragonflyDB tokens
+                </h3>
+                <p className="text-[12px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  Logged in devices & browsers
                 </p>
               </div>
 
@@ -591,11 +596,10 @@ export function UserFormView({ user, onBackToList }) {
                 sessions.map((sess) => (
                   <div
                     key={sess.id}
-                    className={`p-3.5 rounded-xl border transition space-y-2.5 ${
-                      sess.is_current
+                    className={`p-3.5 rounded-xl border transition space-y-2.5 ${sess.is_current
                         ? 'border-blue-300 dark:border-blue-900/60 bg-blue-50/40 dark:bg-blue-950/20'
                         : 'border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40'
-                    }`}
+                      }`}
                   >
                     {/* Top Row: Device & Current indicator */}
                     <div className="flex items-start justify-between gap-2">

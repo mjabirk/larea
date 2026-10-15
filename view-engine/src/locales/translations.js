@@ -37,7 +37,7 @@ export const TRANSLATIONS = {
     draft: "Draft",
     verified: "Verified",
     synced: "Synced to Payroll",
-    search_placeholder: "Quick search employee, terminal, or department...",
+    search_placeholder: "Search employee, terminal, or dept...",
     
     // Form & Cards
     employee_assignment: "Employee & Terminal Assignment",

@@ -15,9 +15,11 @@ import {
   Calendar,
   Layers,
   Trash2,
-  TrendingUp,
-  ShieldAlert,
-  Lock
+  Lock,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useAccessControl } from '../../context/AccessControlContext';
@@ -57,6 +59,9 @@ export function PayrollAdjustmentsView() {
   const [typeFilter, setTypeFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [searchTerm, setSearchTerm] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 80;
+  const [showSummary, setShowSummary] = useState(false);
 
   // Modals
   const [isNewEntryOpen, setIsNewEntryOpen] = useState(false);
@@ -67,6 +72,21 @@ export function PayrollAdjustmentsView() {
   const [rejectingAdj, setRejectingAdj] = useState(null);
   const [rejectionReason, setRejectionReason] = useState('');
   const [isRejecting, setIsRejecting] = useState(false);
+
+  // Global Escape key listener for modals
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (rejectingAdj) {
+          setRejectingAdj(null);
+        } else if (isNewEntryOpen) {
+          setIsNewEntryOpen(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [rejectingAdj, isNewEntryOpen]);
 
   // Form State
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
@@ -433,76 +453,159 @@ export function PayrollAdjustmentsView() {
     });
   }, [adjustments, searchTerm]);
 
+  // 80-record Odoo-style pagination
+  const totalRecords = filteredAdjustments.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, totalRecords);
+  const pagedAdjustments = useMemo(() => {
+    return filteredAdjustments.slice(startIndex, endIndex);
+  }, [filteredAdjustments, startIndex, endIndex]);
+
   return (
-    <div className="space-y-6">
-      {/* 1. Header & Actions */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400 flex items-center justify-center font-bold">
-              <Layers className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-lg font-bold text-slate-900 dark:text-white">
-                  Variable Payroll & Multi-Level Approvals
-                </h1>
-                <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 font-bold border border-purple-200 dark:border-purple-900">
-                  2-Level Workflow
-                </span>
-                {!canReadSalary && (
-                  <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-bold border border-slate-200 dark:border-slate-700 flex items-center gap-1">
-                    <Lock className="w-3 h-3 text-slate-500" />
-                    Salary Masked
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Formula overtime, trip/task piece-rates, bonuses, and salary deductions with locked configuration presets and supervisor + HR sign-off.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2.5">
-          {/* Month Selector */}
-          <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700">
-            <Calendar className="w-3.5 h-3.5 text-slate-400" />
-            <input
-              type="text"
-              pattern="^\d{4}-(0[1-9]|1[0-2])$"
-              value={selectedYm}
-              onChange={(e) => setSelectedYm(e.target.value)}
-              className="bg-transparent font-mono text-xs font-bold text-slate-800 dark:text-slate-200 w-16 focus:outline-hidden"
-              title="Filter by Salary Month (YYYY-MM)"
-            />
-          </div>
-
-          <button
-            type="button"
-            onClick={fetchAdjustments}
-            disabled={isLoading}
-            className="p-2.5 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-            title="Refresh"
-          >
-            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-          </button>
-
+    <div className="space-y-2.5">
+      {/* 1. Odoo-Style Consolidated 44px Top Control Bar */}
+      <div className="h-11 min-h-[44px] bg-white dark:bg-slate-900 px-3 sm:px-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs flex items-center justify-between gap-3">
+        {/* Left: Primary Action + Title + Month + Refresh */}
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={() => setIsNewEntryOpen(true)}
-            className="flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-xs transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 h-8 px-3 text-xs font-semibold rounded-lg bg-purple-600 hover:bg-purple-700 text-white shadow-2xs transition-colors cursor-pointer"
           >
-            <Plus className="w-4 h-4" />
-            <span>New Variable Entry</span>
+            <Plus className="w-3.5 h-3.5" />
+            <span>+ New Entry</span>
           </button>
+
+          <div className="flex items-center gap-2 pl-2 border-l border-slate-200 dark:border-slate-700">
+            <span className="text-xs font-bold text-slate-900 dark:text-white hidden sm:inline">
+              Variable Pay & Approvals
+            </span>
+
+            {/* Target Month */}
+            <div className="flex items-center gap-1 bg-slate-50 dark:bg-slate-800 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700">
+              <Calendar className="w-3 h-3 text-slate-400" />
+              <input
+                type="text"
+                pattern="^\d{4}-(0[1-9]|1[0-2])$"
+                value={selectedYm}
+                onChange={(e) => setSelectedYm(e.target.value)}
+                className="bg-transparent font-mono text-[11.5px] font-bold text-slate-800 dark:text-slate-200 w-14 focus:outline-hidden"
+                title="Filter by Salary Month (YYYY-MM)"
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={fetchAdjustments}
+              disabled={isLoading}
+              className="p-1.5 text-xs rounded-md text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+              title="Refresh Records"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* Center: Slim expandable search + inline filter dropdown tags */}
+        <div className="flex items-center gap-2 flex-1 max-w-md mx-2">
+          <div className="relative flex-1">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search employee, ID, code..."
+              value={searchTerm}
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="w-full h-8 text-xs pl-8 pr-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-purple-500"
+            />
+          </div>
+
+          {/* Type Filter */}
+          <select
+            value={typeFilter}
+            onChange={(e) => {
+              setTypeFilter(e.target.value);
+              setCurrentPage(1);
+            }}
+            className="h-8 px-2 text-[11.5px] font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0"
+          >
+            <option value="ALL">All Types</option>
+            <option value="overtime">Overtime</option>
+            <option value="task_benefit">Piece-Rate</option>
+            <option value="bonus">Bonus</option>
+            <option value="deduction">Deduction</option>
+          </select>
+
+          {/* Status Filter */}
+          <select
+            value={statusFilter}
+            onChange={(e) => {
+              setStatusFilter(e.target.value);
+              setCurrentPage(1);
+            }}
+            className="h-8 px-2 text-[11.5px] font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0 hidden md:block"
+          >
+            <option value="ALL">All Status</option>
+            <option value="pending_supervisor">Pending L1</option>
+            <option value="pending_hr">Pending L2</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+          </select>
+        </div>
+
+        {/* Right: Summary Toggle + Odoo-Style Pager */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowSummary(!showSummary)}
+            className={`flex items-center gap-1 h-8 px-2.5 rounded-lg text-xs font-medium border transition cursor-pointer ${
+              showSummary
+                ? 'bg-purple-50 dark:bg-purple-950/50 border-purple-300 dark:border-purple-800 text-purple-700 dark:text-purple-300'
+                : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+            title="Toggle KPI Summary Ribbon"
+          >
+            {showSummary ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            <span className="hidden sm:inline">Summary</span>
+          </button>
+
+          {/* Odoo-style Pager [ 1-80 / 391 ] < > */}
+          <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 font-mono text-xs pl-2 border-l border-slate-200 dark:border-slate-700">
+            <span className="tabular-nums">
+              {totalRecords === 0 ? '0-0' : `${startIndex + 1}-${endIndex}`} / {totalRecords}
+            </span>
+            <div className="inline-flex items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+              <button
+                type="button"
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage <= 1}
+                className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Previous 80 Records"
+              >
+                <ChevronLeft className="w-3.5 h-3.5 text-slate-700 dark:text-slate-300" />
+              </button>
+              <div className="w-[1px] h-3.5 bg-slate-200 dark:bg-slate-700" />
+              <button
+                type="button"
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage >= totalPages}
+                className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Next 80 Records"
+              >
+                <ChevronRight className="w-3.5 h-3.5 text-slate-700 dark:text-slate-300" />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
       {/* Action Notification Alert */}
       {actionMessage && (
         <div
-          className={`flex items-center justify-between p-4 rounded-xl border text-xs font-medium ${
+          className={`flex items-center justify-between p-3 rounded-xl border text-xs font-medium ${
             actionMessage.type === 'success'
               ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
               : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
@@ -526,319 +629,278 @@ export function PayrollAdjustmentsView() {
         </div>
       )}
 
-      {/* 2. KPI Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs space-y-1">
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 font-medium">
-            <span>Pending Supervisor (L1)</span>
-            <Clock className="w-4 h-4 text-amber-500" />
+      {/* 2. Collapsed 28px Single-Line Summary Ribbon (Toggled) */}
+      {showSummary && (
+        <div className="h-7 min-h-[28px] px-3 rounded-lg bg-slate-100/90 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/60 flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 animate-fadeIn">
+          <div className="flex items-center gap-4 flex-wrap text-[11.5px]">
+            <span className="flex items-center gap-1.5">
+              <span className="text-slate-500">Pending Supervisor (L1):</span>
+              <strong className="font-mono text-amber-600 dark:text-amber-400">{summary.pending_supervisor_count}</strong>
+            </span>
+            <span className="text-slate-300 dark:text-slate-600">•</span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-slate-500">Pending HR/Finance (L2):</span>
+              <strong className="font-mono text-purple-600 dark:text-purple-400">{summary.pending_hr_count}</strong>
+            </span>
+            <span className="text-slate-300 dark:text-slate-600">•</span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-slate-500">Approved Additions:</span>
+              <strong className="font-mono text-emerald-600 dark:text-emerald-400">
+                {!canReadSalary || summary.approved_additions_qar === null
+                  ? '••••'
+                  : `+${Number(summary.approved_additions_qar || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} QAR`}
+              </strong>
+            </span>
+            <span className="text-slate-300 dark:text-slate-600">•</span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-slate-500">Approved Deductions:</span>
+              <strong className="font-mono text-rose-600 dark:text-rose-400">
+                {!canReadSalary || summary.approved_deductions_qar === null
+                  ? '••••'
+                  : `-${Number(summary.approved_deductions_qar || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} QAR`}
+              </strong>
+            </span>
           </div>
-          <div className="text-2xl font-bold text-slate-900 dark:text-white">
-            {summary.pending_supervisor_count}
-          </div>
-          <div className="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
-            Awaiting first review & sign-off
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowSummary(false)}
+            className="text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+          >
+            Hide
+          </button>
         </div>
+      )}
 
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs space-y-1">
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 font-medium">
-            <span>Pending HR/Finance (L2)</span>
-            <ShieldCheck className="w-4 h-4 text-purple-500" />
-          </div>
-          <div className="text-2xl font-bold text-slate-900 dark:text-white">
-            {summary.pending_hr_count}
-          </div>
-          <div className="text-[11px] text-purple-600 dark:text-purple-400 font-medium">
-            Ready for final payroll inclusion
-          </div>
-        </div>
-
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs space-y-1">
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 font-medium">
-            <span>Approved Additions (QAR)</span>
-            <TrendingUp className="w-4 h-4 text-emerald-500" />
-          </div>
-          <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
-            {!canReadSalary || summary.approved_additions_qar === null
-              ? '•••• (Restricted)'
-              : `+${Number(summary.approved_additions_qar || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-          </div>
-          <div className="text-[11px] text-slate-400">
-            Overtime, piece-rate trips & bonuses
-          </div>
-        </div>
-
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs space-y-1">
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 font-medium">
-            <span>Approved Deductions (QAR)</span>
-            <AlertOctagon className="w-4 h-4 text-rose-500" />
-          </div>
-          <div className="text-2xl font-bold text-rose-600 dark:text-rose-400">
-            {!canReadSalary || summary.approved_deductions_qar === null
-              ? '•••• (Restricted)'
-              : `-${Number(summary.approved_deductions_qar || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-          </div>
-          <div className="text-[11px] text-slate-400">
-            Loans, recoveries & disciplinary fines
-          </div>
-        </div>
-      </div>
-
-      {/* 3. Adjustments List & Table */}
-      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
-        {/* Filter Toolbar */}
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Search employee, ID, adjustment code, title..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-purple-500"
-            />
-          </div>
-
-          <div className="flex items-center flex-wrap gap-2">
-            {/* Type Filter */}
-            <select
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value)}
-              className="px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-slate-900 dark:text-white focus:outline-hidden"
-            >
-              <option value="ALL">All Adjustment Types</option>
-              <option value="overtime">Overtime Hours</option>
-              <option value="task_benefit">Task / Trip Piece-Rates</option>
-              <option value="bonus">Incentives & Bonuses</option>
-              <option value="deduction">Deductions & Recoveries</option>
-            </select>
-
-            {/* Status Filter */}
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-slate-900 dark:text-white focus:outline-hidden"
-            >
-              <option value="ALL">All Approval Statuses</option>
-              <option value="pending_supervisor">Pending Supervisor (L1)</option>
-              <option value="pending_hr">Pending HR/Finance (L2)</option>
-              <option value="approved">Approved & Synced</option>
-              <option value="rejected">Rejected</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-slate-50/80 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 font-bold uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
-                <th className="py-3 px-4">Adjustment / Code</th>
-                <th className="py-3 px-3">Employee</th>
-                <th className="py-3 px-3">Type</th>
-                <th className="py-3 px-3">Basis / Rate</th>
-                <th className="py-3 px-3">Quantity</th>
-                <th className="py-3 px-3 font-extrabold text-slate-900 dark:text-white">Amount (QAR)</th>
-                <th className="py-3 px-3">Status</th>
-                <th className="py-3 px-3">Audit Trail</th>
-                <th className="py-3 px-4 text-right">Actions</th>
+      {/* 3. High-Density Adjustments Table (Strict 28-32px row height, sticky header, 80 records per view) */}
+      <div className="max-h-[calc(100vh-140px)] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs bg-white dark:bg-slate-900">
+        <table className="w-full text-left border-collapse">
+          <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900 border-b border-slate-200/80 dark:border-slate-800 shadow-2xs">
+            <tr className="h-8 text-slate-600 dark:text-slate-400 font-semibold text-[11.5px] uppercase tracking-wider">
+              <th className="py-1 px-2.5">Adjustment / Code</th>
+              <th className="py-1 px-2.5">Employee</th>
+              <th className="py-1 px-2.5">Type</th>
+              <th className="py-1 px-2.5">Basis / Rate</th>
+              <th className="py-1 px-2.5 text-right">Quantity</th>
+              <th className="py-1 px-2.5 text-right font-semibold text-slate-900 dark:text-white">Amount (QAR)</th>
+              <th className="py-1 px-2.5">Status</th>
+              <th className="py-1 px-2.5">Audit Trail</th>
+              <th className="py-1 px-2.5 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="text-[12.5px] text-slate-800 dark:text-slate-200 divide-y divide-slate-100 dark:divide-slate-800/80">
+            {pagedAdjustments.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="py-8 text-center text-slate-400 text-xs">
+                  No variable adjustments found for {selectedYm}. Click "+ New Entry" to record overtime or piece-rates.
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {filteredAdjustments.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400 text-xs">
-                    No variable adjustments found for {selectedYm}. Click "+ New Variable Entry" to record overtime or piece-rates.
-                  </td>
-                </tr>
-              ) : (
-                filteredAdjustments.map((adj) => {
-                  const isPendingL1 = adj.approval_status === 'pending_supervisor';
-                  const isPendingL2 = adj.approval_status === 'pending_hr';
-                  const isApproved = adj.approval_status === 'approved';
-                  const isRejected = adj.approval_status === 'rejected';
+            ) : (
+              pagedAdjustments.map((adj) => {
+                const isPendingL1 = adj.approval_status === 'pending_supervisor';
+                const isPendingL2 = adj.approval_status === 'pending_hr';
+                const isApproved = adj.approval_status === 'approved';
+                const isRejected = adj.approval_status === 'rejected';
 
-                  const typeColor =
-                    adj.adjustment_type === 'overtime'
-                      ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200'
-                      : adj.adjustment_type === 'task_benefit'
-                      ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200'
-                      : adj.adjustment_type === 'bonus'
-                      ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200'
-                      : 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border-rose-200';
+                const typeColor =
+                  adj.adjustment_type === 'overtime'
+                    ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200'
+                    : adj.adjustment_type === 'task_benefit'
+                    ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200'
+                    : adj.adjustment_type === 'bonus'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200'
+                    : 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border-rose-200';
 
-                  const statusBadgeColor =
-                    isApproved
-                      ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200'
-                      : isPendingL2
-                      ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border-purple-200'
-                      : isPendingL1
-                      ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200'
-                      : 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border-rose-200';
+                const statusBadgeColor =
+                  isApproved
+                    ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200'
+                    : isPendingL2
+                    ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border-purple-200'
+                    : isPendingL1
+                    ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200'
+                    : 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border-rose-200';
 
-                  const isAmountMasked = !canReadSalary || adj.computed_amount === null || adj.computed_amount === undefined;
-                  const isRateMasked = !canReadSalary || adj.unit_rate === null || adj.unit_rate === undefined;
+                const isAmountMasked = !canReadSalary || adj.computed_amount === null || adj.computed_amount === undefined;
+                const isRateMasked = !canReadSalary || adj.unit_rate === null || adj.unit_rate === undefined;
 
-                  return (
-                    <tr key={adj.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition-colors">
-                      <td className="py-3 px-4">
-                        <div className="font-bold text-slate-900 dark:text-white">{adj.title}</div>
-                        <div className="text-[11px] font-mono text-slate-400 mt-0.5">
-                          {adj.code} • {adj.salary_year_month}
-                          {adj.rule_id && <span className="ml-1 text-[10px] text-purple-500 font-semibold">[{adj.rule_id}]</span>}
-                        </div>
-                      </td>
+                // Single-line Rate format
+                let rateDisplay = '—';
+                if (isRateMasked) {
+                  rateDisplay = '•••• (Masked)';
+                } else if (adj.adjustment_type === 'overtime') {
+                  rateDisplay = `${Number(adj.unit_rate || 0).toFixed(2)} QAR/hr (${adj.multiplier_pct}%)`;
+                } else if (adj.adjustment_type === 'task_benefit') {
+                  rateDisplay = `${Number(adj.unit_rate || 0).toFixed(2)} QAR/${adj.unit_label || 'unit'}`;
+                } else if (adj.calculation_basis === 'daily_rate') {
+                  rateDisplay = `${Number(adj.unit_rate || 0).toFixed(2)} QAR/day`;
+                } else {
+                  rateDisplay = (adj.category_subtype || '').replace('_', ' ') || 'Fixed';
+                }
 
-                      <td className="py-3 px-3">
-                        <div className="font-bold text-slate-900 dark:text-white">{adj.employee_name}</div>
-                        <div className="text-[10px] text-slate-400 font-mono">
-                          {adj.employee_number} • {adj.department}
-                        </div>
-                      </td>
+                // Audit tooltip
+                const auditTooltip = `Submitted by: ${adj.submitted_by_name || 'System'}${
+                  adj.level1_approved_by ? `\nL1 Supervisor: ${adj.level1_approved_by}` : ''
+                }${adj.level2_approved_by ? `\nL2 HR: ${adj.level2_approved_by}` : ''}${
+                  adj.rejection_reason ? `\nRejection: ${adj.rejection_reason}` : ''
+                }`;
 
-                      <td className="py-3 px-3">
-                        <span className={`inline-block uppercase px-2 py-0.5 rounded-full text-[10px] font-bold border ${typeColor}`}>
-                          {adj.adjustment_type.replace('_', ' ')}
+                return (
+                  <tr
+                    key={adj.id}
+                    className="h-8 hover:bg-slate-100/60 dark:hover:bg-slate-800/60 odd:bg-white dark:odd:bg-slate-900 even:bg-slate-50/40 dark:even:bg-slate-800/40 border-b border-slate-200/60 dark:border-slate-800/60 transition-colors"
+                  >
+                    {/* Adjustment Title (single-line truncate, code in tooltip) */}
+                    <td className="py-1 px-2.5">
+                      <span
+                        className="truncate max-w-[200px] font-semibold text-slate-900 dark:text-white block cursor-default"
+                        title={`${adj.code} • ${adj.salary_year_month} • ${adj.title}${adj.rule_id ? ` [${adj.rule_id}]` : ''}`}
+                      >
+                        {adj.title}
+                      </span>
+                    </td>
+
+                    {/* Employee Name (single-line, ID & Dept in tooltip) */}
+                    <td className="py-1 px-2.5">
+                      <span
+                        className="truncate max-w-[150px] font-medium text-slate-900 dark:text-white block cursor-default"
+                        title={`${adj.employee_name} (${adj.employee_number}) • ${adj.department || 'General'}`}
+                      >
+                        {adj.employee_name}
+                      </span>
+                    </td>
+
+                    {/* Type Pill (compact 20px) */}
+                    <td className="py-1 px-2.5">
+                      <span className={`inline-flex items-center h-5 px-1.5 py-0 rounded text-[10.5px] font-bold border uppercase shrink-0 ${typeColor}`}>
+                        {adj.adjustment_type.replace('_', ' ')}
+                      </span>
+                    </td>
+
+                    {/* Single-line Basis / Rate */}
+                    <td className="py-1 px-2.5">
+                      <span className="font-mono text-[12px] text-slate-600 dark:text-slate-300 truncate max-w-[130px] block" title={rateDisplay}>
+                        {rateDisplay}
+                      </span>
+                    </td>
+
+                    {/* Quantity (Monospace, right-aligned) */}
+                    <td className="py-1 px-2.5 text-right font-mono text-[12px] font-bold text-slate-700 dark:text-slate-300">
+                      {adj.quantity} {adj.unit_label}
+                    </td>
+
+                    {/* Amount (Monospace, right-aligned) */}
+                    <td className="py-1 px-2.5 text-right font-mono text-[12px] font-bold">
+                      {isAmountMasked ? (
+                        <span className="text-slate-400 dark:text-slate-500">••••</span>
+                      ) : (
+                        <span className={adj.adjustment_type === 'deduction' ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}>
+                          {adj.adjustment_type === 'deduction' ? '-' : '+'}{Number(adj.computed_amount || 0).toFixed(2)}
                         </span>
-                      </td>
+                      )}
+                    </td>
 
-                      <td className="py-3 px-3 text-[11px] font-mono text-slate-600 dark:text-slate-300">
-                        {isRateMasked ? (
-                          <div className="flex items-center gap-1 text-slate-400">
-                            <Lock className="w-3 h-3 text-slate-400" />
-                            <span>•••• (Restricted)</span>
-                          </div>
-                        ) : adj.adjustment_type === 'overtime' ? (
-                          <div>
-                            <span>{adj.multiplier_pct}% of {adj.calculation_basis === 'basic_plus_housing' || adj.calculation_basis === 'basic_plus_allowances' ? 'Basic+Allowances' : 'Basic'}</span>
-                            <div className="text-slate-400 text-[10px]">{Number(adj.unit_rate || 0).toFixed(2)} QAR/hr</div>
-                          </div>
-                        ) : adj.adjustment_type === 'task_benefit' ? (
-                          <div>{Number(adj.unit_rate || 0).toFixed(2)} QAR / {adj.unit_label}</div>
-                        ) : adj.calculation_basis === 'daily_rate' ? (
-                          <div>{Number(adj.unit_rate || 0).toFixed(2)} QAR / Day</div>
-                        ) : (
-                          <div>{(adj.category_subtype || '').replace('_', ' ')}</div>
+                    {/* Status Pill (compact 20px) */}
+                    <td className="py-1 px-2.5">
+                      <span className={`inline-flex items-center h-5 px-1.5 py-0 rounded text-[10.5px] font-bold border shrink-0 ${statusBadgeColor}`}>
+                        {adj.approval_status.replace('_', ' ')}
+                      </span>
+                    </td>
+
+                    {/* Audit Trail (Single compact pill with tooltip) */}
+                    <td className="py-1 px-2.5">
+                      <span
+                        className="inline-flex items-center h-5 px-1.5 py-0 rounded text-[10.5px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 cursor-help"
+                        title={auditTooltip}
+                      >
+                        {adj.level2_approved_by
+                          ? 'L2 Signed'
+                          : adj.level1_approved_by
+                          ? 'L1 Signed'
+                          : adj.rejection_reason
+                          ? 'Rejected'
+                          : 'Draft'}
+                      </span>
+                    </td>
+
+                    {/* Actions (compact 24px buttons) */}
+                    <td className="py-1 px-2.5 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        {isPendingL1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleApprove(adj, false)}
+                            className="h-6 px-2 text-[11px] font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
+                            title="Sign as Shift Supervisor"
+                          >
+                            Approve L1
+                          </button>
                         )}
-                      </td>
 
-                      <td className="py-3 px-3 font-mono font-bold text-slate-700 dark:text-slate-300">
-                        {adj.quantity} {adj.unit_label}
-                      </td>
-
-                      <td className="py-3 px-3 font-mono font-bold">
-                        {isAmountMasked ? (
-                          <span className="text-slate-400 dark:text-slate-500 flex items-center gap-1">
-                            <Lock className="w-3.5 h-3.5" />
-                            •••• (Restricted)
-                          </span>
-                        ) : (
-                          <span className={adj.adjustment_type === 'deduction' ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}>
-                            {adj.adjustment_type === 'deduction' ? '-' : '+'}{Number(adj.computed_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR
-                          </span>
+                        {isPendingL1 && canManagePayroll && (
+                          <button
+                            type="button"
+                            onClick={() => handleApprove(adj, true)}
+                            className="h-6 px-2 text-[11px] font-semibold rounded-md bg-purple-600 hover:bg-purple-700 text-white cursor-pointer"
+                            title="Fast-Track Approval"
+                          >
+                            Fast-Track
+                          </button>
                         )}
-                      </td>
 
-                      <td className="py-3 px-3">
-                        <span className={`inline-flex items-center gap-1 uppercase px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${statusBadgeColor}`}>
-                          {isApproved && <Check className="w-3 h-3" />}
-                          <span>{adj.approval_status.replace('_', ' ')}</span>
-                        </span>
-                      </td>
-
-                      <td className="py-3 px-3 text-[10px] text-slate-400">
-                        <div>By: <strong className="text-slate-600 dark:text-slate-300">{adj.submitted_by_name || 'System'}</strong></div>
-                        {adj.level1_approved_by && (
-                          <div>L1: {adj.level1_approved_by}</div>
+                        {isPendingL2 && (
+                          <button
+                            type="button"
+                            onClick={() => handleApprove(adj, false)}
+                            className="h-6 px-2 text-[11px] font-semibold rounded-md bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+                            title="Final HR / Finance Approval"
+                          >
+                            Approve L2
+                          </button>
                         )}
-                        {adj.level2_approved_by && (
-                          <div>L2: {adj.level2_approved_by}</div>
+
+                        {!isRejected && !isApproved && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRejectingAdj(adj);
+                              setRejectionReason('');
+                            }}
+                            className="h-6 px-2 text-[11px] font-semibold rounded-md border border-rose-200 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                            title="Reject"
+                          >
+                            Reject
+                          </button>
                         )}
-                        {adj.rejection_reason && (
-                          <div className="text-rose-500 font-semibold truncate max-w-xs">{adj.rejection_reason}</div>
+
+                        {!isApproved && (
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(adj)}
+                            className="p-1 rounded-md text-slate-400 hover:text-rose-600 cursor-pointer"
+                            title="Delete Entry"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         )}
-                      </td>
-
-                      <td className="py-3 px-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          {/* L1 Supervisor Approval Button */}
-                          {isPendingL1 && (
-                            <button
-                              type="button"
-                              onClick={() => handleApprove(adj, false)}
-                              className="px-2 py-1 text-[11px] font-bold rounded-lg bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
-                              title="Sign as Shift Supervisor (Move to HR Review)"
-                            >
-                              Approve L1
-                            </button>
-                          )}
-
-                          {/* Fast-Track Approval for Superadmin / HR Director */}
-                          {isPendingL1 && canManagePayroll && (
-                            <button
-                              type="button"
-                              onClick={() => handleApprove(adj, true)}
-                              className="px-2 py-1 text-[11px] font-bold rounded-lg bg-purple-600 hover:bg-purple-700 text-white cursor-pointer"
-                              title="Fast-Track Final Approval"
-                            >
-                              Fast-Track
-                            </button>
-                          )}
-
-                          {/* L2 HR Final Approval Button */}
-                          {isPendingL2 && (
-                            <button
-                              type="button"
-                              onClick={() => handleApprove(adj, false)}
-                              className="px-2 py-1 text-[11px] font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
-                              title="Sign as HR / Finance Director (Syncs into Payslip)"
-                            >
-                              Approve L2
-                            </button>
-                          )}
-
-                          {/* Reject Button (if not already rejected) */}
-                          {!isRejected && !isApproved && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setRejectingAdj(adj);
-                                setRejectionReason('');
-                              }}
-                              className="px-2 py-1 text-[11px] font-bold rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
-                              title="Reject Adjustment"
-                            >
-                              Reject
-                            </button>
-                          )}
-
-                          {/* Delete Button */}
-                          {!isApproved && (
-                            <button
-                              type="button"
-                              onClick={() => handleDelete(adj)}
-                              className="p-1 rounded-lg text-slate-400 hover:text-rose-600 cursor-pointer"
-                              title="Delete Adjustment"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </div>
 
       {/* 4. MODAL: New Variable Pay / Deduction Entry */}
       {isNewEntryOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-xl rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fadeIn"
+          onClick={() => setIsNewEntryOpen(false)}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 w-full max-w-xl rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-600 flex items-center justify-center">
@@ -854,8 +916,13 @@ export function PayrollAdjustmentsView() {
               <button
                 type="button"
                 onClick={() => setIsNewEntryOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+                className="flex items-center gap-1.5 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer group"
+                title="Close (Esc)"
+                aria-label="Close dialog"
               >
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700">
+                  Esc
+                </span>
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -1294,13 +1361,33 @@ export function PayrollAdjustmentsView() {
 
       {/* 5. MODAL: Rejection Reason */}
       {rejectingAdj && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4">
-            <div className="flex items-center gap-2 text-rose-600">
-              <AlertCircle className="w-5 h-5" />
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                Reject Variable Adjustment
-              </h3>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fadeIn"
+          onClick={() => setRejectingAdj(null)}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2 text-rose-600">
+                <AlertCircle className="w-5 h-5" />
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  Reject Variable Adjustment
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRejectingAdj(null)}
+                className="flex items-center gap-1.5 p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer group"
+                title="Close (Esc)"
+                aria-label="Close dialog"
+              >
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700">
+                  Esc
+                </span>
+                <X className="w-4 h-4" />
+              </button>
             </div>
             <p className="text-xs text-slate-500">
               Rejecting <strong>{rejectingAdj.code}</strong> ({rejectingAdj.title}) for {rejectingAdj.employee_name}. This will prevent inclusion in monthly payslips.

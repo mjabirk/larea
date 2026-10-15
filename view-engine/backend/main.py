@@ -65,6 +65,10 @@ from backend.api.v1.attendance import router as attendance_router
 from backend.api.v1.payroll import router as payroll_router
 from backend.api.v1.leaves_eosb import router as leaves_eosb_router
 from backend.api.v1.zkteco import router as zkteco_router
+from backend.api.v1.notifications import router as notifications_router
+from backend.api.v1.mail import router as mail_router
+from backend.api.v1.communication import router as communication_router
+from backend.api.v1.chat import router as chat_router, push_router, websocket_chat_endpoint
 
 app.include_router(documents_router)
 app.include_router(employees_router)
@@ -74,6 +78,15 @@ app.include_router(attendance_router)
 app.include_router(payroll_router)
 app.include_router(leaves_eosb_router)
 app.include_router(zkteco_router)
+app.include_router(notifications_router)
+app.include_router(mail_router)
+app.include_router(communication_router)
+app.include_router(chat_router)
+app.include_router(push_router)
+
+# Direct root WebSocket alias for /ws/chat and /ws/notifications
+app.add_api_websocket_route("/ws/chat", websocket_chat_endpoint)
+app.add_api_websocket_route("/ws/notifications", websocket_chat_endpoint)
 
 # Request Models
 class LoginRequest(BaseModel):

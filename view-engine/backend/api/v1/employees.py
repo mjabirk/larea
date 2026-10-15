@@ -1,5 +1,6 @@
 import uuid
 import datetime
+import logging
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query, Header
 from pydantic import BaseModel
@@ -10,6 +11,9 @@ from backend.core.dependencies import (
     check_permission,
     require_permission,
 )
+from backend.core.chat_engine import handle_employee_department_sync
+
+logger = logging.getLogger("enterprise.employees")
 
 def mask_employee_salary(emp: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     if not check_permission(session, "hr.salary_read"):
@@ -259,6 +263,19 @@ async def create_employee(
             LEFT JOIN employee_grades g ON e.grade_id = g.id
             WHERE e.id = $1;
         """, new_id)
+
+        # Trigger Automatic Department Sync Hook
+        try:
+            await handle_employee_department_sync(
+                employee_id=new_id,
+                new_dept_name=payload.department_id,
+                old_dept_name=None,
+                is_terminated=(str(payload.status or "").lower() == "terminated"),
+                emp_name=full_name
+            )
+        except Exception as e:
+            logger.warning(f"Department chat sync error during employee creation: {e}")
+
         return mask_employee_salary(serialize_employee(dict(created_row)), session)
 
 
@@ -427,6 +444,24 @@ async def update_employee(
             LEFT JOIN employee_grades g ON e.grade_id = g.id
             WHERE e.id = $1;
         """, emp_uuid)
+
+        # Trigger Automatic Department Sync Hook (Department transfer or termination)
+        old_dept = existing["department_id"]
+        new_dept = payload.department_id
+        is_term = (str(payload.status or "").lower() == "terminated")
+        dept_changed = (str(old_dept or "").strip() != str(new_dept or "").strip())
+        if is_term or dept_changed:
+            try:
+                await handle_employee_department_sync(
+                    employee_id=emp_uuid,
+                    new_dept_name=new_dept if not is_term else None,
+                    old_dept_name=old_dept,
+                    is_terminated=is_term,
+                    emp_name=full_name
+                )
+            except Exception as e:
+                logger.warning(f"Department chat sync error during employee update: {e}")
+
         return mask_employee_salary(serialize_employee(dict(updated_row)), session)
 
 
