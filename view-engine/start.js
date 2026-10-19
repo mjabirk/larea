@@ -21,10 +21,15 @@ console.log('[Startup] Initiating dual service launcher...');
 const isWindows = process.platform === 'win32';
 let pythonCmd = isWindows ? 'python' : 'python3';
 
+const venvLinuxAlt = path.join(__dirname, '.venv_linux', 'bin', 'python');
 const venvLinux = path.join(__dirname, '.venv', 'bin', 'python');
 const venvWin = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
-if (!isWindows && fs.existsSync(venvLinux)) {
-  pythonCmd = venvLinux;
+if (!isWindows) {
+  if (fs.existsSync(venvLinuxAlt)) {
+    pythonCmd = venvLinuxAlt;
+  } else if (fs.existsSync(venvLinux)) {
+    pythonCmd = venvLinux;
+  }
 } else if (isWindows && fs.existsSync(venvWin)) {
   pythonCmd = venvWin;
 }

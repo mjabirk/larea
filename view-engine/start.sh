@@ -2,7 +2,7 @@
 # Enterprise View Engine Service Launcher (Bash / WSL)
 set -e
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
 echo "======================================================"
@@ -16,14 +16,18 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 # Activate virtual environment if present
-if [ -f "$DIR/.venv/bin/activate" ]; then
+if [ -f "$DIR/.venv_linux/bin/activate" ]; then
+    echo "[Info] Activating Python virtual environment (.venv_linux)..."
+    # shellcheck disable=SC1091
+    . "$DIR/.venv_linux/bin/activate"
+elif [ -f "$DIR/.venv/bin/activate" ]; then
     echo "[Info] Activating Python virtual environment (.venv)..."
     # shellcheck disable=SC1091
-    source "$DIR/.venv/bin/activate"
+    . "$DIR/.venv/bin/activate"
 elif [ -f "$DIR/venv/bin/activate" ]; then
     echo "[Info] Activating Python virtual environment (venv)..."
     # shellcheck disable=SC1091
-    source "$DIR/venv/bin/activate"
+    . "$DIR/venv/bin/activate"
 fi
 
 if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
