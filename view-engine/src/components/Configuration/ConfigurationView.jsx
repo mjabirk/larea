@@ -122,9 +122,9 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
     if (activeMenuId === 'mail_templates') return <MailTemplatesView />;
     if (activeMenuId === 'mail_logs') return <MailLogsView />;
     if (activeMenuId === 'sms_gateways') return <SMSGatewaysView />;
-    if (activeMenuId === 'whatsapp_configs') return <WhatsAppConfigsView />;
+    if (activeMenuId === 'whatsapp_configs' || activeMenuId === 'whatsapp_accounts') return <WhatsAppConfigsView />;
     if (activeMenuId === 'whatsapp_templates') return <WhatsAppTemplatesView />;
-    if (activeMenuId === 'communication_logs') return <CommunicationLogsView />;
+    if (activeMenuId === 'communication_logs' || activeMenuId === 'sms_whatsapp_logs') return <CommunicationLogsView />;
     if (activeMenuId === 'automation_triggers') return <AutomationTriggersView />;
 
     const handleSaveWps = async (e) => {

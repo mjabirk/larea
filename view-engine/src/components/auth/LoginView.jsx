@@ -23,6 +23,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const isIdleTimeout = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('reason') === 'idle_timeout';
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -80,6 +81,19 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
               Access your authorized enterprise department and shift records.
             </p>
           </div>
+
+          {/* Idle Timeout Warning */}
+          {isIdleTimeout && !error && (
+            <div
+              role="alert"
+              className="p-3.5 rounded-xl bg-amber-950/80 border border-amber-800/80 text-amber-200 text-xs flex items-start gap-2.5 animate-fadeIn"
+            >
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" aria-hidden="true" />
+              <div className="leading-snug">
+                Your session expired due to inactivity in accordance with corporate security and data regulations. Please sign in again.
+              </div>
+            </div>
+          )}
 
           {/* Error Alert */}
           {error && (

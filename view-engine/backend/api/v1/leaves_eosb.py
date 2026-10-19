@@ -328,135 +328,137 @@ async def approve_leave_request(
 
     pool = get_db_pool()
     async with pool.acquire() as conn:
-        leave = await conn.fetchrow("SELECT * FROM leave_requests WHERE id = $1;", l_uuid)
-        if not leave:
-            raise HTTPException(status_code=404, detail="Leave request not found.")
+        async with conn.transaction():
+            leave = await conn.fetchrow("SELECT * FROM leave_requests WHERE id = $1 FOR UPDATE;", l_uuid)
+            if not leave:
+                raise HTTPException(status_code=404, detail="Leave request not found.")
 
-        current_status = leave["approval_status"]
-        if current_status == "approved":
-            raise HTTPException(status_code=400, detail="Leave request is already fully approved.")
-        if current_status == "rejected":
-            raise HTTPException(status_code=400, detail="Cannot approve a rejected leave request.")
+            current_status = leave["approval_status"]
+            if current_status == "approved":
+                raise HTTPException(status_code=400, detail="Leave request is already fully approved.")
+            if current_status == "rejected":
+                raise HTTPException(status_code=400, detail="Cannot approve a rejected leave request.")
 
-        user_id, author_name = await resolve_audit_author(conn, session)
-        is_super = session.get("is_superadmin")
-        has_manage = check_permission(session, "payroll.manage") or check_permission(session, "hr.salary_manage")
+            user_id, author_name = await resolve_audit_author(conn, session)
+            is_super = session.get("is_superadmin")
+            has_manage = check_permission(session, "payroll.manage") or check_permission(session, "hr.salary_manage")
 
-        # Fast-track check
-        if payload.fast_track:
-            if not is_super and not has_manage:
-                raise HTTPException(status_code=403, detail="Fast-track approval requires HR Director or Superadmin privileges.")
-            new_status = "approved"
-            l1_by = leave["level1_approved_by"] or author_name
-            l2_by = author_name
-        else:
-            if current_status == "pending_supervisor":
-                new_status = "pending_hr"
-                l1_by = author_name
-                l2_by = leave["level2_approved_by"]
-            elif current_status == "pending_hr":
+            # Fast-track check
+            if payload.fast_track:
+                if not is_super and not has_manage:
+                    raise HTTPException(status_code=403, detail="Fast-track approval requires HR Director or Superadmin privileges.")
                 new_status = "approved"
-                l1_by = leave["level1_approved_by"]
+                l1_by = leave["level1_approved_by"] or author_name
                 l2_by = author_name
             else:
-                new_status = "approved"
-                l1_by = leave["level1_approved_by"]
-                l2_by = author_name
+                if current_status == "pending_supervisor":
+                    new_status = "pending_hr"
+                    l1_by = author_name
+                    l2_by = leave["level2_approved_by"]
+                elif current_status == "pending_hr":
+                    new_status = "approved"
+                    l1_by = leave["level1_approved_by"]
+                    l2_by = author_name
+                else:
+                    new_status = "approved"
+                    l1_by = leave["level1_approved_by"]
+                    l2_by = author_name
 
-        now = datetime.datetime.now(datetime.timezone.utc)
-        await conn.execute("""
-            UPDATE leave_requests SET
-                approval_status = $2::varchar,
-                level1_approved_by = $3,
-                level1_approved_at = CASE WHEN $2::varchar IN ('pending_hr', 'approved') AND level1_approved_at IS NULL THEN CURRENT_TIMESTAMP ELSE level1_approved_at END,
-                level2_approved_by = $4,
-                level2_approved_at = CASE WHEN $2::varchar = 'approved' THEN CURRENT_TIMESTAMP ELSE level2_approved_at END,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $1;
-        """, l_uuid, new_status, l1_by, l2_by)
+            now = datetime.datetime.now(datetime.timezone.utc)
+            await conn.execute("""
+                UPDATE leave_requests SET
+                    approval_status = $2::varchar,
+                    level1_approved_by = $3,
+                    level1_approved_at = CASE WHEN $2::varchar IN ('pending_hr', 'approved') AND level1_approved_at IS NULL THEN CURRENT_TIMESTAMP ELSE level1_approved_at END,
+                    level2_approved_by = $4,
+                    level2_approved_at = CASE WHEN $2::varchar = 'approved' THEN CURRENT_TIMESTAMP ELSE level2_approved_at END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $1;
+            """, l_uuid, new_status, l1_by, l2_by)
 
-        # Automatic Payroll Deduction Sync on final approval
-        if new_status == "approved" and float(leave["computed_deduction_qar"] or 0.0) > 0:
-            start_date: datetime.date = leave["start_date"]
-            salary_ym = start_date.strftime("%Y-%m")
-            adj_code = f"ADJ-LVE-{leave['code']}"
+            # Automatic Payroll Deduction Sync on final approval
+            if new_status == "approved" and float(leave["computed_deduction_qar"] or 0.0) > 0:
+                start_date: datetime.date = leave["start_date"]
+                salary_ym = start_date.strftime("%Y-%m")
+                adj_code = f"ADJ-LVE-{leave['code']}"
 
-            existing_adj = await conn.fetchrow("SELECT id FROM payroll_adjustments WHERE code = $1;", adj_code)
-            if not existing_adj:
-                new_adj_id = uuid.uuid4()
-                await conn.execute("""
-                    INSERT INTO payroll_adjustments (
-                        id, code, employee_id, employee_number, employee_name, department,
-                        salary_year_month, rule_id, adjustment_type, category_subtype, title,
-                        calculation_basis, multiplier_pct, quantity, unit_label, unit_rate,
-                        computed_amount, approval_status, submitted_by_name, level1_approved_by,
-                        level1_approved_at, level2_approved_by, level2_approved_at, notes, organization_id
-                    ) VALUES (
-                        $1, $2, $3, $4, $5, $6,
-                        $7, $8, 'deduction', 'unpaid_leave', $9,
-                        'daily_rate', 100.0, $10, 'Days', $11,
-                        $12, 'approved', $13, $14,
-                        CURRENT_TIMESTAMP, $15, CURRENT_TIMESTAMP, $16, $17
-                    );
-                """,
-                    new_adj_id, adj_code, leave["employee_id"], leave["employee_number"], leave["employee_name"],
-                    leave["department"], salary_ym, leave["leave_type_id"],
-                    f"Unpaid Leave Deduction ({leave['leave_type_name']})",
-                    float(leave["total_days"]), float(leave["daily_deduction_rate"] or 0.0),
-                    float(leave["computed_deduction_qar"] or 0.0),
-                    author_name, l1_by or author_name, l2_by or author_name,
-                    f"Automated statutory leave deduction from Leave Request {leave['code']} ({leave['start_date']} to {leave['end_date']})",
-                    leave.get("organization_id")
-                )
-            else:
-                await conn.execute("""
-                    UPDATE payroll_adjustments SET
-                        quantity = $2,
-                        unit_rate = $3,
-                        computed_amount = $4,
-                        approval_status = 'approved',
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = $1;
-                """, existing_adj["id"], float(leave["total_days"]), float(leave["daily_deduction_rate"] or 0.0), float(leave["computed_deduction_qar"] or 0.0))
+                existing_adj = await conn.fetchrow("SELECT id FROM payroll_adjustments WHERE code = $1;", adj_code)
+                if not existing_adj:
+                    new_adj_id = uuid.uuid4()
+                    await conn.execute("""
+                        INSERT INTO payroll_adjustments (
+                            id, code, employee_id, employee_number, employee_name, department,
+                            salary_year_month, rule_id, adjustment_type, category_subtype, title,
+                            calculation_basis, multiplier_pct, quantity, unit_label, unit_rate,
+                            computed_amount, approval_status, submitted_by_name, level1_approved_by,
+                            level1_approved_at, level2_approved_by, level2_approved_at, notes, organization_id
+                        ) VALUES (
+                            $1, $2, $3, $4, $5, $6,
+                            $7, $8, 'deduction', 'unpaid_leave', $9,
+                            'daily_rate', 100.0, $10, 'Days', $11,
+                            $12, 'approved', $13, $14,
+                            CURRENT_TIMESTAMP, $15, CURRENT_TIMESTAMP, $16, $17
+                        );
+                    """,
+                        new_adj_id, adj_code, leave["employee_id"], leave["employee_number"], leave["employee_name"],
+                        leave["department"], salary_ym, leave["leave_type_id"],
+                        f"Unpaid Leave Deduction ({leave['leave_type_name']})",
+                        float(leave["total_days"]), float(leave["daily_deduction_rate"] or 0.0),
+                        float(leave["computed_deduction_qar"] or 0.0),
+                        author_name, l1_by or author_name, l2_by or author_name,
+                        f"Automated statutory leave deduction from Leave Request {leave['code']} ({leave['start_date']} to {leave['end_date']})",
+                        leave.get("organization_id")
+                    )
+                else:
+                    await conn.execute("""
+                        UPDATE payroll_adjustments SET
+                            quantity = $2,
+                            unit_rate = $3,
+                            computed_amount = $4,
+                            approval_status = 'approved',
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = $1;
+                    """, existing_adj["id"], float(leave["total_days"]), float(leave["daily_deduction_rate"] or 0.0), float(leave["computed_deduction_qar"] or 0.0))
 
-            # Synchronize to any existing draft payslip
-            await sync_employee_adjustments_to_payslips(conn, leave["employee_id"], salary_ym)
+                # Synchronize to any existing draft payslip
+                await sync_employee_adjustments_to_payslips(conn, leave["employee_id"], salary_ym)
 
-        # Fire automated trigger if leave reached final 'approved' status
-        if new_status == "approved":
-            try:
-                from backend.core.communication_engine import execute_automation_trigger
-                await execute_automation_trigger(
-                    event_type="leave_approved",
-                    record_model="hr.leave",
-                    record_id=str(l_uuid),
-                    record_data={
-                        "employee_id": str(leave["employee_id"]),
-                        "employee_name": leave["employee_name"],
-                        "employee_number": leave["employee_number"],
-                        "leave_type": leave["leave_type_name"],
-                        "total_days": str(leave["total_days"]),
-                        "start_date": str(leave["start_date"]),
-                        "end_date": str(leave["end_date"]),
-                        "approval_status": "APPROVED",
-                        "remarks": leave.get("reason") or "Approved"
-                    },
-                    author_name=author_name
-                )
-            except Exception as e:
-                pass
+            updated = await conn.fetchrow("SELECT * FROM leave_requests WHERE id = $1;", l_uuid)
 
-        updated = await conn.fetchrow("SELECT * FROM leave_requests WHERE id = $1;", l_uuid)
-        resp_data = serialize_row(dict(updated))
-        if not can_read_salary(session):
-            resp_data["daily_deduction_rate"] = None
-            resp_data["computed_deduction_qar"] = None
+    # Fire automated trigger if leave reached final 'approved' status (outside DB transaction)
+    if new_status == "approved":
+        try:
+            from backend.core.communication_engine import execute_automation_trigger
+            await execute_automation_trigger(
+                event_type="leave_approved",
+                record_model="hr.leave",
+                record_id=str(l_uuid),
+                record_data={
+                    "employee_id": str(leave["employee_id"]),
+                    "employee_name": leave["employee_name"],
+                    "employee_number": leave["employee_number"],
+                    "leave_type": leave["leave_type_name"],
+                    "total_days": str(leave["total_days"]),
+                    "start_date": str(leave["start_date"]),
+                    "end_date": str(leave["end_date"]),
+                    "approval_status": "APPROVED",
+                    "remarks": leave.get("reason") or "Approved"
+                },
+                author_name=author_name
+            )
+        except Exception:
+            pass
 
-        return {
-            "status": "success",
-            "message": f"Leave request {leave['code']} updated to '{new_status}'.",
-            "leave": resp_data,
-        }
+    resp_data = serialize_row(dict(updated))
+    if not can_read_salary(session):
+        resp_data["daily_deduction_rate"] = None
+        resp_data["computed_deduction_qar"] = None
+
+    return {
+        "status": "success",
+        "message": f"Leave request {leave['code']} updated to '{new_status}'.",
+        "leave": resp_data,
+    }
 
 
 @router.post("/leaves/{leave_id}/reject")

@@ -518,10 +518,16 @@ export function LeaveManagementView() {
                 <ArrowLeft className="w-4 h-4" />
                 <span>Back to Leaves</span>
               </button>
-              <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
               <div>
-                <div className="flex items-center gap-2">
-                  <h1 className="text-lg font-bold text-slate-900 dark:text-white">New Leave Request</h1>
+                <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                  <span>Human Resources</span>
+                  <span>/</span>
+                  <span>Leave & Time Off</span>
+                  <span>/</span>
+                  <span className="text-slate-900 dark:text-white font-medium">New Leave Request</span>
+                </div>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <h1 className="text-base font-bold text-slate-900 dark:text-white">New Leave Request</h1>
                   <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-400 border border-purple-200 dark:border-purple-900">
                     Draft
                   </span>

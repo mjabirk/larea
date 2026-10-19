@@ -10,6 +10,8 @@ from backend.core.auth_suite import APIKeyEngine
 def get_client_ip(request: Request) -> str:
     """Extract client IP, inspecting trusted reverse proxy headers if applicable."""
     remote_host = request.client.host if request.client else "127.0.0.1"
+    if remote_host == "testclient":
+        return "127.0.0.1"
     if remote_host in settings.TRUSTED_PROXIES:
         forwarded = request.headers.get("X-Forwarded-For")
         if forwarded:
@@ -104,7 +106,7 @@ def check_permission(session: Dict[str, Any], permission_key: str) -> bool:
             if perms.get("employee_contracts", {}).get("salary_manage") or perms.get("salary", {}).get("manage") or perms.get("salary", {}).get("write"):
                 return True
 
-        # Support "model.action" syntax (e.g., "employees.read", "employees.create")
+        # Support "model.action" syntax (e.g., "employees.read", "employees.update", "attendance.write")
         if "." in permission_key:
             model_name, action = permission_key.split(".", 1)
             model_map = {
@@ -115,12 +117,46 @@ def check_permission(session: Dict[str, Any], permission_key: str) -> bool:
                 "org": "organizations",
                 "organizations": "organizations",
                 "users": "users",
+                "roles": "roles",
+                "role": "roles",
+                "hardware": "hardware",
+                "documents": "employees",
+                "document": "employees",
             }
             target_model = model_map.get(model_name, model_name)
-            action_map = {"write": "update", "manage": "update"}
-            target_action = action_map.get(action, action)
+
             if isinstance(perms.get(target_model), dict):
-                if perms[target_model].get(target_action) or perms[target_model].get("create"):
+                m_perms = perms[target_model]
+                if action == "read":
+                    if m_perms.get("read"):
+                        return True
+                elif action == "delete":
+                    if m_perms.get("delete") or m_perms.get("manage"):
+                        return True
+                elif action == "update":
+                    if m_perms.get("update") or m_perms.get("write") or m_perms.get("manage"):
+                        return True
+                elif action == "create":
+                    if m_perms.get("create") or m_perms.get("write") or m_perms.get("manage"):
+                        return True
+                elif action == "write":
+                    if m_perms.get("write") or m_perms.get("update") or m_perms.get("create") or m_perms.get("manage"):
+                        return True
+                elif action == "manage":
+                    if m_perms.get("manage") or (m_perms.get("create") and m_perms.get("update")):
+                        return True
+                else:
+                    if m_perms.get(action):
+                        return True
+
+            # Menu access check fallback
+            menu_access = session.get("menu_access", [])
+            if isinstance(menu_access, list):
+                if permission_key in ("roles.read", "roles.manage") and "roles" in menu_access:
+                    return True
+                if permission_key in ("hardware.manage", "hardware.read") and ("terminals" in menu_access or "api_keys" in menu_access):
+                    return True
+                if permission_key in ("org.manage", "org.read") and ("orgs" in menu_access or "organizations" in menu_access):
                     return True
 
     return False

@@ -462,11 +462,49 @@ export function CommunicationLogsView() {
                 )}
               </div>
 
-              {/* Message Body */}
+              {/* Message Thread View */}
               <div className="space-y-1.5">
-                <label className="text-[11px] font-medium text-slate-400">Message Body Content</label>
-                <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs text-white whitespace-pre-wrap font-sans leading-relaxed">
-                  {selectedLog.message_body || 'No text content.'}
+                <label className="text-[11px] font-medium text-slate-400">Message Thread View</label>
+                <div
+                  className={`flex flex-col w-full p-3 rounded-xl bg-slate-950 border border-slate-800 ${
+                    selectedLog.direction === 'outgoing' || !selectedLog.direction ? 'items-end' : 'items-start'
+                  }`}
+                >
+                  <span className="text-[10px] text-slate-400 font-semibold mb-1 px-1">
+                    {selectedLog.direction === 'outgoing' || !selectedLog.direction
+                      ? 'Business Outgoing Dispatch'
+                      : selectedLog.recipient_name || 'Customer / Client'}
+                  </span>
+                  <div
+                    className={`max-w-[85%] px-3.5 py-2 rounded-2xl text-xs break-words shadow-xs select-text ${
+                      selectedLog.direction === 'outgoing' || !selectedLog.direction
+                        ? 'bg-emerald-600 text-white rounded-br-xs'
+                        : 'bg-slate-800 text-slate-100 border border-slate-700/60 rounded-bl-xs'
+                    }`}
+                  >
+                    <p className="leading-relaxed whitespace-pre-wrap">
+                      {selectedLog.message_body || 'No text content.'}
+                    </p>
+                    <div
+                      className={`text-[9px] mt-1 flex items-center justify-end gap-1 font-mono ${
+                        selectedLog.direction === 'outgoing' || !selectedLog.direction
+                          ? 'text-emerald-200'
+                          : 'text-slate-400'
+                      }`}
+                    >
+                      <span>
+                        {selectedLog.created_at
+                          ? new Date(selectedLog.created_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            })
+                          : ''}
+                      </span>
+                      {(selectedLog.direction === 'outgoing' || !selectedLog.direction) && (
+                        <span className="text-[10px]">✓✓</span>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
 

@@ -73,6 +73,8 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
     fetchEmployees();
   }, [fetchEmployees]);
 
+  const prevActiveMenuIdRef = useRef(activeMenuId);
+
   useEffect(() => {
     if (initialEmployeeId && employees.length > 0) {
       const match = employees.find((e) => e.id === initialEmployeeId);
@@ -83,16 +85,22 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
         return;
       }
     }
-    if (activeMenuId === 'new_employee') {
-      setSelectedEmployee(null);
-      setViewMode('form');
-      setIsDirty(true);
-    } else if (activeMenuId === 'employees' && !initialEmployeeId) {
-      setViewMode('list');
-      setSelectedEmployee(null);
-      setIsDirty(false);
+  }, [initialEmployeeId, employees]);
+
+  useEffect(() => {
+    if (prevActiveMenuIdRef.current !== activeMenuId) {
+      prevActiveMenuIdRef.current = activeMenuId;
+      if (activeMenuId === 'new_employee') {
+        setSelectedEmployee(null);
+        setViewMode('form');
+        setIsDirty(true);
+      } else if (activeMenuId === 'employees' && !initialEmployeeId) {
+        setViewMode('list');
+        setSelectedEmployee(null);
+        setIsDirty(false);
+      }
     }
-  }, [activeMenuId, initialEmployeeId, employees]);
+  }, [activeMenuId, initialEmployeeId]);
 
   // Filtered employees for list & pager cycling
   const filteredEmployees = useMemo(() => {
@@ -366,11 +374,11 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
           ? `Employee profile for ${savedData.full_name || 'employee'} updated and audited successfully.`
           : `New employee ${savedData.full_name || ''} created successfully with AES-256 vault initialized.`,
       });
+      setSelectedEmployee(savedData);
+      setViewMode('form');
       setIsDirty(false);
+      formRef.current?.resetDirty?.(savedData);
       await fetchEmployees();
-      setViewMode('list');
-      setSelectedEmployee(null);
-      onBackToList?.();
 
       setTimeout(() => setFeedback(null), 4000);
     } catch (err) {

@@ -3,14 +3,19 @@ import re
 import uuid
 import json
 import base64
+import asyncio
 import hashlib
 import mimetypes
 import logging
 import datetime
+import urllib.parse
+import socket
+import ipaddress
 from typing import Optional, Dict, Any, List, Tuple
 
 import httpx
 
+from backend.core.config import settings
 from backend.core.database import get_db_pool
 from backend.core.mail_engine import (
     sanitize_filename,
@@ -227,6 +232,25 @@ class SMSDispatcher:
                     body_payload = interpolated_body
             else:
                 body_payload = {"to": clean_phone, "message": message, "sender_id": sender}
+
+        # SSRF Protection: when settings.APP_ENV != "development", parse hostname, resolve IP, and reject loopback/metadata
+        if getattr(settings, "APP_ENV", "development") != "development":
+            try:
+                parsed_url = urllib.parse.urlparse(url)
+                hostname = parsed_url.hostname
+                if not hostname:
+                    return False, None, "Invalid SMS endpoint URL: missing hostname."
+
+                ip_addrs = socket.getaddrinfo(hostname, None)
+                for _, _, _, _, sockaddr in ip_addrs:
+                    ip_str = sockaddr[0]
+                    ip_obj = ipaddress.ip_address(ip_str)
+                    if ip_obj.is_loopback:
+                        return False, None, f"Forbidden target IP address (Loopback / SSRF blocked: {ip_str})."
+                    if ip_str == "169.254.169.254" or ip_obj.is_link_local:
+                        return False, None, f"Forbidden target IP address (Cloud Metadata / SSRF blocked: {ip_str})."
+            except Exception as e:
+                return False, None, f"SSRF URL Validation error: {str(e)}"
 
         # Check for mock/local test environment
         if "mock" in url.lower() or "localhost" in url.lower() or "secret_token" in url:
@@ -645,12 +669,13 @@ async def execute_automation_trigger(
                 # If document header requested on payslip, generate PDF
                 if tr["wa_header"] == "DOCUMENT" and "payslip" in record_model.lower():
                     batch_mock = {"salary_year_month": record_data.get("month", "Monthly"), "name": "Standard Payroll Run"}
-                    pdf_res = generate_payslip_pdf_report(record_data, batch_mock)
+                    pdf_res = await asyncio.to_thread(generate_payslip_pdf_report, record_data, batch_mock)
                     # Persist to whatsapp_media
                     with open(pdf_res["abs_path"], "rb") as f:
                         media_meta = save_whatsapp_media(pdf_res["filename"], f.read(), "application/pdf")
 
-                success, provider_id, err = WhatsAppMetaService.send_template_message(
+                success, provider_id, err = await asyncio.to_thread(
+                    WhatsAppMetaService.send_template_message,
                     config=wa_config,
                     to_phone=clean_phone,
                     template=tmpl_dict,
@@ -716,7 +741,8 @@ async def execute_automation_trigger(
                 for k, v in record_data.items():
                     sms_text = sms_text.replace(f"{{{{{k}}}}}", str(v))
 
-                success, provider_id, err = SMSDispatcher.send_sms(
+                success, provider_id, err = await asyncio.to_thread(
+                    SMSDispatcher.send_sms,
                     gateway=gw_dict,
                     to_phone=clean_phone,
                     message=sms_text,

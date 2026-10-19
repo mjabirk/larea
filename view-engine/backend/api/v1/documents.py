@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from backend.core.config import settings
 from backend.core.database import get_db_pool
-from backend.core.dependencies import get_current_user_session, get_client_ip
+from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission
 
 router = APIRouter(prefix="/api/v1/employees", tags=["Employee Documents"])
 
@@ -77,6 +77,7 @@ async def list_employee_documents(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """List document metadata records for an employee."""
+    require_permission(session, "employees.read")
     pool = get_db_pool()
     try:
         emp_uuid = uuid.UUID(employee_id)
@@ -121,6 +122,7 @@ async def upload_employee_document(
     Encrypts uploaded file via AES-256-GCM and persists ciphertext to physical disk.
     Metadata is written to employee_documents table.
     """
+    require_permission(session, "employees.update")
     pool = get_db_pool()
     try:
         emp_uuid = uuid.UUID(employee_id)
@@ -230,6 +232,7 @@ async def download_employee_document(
     Retrieves ciphertext from disk, decrypts stream in memory via AES-256-GCM,
     and returns decrypted binary stream with RFC-compliant Content-Disposition headers.
     """
+    require_permission(session, "employees.read")
     pool = get_db_pool()
     try:
         emp_uuid = uuid.UUID(employee_id)
@@ -286,6 +289,7 @@ async def delete_employee_document(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Deletes ciphertext from filesystem and removes metadata record from PostgreSQL."""
+    require_permission(session, "employees.update")
     pool = get_db_pool()
     try:
         emp_uuid = uuid.UUID(employee_id)

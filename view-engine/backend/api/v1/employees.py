@@ -308,30 +308,64 @@ async def update_employee(
 
         # Compare incoming fields against old fields for field-level diff
         diff_keys = [
+            ("first_name", payload.first_name),
+            ("last_name", payload.last_name),
+            ("full_name", full_name),
+            ("display_name_local", payload.display_name_local),
+            ("gender", payload.gender),
+            ("date_of_birth", str(payload.date_of_birth) if payload.date_of_birth else None),
+            ("marital_status", payload.marital_status),
+            ("nationality", payload.nationality),
             ("job_title", payload.job_title),
-            ("base_salary", payload.base_salary),
             ("department_id", payload.department_id),
             ("grade_id", payload.grade_id),
-            ("status", payload.status),
             ("employment_type", payload.employment_type),
+            ("hire_date", str(payload.hire_date) if payload.hire_date else None),
+            ("probation_end_date", str(payload.probation_end_date) if payload.probation_end_date else None),
+            ("contract_end_date", str(payload.contract_end_date) if payload.contract_end_date else None),
+            ("status", payload.status),
             ("national_id_number", payload.national_id_number),
-            ("national_id_expiry", payload.national_id_expiry),
-            ("visa_number", payload.visa_number),
-            ("visa_expiry", payload.visa_expiry),
+            ("national_id_expiry", str(payload.national_id_expiry) if payload.national_id_expiry else None),
             ("passport_number", payload.passport_number),
+            ("passport_expiry", str(payload.passport_expiry) if payload.passport_expiry else None),
+            ("visa_number", payload.visa_number),
+            ("visa_expiry", str(payload.visa_expiry) if payload.visa_expiry else None),
             ("work_permit_status", payload.work_permit_status),
             ("work_email", payload.work_email),
-            ("bank_name", payload.bank_name),
-            ("bank_iban", payload.bank_iban),
+            ("personal_email", payload.personal_email),
+            ("phone_country_code", payload.phone_country_code),
+            ("phone_number", payload.phone_number),
+            ("emergency_contact_name", payload.emergency_contact_name),
+            ("emergency_contact_phone", payload.emergency_contact_phone),
+            ("emergency_contact_relation", payload.emergency_contact_relation),
+            ("base_salary", float(payload.base_salary) if payload.base_salary is not None else None),
             ("currency", payload.currency),
             ("payment_method", payload.payment_method),
+            ("bank_name", payload.bank_name),
+            ("bank_iban", payload.bank_iban),
+            ("bank_swift", payload.bank_swift),
         ]
+
+        def normalize_diff_val(v):
+            if v is None:
+                return ""
+            if isinstance(v, (datetime.date, datetime.datetime)):
+                return v.isoformat().split("T")[0]
+            if isinstance(v, (int, float)):
+                try:
+                    fv = float(v)
+                    return f"{fv:.4f}".rstrip("0").rstrip(".")
+                except Exception:
+                    pass
+            s = str(v).strip()
+            return "" if s in ("None", "null") else s
 
         changes_diff = {}
         for key, new_val in diff_keys:
             old_val = old_dict.get(key)
-            # Normalize for comparison
-            if str(old_val or "") != str(new_val or ""):
+            norm_old = normalize_diff_val(old_val)
+            norm_new = normalize_diff_val(new_val)
+            if norm_old != norm_new:
                 changes_diff[key] = {
                     "old": old_val,
                     "new": new_val

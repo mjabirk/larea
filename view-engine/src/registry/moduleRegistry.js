@@ -135,69 +135,59 @@ export const APP_MODULES = [
     name: "System Configuration",
     shortName: "Settings",
     iconName: "SlidersHorizontal",
-    description: "Organizations & branches, Qatar CR/Establishment IDs, expiry alert rules & system audit logs",
+    description: "Organizations, WhatsApp/SMS gateways, email templates, and automated triggers",
     color: "#475569",
-    menus: [
+    menuGroups: [
       {
-        id: "orgs",
-        label: "Companies & Branches",
-        model: "organizations",
-        required_groups: ["org.read", "org.manage"]
+        id: "grp_tenancy",
+        label: "Company & Tenancy",
+        iconName: "Building2",
+        menus: [
+          { id: "orgs", label: "Companies & Branches", model: "organizations", required_groups: ["org.read", "org.manage"] },
+          { id: "compliance_alerts", label: "QID & Visa Alert Rules", model: "compliance_settings", required_groups: ["org.manage", "hr.manager"] }
+        ]
       },
       {
-        id: "compliance_alerts",
-        label: "QID & Visa Alert Rules",
-        model: "compliance_settings",
-        required_groups: ["org.manage", "hr.manager"]
+        id: "grp_email",
+        label: "Email Communications",
+        iconName: "Mail",
+        menus: [
+          { id: "mail_servers", label: "Email Servers", model: "mail_servers", required_groups: ["org.manage"] },
+          { id: "mail_templates", label: "Email Templates", model: "mail_templates", required_groups: ["org.manage", "hr.manager"] },
+          { id: "mail_logs", label: "Mail Logs", model: "mail_logs", required_groups: ["org.manage"] }
+        ]
       },
       {
-        id: "mail_servers",
-        label: "Email Servers",
-        model: "mail_servers",
-        required_groups: ["org.manage"]
+        id: "grp_messaging",
+        label: "WhatsApp & SMS Gateway",
+        iconName: "MessageSquare",
+        menus: [
+          { id: "whatsapp_accounts", label: "WhatsApp Cloud API", model: "whatsapp_accounts", required_groups: ["org.manage"] },
+          { id: "whatsapp_templates", label: "WhatsApp Templates", model: "whatsapp_templates", required_groups: ["org.manage", "hr.manager"] },
+          { id: "sms_gateways", label: "SMS Gateways", model: "sms_gateways", required_groups: ["org.manage"] },
+          { id: "sms_whatsapp_logs", label: "SMS & WhatsApp Logs", model: "sms_whatsapp_logs", required_groups: ["org.manage"] }
+        ]
       },
       {
-        id: "mail_templates",
-        label: "Email Templates",
-        model: "mail_templates",
-        required_groups: ["org.manage"]
-      },
-      {
-        id: "mail_logs",
-        label: "Outgoing & Incoming Mail Logs",
-        model: "mail_messages",
-        required_groups: ["org.manage"]
-      },
-      {
-        id: "sms_gateways",
-        label: "SMS Gateways",
-        model: "sms_gateways",
-        required_groups: ["org.manage"]
-      },
-      {
-        id: "whatsapp_configs",
-        label: "WhatsApp Accounts (Cloud API)",
-        model: "whatsapp_configs",
-        required_groups: ["org.manage"]
-      },
-      {
-        id: "whatsapp_templates",
-        label: "WhatsApp Templates",
-        model: "whatsapp_templates",
-        required_groups: ["org.manage"]
-      },
-      {
-        id: "communication_logs",
-        label: "SMS & WhatsApp Logs",
-        model: "communication_logs",
-        required_groups: ["org.manage"]
-      },
-      {
-        id: "automation_triggers",
-        label: "Automation Triggers",
-        model: "automation_triggers",
-        required_groups: ["org.manage"]
+        id: "grp_automation",
+        label: "Automations",
+        iconName: "Sparkles",
+        menus: [
+          { id: "automation_triggers", label: "Automation Triggers", model: "automation_triggers", required_groups: ["org.manage"] }
+        ]
       }
+    ],
+    menus: [
+      { id: "orgs", label: "Companies & Branches", model: "organizations" },
+      { id: "compliance_alerts", label: "QID & Visa Alert Rules", model: "compliance_settings" },
+      { id: "mail_servers", label: "Email Servers", model: "mail_servers" },
+      { id: "mail_templates", label: "Email Templates", model: "mail_templates" },
+      { id: "mail_logs", label: "Mail Logs", model: "mail_logs" },
+      { id: "whatsapp_accounts", label: "WhatsApp Cloud API", model: "whatsapp_accounts" },
+      { id: "whatsapp_templates", label: "WhatsApp Templates", model: "whatsapp_templates" },
+      { id: "sms_gateways", label: "SMS Gateways", model: "sms_gateways" },
+      { id: "sms_whatsapp_logs", label: "SMS & WhatsApp Logs", model: "sms_whatsapp_logs" },
+      { id: "automation_triggers", label: "Automation Triggers", model: "automation_triggers" }
     ]
   }
 ];
@@ -208,5 +198,16 @@ export function getModuleById(moduleId) {
 
 export function getMenuById(moduleId, menuId) {
   const mod = getModuleById(moduleId);
-  return mod.menus.find((menu) => menu.id === menuId) || mod.menus[0];
+  if (!mod) return null;
+  if (mod.menus) {
+    const found = mod.menus.find((menu) => menu.id === menuId);
+    if (found) return found;
+  }
+  if (mod.menuGroups) {
+    for (const group of mod.menuGroups) {
+      const found = group.menus?.find((m) => m.id === menuId);
+      if (found) return found;
+    }
+  }
+  return mod.menus?.[0] || null;
 }

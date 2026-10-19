@@ -15,10 +15,14 @@ import {
   ArrowDown,
   Loader2,
   AtSign,
-  Maximize2
+  Maximize2,
+  Download,
+  ExternalLink,
+  Eye
 } from 'lucide-react';
 import { useChat } from '../../context/ChatContext';
 import { useAuth } from '../../context/AuthContext';
+import { useChatChannel } from '../../hooks/useChatChannel';
 
 export default function ChatDock() {
   const {
@@ -144,7 +148,10 @@ function FloatingChatWindow({
   onMinimize,
   onClose
 }) {
-  const { token, session } = useAuth();
+  const { token, session, currentUser } = useAuth();
+  const currentUserId = String(currentUser?.id || session?.user?.id || session?.id || session?.user_id || '').toLowerCase();
+  const myEmail = String(currentUser?.email || session?.user?.email || session?.email || '').toLowerCase();
+
   const {
     sendMessage,
     sendTyping,
@@ -153,12 +160,121 @@ function FloatingChatWindow({
     markChannelAsRead
   } = useChat();
 
-  const [messages, setMessages] = useState([]);
+  const {
+    messages,
+    setMessages,
+    isLoading: isLoadingMessages,
+    isLoadingOlder,
+    hasMore,
+    loadOlderMessages,
+    sendWsMessage
+  } = useChatChannel(channel.id, token);
+
   const [inputText, setInputText] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(true);
   const [channelMembers, setChannelMembers] = useState([]);
+  const [previewImage, setPreviewImage] = useState(null);
+
+  const scrollContainerRef = useRef(null);
+  const isInitialLoadRef = useRef(true);
+  const [showScrollDownBtn, setShowScrollDownBtn] = useState(false);
+  const [unreadBelowCount, setUnreadBelowCount] = useState(0);
+
+  const scrollToBottom = useCallback((behavior = 'smooth') => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTo({
+        top: scrollContainerRef.current.scrollHeight,
+        behavior,
+      });
+    }
+    setShowScrollDownBtn(false);
+    setUnreadBelowCount(0);
+  }, []);
+
+  const handleLoadOlder = useCallback(async () => {
+    const el = scrollContainerRef.current;
+    if (!el || isLoadingOlder || !hasMore) return;
+    const prevScrollHeight = el.scrollHeight;
+    const prevScrollTop = el.scrollTop;
+
+    const count = await loadOlderMessages();
+    if (count > 0) {
+      requestAnimationFrame(() => {
+        if (scrollContainerRef.current) {
+          const heightDiff = scrollContainerRef.current.scrollHeight - prevScrollHeight;
+          scrollContainerRef.current.scrollTop = prevScrollTop + heightDiff;
+        }
+      });
+    }
+  }, [isLoadingOlder, hasMore, loadOlderMessages]);
+
+  const handleStreamScroll = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom > 80) {
+      setShowScrollDownBtn(true);
+    } else {
+      setShowScrollDownBtn(false);
+      setUnreadBelowCount(0);
+    }
+
+    if (el.scrollTop < 40 && hasMore && !isLoadingOlder) {
+      handleLoadOlder();
+    }
+  };
+
+  // When channel.id changes, reset initial load and scroll button
+  useEffect(() => {
+    isInitialLoadRef.current = true;
+    setShowScrollDownBtn(false);
+    setUnreadBelowCount(0);
+  }, [channel.id]);
+
+  // Scroll to bottom once initial messages finish loading
+  useEffect(() => {
+    if (isInitialLoadRef.current && !isLoadingMessages) {
+      if (messages.length > 0) {
+        requestAnimationFrame(() => {
+          scrollToBottom('auto');
+        });
+      }
+      isInitialLoadRef.current = false;
+    }
+  }, [messages, isLoadingMessages, scrollToBottom]);
+
+  // Attachment URL resolver with authentication token
+  const getAttachmentUrl = useCallback(
+    (att, download = false) => {
+      if (!att) return '#';
+      let url = att.file_url || att.url;
+      if (!url && att.disk_path) {
+        const cleanPath = String(att.disk_path).replace(/\\/g, '/').replace(/^\/?storage\/chat_attachments\//, '');
+        url = `/api/v1/chat/attachments/${cleanPath}`;
+      }
+      if (!url) return '#';
+      const params = [];
+      if (token && !url.includes('token=')) {
+        params.push(`token=${encodeURIComponent(token)}`);
+      }
+      if (download && !url.includes('download=')) {
+        params.push('download=1');
+      }
+      if (params.length > 0) {
+        url += (url.includes('?') ? '&' : '?') + params.join('&');
+      }
+      return url;
+    },
+    [token]
+  );
+
+  const isImageAttachment = useCallback((att) => {
+    if (!att) return false;
+    if (att.mime_type && att.mime_type.startsWith('image/')) return true;
+    const name = (att.name || att.filename || att.disk_path || '').toLowerCase();
+    return /\.(jpg|jpeg|png|gif|webp|svg|bmp)$/i.test(name);
+  }, []);
 
   // Autocomplete Popover state for @ and #
   const [autocomplete, setAutocomplete] = useState({
@@ -174,7 +290,6 @@ function FloatingChatWindow({
   const textareaRef = useRef(null);
   const windowRef = useRef(null);
 
-  const currentUserId = session?.id || session?.user_id;
   const isDirect = channel.channel_type === 'direct';
   const otherUid = channel.other_user?.id;
   const isOnline = otherUid ? onlineUsers.has(otherUid) : false;
@@ -184,39 +299,27 @@ function FloatingChatWindow({
   const canPost = channel.can_post !== false; // defaults true unless restricted
   const currentlyTyping = typingMap[channel.id] || [];
 
-  // Esc key minimizes or dismisses active floating window
+  // Esc key minimizes or dismisses active floating window or lightbox
   useEffect(() => {
     function handleKeyDown(e) {
       if (e.key === 'Escape') {
-        onMinimize();
+        if (previewImage) {
+          setPreviewImage(null);
+        } else {
+          onMinimize();
+        }
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onMinimize]);
+  }, [onMinimize, previewImage]);
 
-  // Load message history for active channel
+  // Load channel members for @ autocomplete and member count
   useEffect(() => {
     if (!token || !channel.id) return;
     let isMounted = true;
-    setIsLoadingMessages(true);
+    markChannelAsRead(channel.id);
 
-    fetch(`/api/v1/chat/channels/${channel.id}/messages?limit=60`, {
-      headers: { Authorization: `Bearer ${token}` }
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        if (isMounted) {
-          setMessages(data.messages || []);
-          setIsLoadingMessages(false);
-          markChannelAsRead(channel.id);
-        }
-      })
-      .catch(() => {
-        if (isMounted) setIsLoadingMessages(false);
-      });
-
-    // Load channel members for @ autocomplete and member count
     fetch(`/api/v1/chat/channels/${channel.id}/members`, {
       headers: { Authorization: `Bearer ${token}` }
     })
@@ -233,25 +336,47 @@ function FloatingChatWindow({
     };
   }, [token, channel.id, markChannelAsRead]);
 
-  // Real-time message receiver sync
+  // Real-time message receiver sync from window event
   useEffect(() => {
     const handleCustomMsg = (event) => {
       const msg = event.detail;
       if (msg && (msg.channel_id === channel.id || msg.channelId === channel.id)) {
+        const msgSenderId = String(msg.sender_id || msg.senderId || '').toLowerCase();
+        const isFromSelf = Boolean(currentUserId && msgSenderId === currentUserId);
+
+        const el = scrollContainerRef.current;
+        const distanceFromBottom = el ? el.scrollHeight - el.scrollTop - el.clientHeight : 0;
+
         setMessages((prev) => {
           if (prev.some((m) => m.id === msg.id)) return prev;
+          if (isFromSelf) {
+            const msgContent = msg.content || msg.text || msg.message || msg.message_text;
+            const optIndex = prev.findIndex((m) =>
+              String(m.id).startsWith('local-') &&
+              (m.content === msgContent || m.text === msgContent || m.message_text === msgContent || m.message === msgContent)
+            );
+            if (optIndex !== -1) {
+              const updated = [...prev];
+              updated[optIndex] = { ...msg, is_me: true };
+              return updated;
+            }
+          }
           return [...prev, msg];
         });
+
+        if (isFromSelf) {
+          requestAnimationFrame(() => scrollToBottom('smooth'));
+        } else if (distanceFromBottom > 80) {
+          setShowScrollDownBtn(true);
+          setUnreadBelowCount((c) => c + 1);
+        } else {
+          requestAnimationFrame(() => scrollToBottom('smooth'));
+        }
       }
     };
     window.addEventListener('chat_message_received', handleCustomMsg);
     return () => window.removeEventListener('chat_message_received', handleCustomMsg);
-  }, [channel.id]);
-
-  // Auto-scroll on new message
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, currentlyTyping]);
+  }, [channel.id, setMessages, currentUserId, scrollToBottom]);
 
   // Handle textarea auto-grow up to 100px
   const handleInputChange = (e) => {
@@ -336,17 +461,30 @@ function FloatingChatWindow({
     const optimisticMsg = {
       id: localId,
       channel_id: channel.id,
+      channelId: channel.id,
       sender_id: currentUserId,
-      sender_name: session?.full_name || 'You',
+      senderId: currentUserId,
+      sender_name: currentUser?.full_name || session?.user?.full_name || 'You',
+      senderName: currentUser?.full_name || session?.user?.full_name || 'You',
+      sender_email: myEmail,
       message_text: payloadText,
+      content: payloadText,
+      text: payloadText,
+      message: payloadText,
       attachments: payloadAttachments,
       is_system_event: false,
+      is_me: true,
       created_at: new Date().toISOString()
     };
     setMessages((prev) => [...prev, optimisticMsg]);
 
-    // Dispatch via WebSocket or REST
-    await sendMessage(channel.id, payloadText, payloadAttachments);
+    requestAnimationFrame(() => {
+      scrollToBottom('smooth');
+    });
+
+    // Dispatch via WebSocket channel hook (falls back to REST if socket disconnected)
+    await sendWsMessage(payloadText, payloadAttachments);
+    markChannelAsRead(channel.id);
   };
 
   // Handle enter key (Enter sends, Shift+Enter newlines)
@@ -426,7 +564,7 @@ function FloatingChatWindow({
   return (
     <div
       ref={windowRef}
-      className="pointer-events-auto w-[340px] h-[440px] bg-slate-900 border border-slate-700/90 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-150"
+      className="relative pointer-events-auto w-[340px] h-[440px] bg-slate-900 border border-slate-700/90 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-150"
     >
       {/* 1. HEADER (Channel name, member count, announcement badge, controls) */}
       <div className="px-3 py-2 bg-slate-800/95 border-b border-slate-700/80 flex items-center justify-between text-slate-200">
@@ -529,7 +667,32 @@ function FloatingChatWindow({
       )}
 
       {/* 3. MESSAGE STREAM CONTAINER */}
-      <div className="flex-1 p-3 overflow-y-auto space-y-2.5 bg-slate-900/60 text-xs">
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleStreamScroll}
+        className="relative flex-1 p-3 overflow-y-auto space-y-2.5 bg-slate-900/60 text-xs"
+      >
+        {/* Load older messages button / indicator at top */}
+        {hasMore && (
+          <div className="flex justify-center pb-1">
+            <button
+              type="button"
+              onClick={handleLoadOlder}
+              disabled={isLoadingOlder}
+              className="text-[11px] font-medium text-slate-400 hover:text-emerald-400 bg-slate-800/80 hover:bg-slate-800 border border-slate-700/60 rounded-full px-3 py-1 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed shadow-xs"
+            >
+              {isLoadingOlder ? (
+                <>
+                  <Loader2 className="w-3 h-3 animate-spin text-emerald-400" />
+                  <span>Loading older messages...</span>
+                </>
+              ) : (
+                <span>Load older messages</span>
+              )}
+            </button>
+          </div>
+        )}
+
         {isLoadingMessages ? (
           <div className="flex items-center justify-center h-full text-slate-500 gap-2">
             <Loader2 className="w-4 h-4 animate-spin text-emerald-500" />
@@ -544,16 +707,16 @@ function FloatingChatWindow({
             </p>
           </div>
         ) : (
-          messages.map((m) => {
-            const isSelf = m.sender_id === currentUserId;
+          messages.map((m, idx) => {
+            const isSelf = Boolean(m.is_me) || Boolean(currentUserId && String(m.sender_id || m.senderId || '').toLowerCase() === currentUserId);
             const isSystem = Boolean(m.is_system_event);
 
             // System event notices (e.g. "User X joined", "User Y transferred")
             if (isSystem) {
               return (
-                <div key={m.id} className="flex justify-center my-1.5">
+                <div key={m.id || idx} className="flex justify-center my-1.5">
                   <div className="px-2.5 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-[10px] text-slate-400 italic">
-                    {m.message_text}
+                    {m.message_text || m.content || m.text || m.message}
                   </div>
                 </div>
               );
@@ -561,46 +724,154 @@ function FloatingChatWindow({
 
             return (
               <div
-                key={m.id}
-                className={`flex flex-col ${isSelf ? 'items-end' : 'items-start'}`}
+                key={m.id || idx}
+                className={`flex flex-col w-full mb-3 ${isSelf ? 'items-end' : 'items-start'}`}
               >
-                {!isSelf && !isDirect && (
-                  <span className="text-[10px] font-semibold text-slate-400 mb-0.5 ml-1">
-                    {m.sender_name}
+                {/* Display sender name ONLY for incoming messages from others */}
+                {!isSelf && (
+                  <span className="text-[10px] text-slate-400 font-semibold mb-1 px-1">
+                    {m.sender_name || 'Team Member'}
                   </span>
                 )}
+
+                {/* Message Bubble */}
                 <div
-                  className={`max-w-[85%] rounded-2xl px-3 py-1.5 text-xs shadow-sm break-words ${
+                  className={`max-w-[78%] px-3.5 py-2 rounded-2xl text-xs break-words shadow-xs select-text ${
                     isSelf
-                      ? 'bg-emerald-600 text-white rounded-br-xs'
-                      : 'bg-slate-800 border border-slate-700/70 text-slate-200 rounded-bl-xs'
+                      ? 'bg-emerald-600 dark:bg-emerald-600 text-white rounded-br-xs'
+                      : 'bg-slate-800 text-slate-200 border border-slate-700/60 rounded-bl-xs'
                   }`}
                 >
-                  <p className="whitespace-pre-wrap leading-relaxed">
-                    {renderFormattedMessage(m.message_text)}
+                  <p className="leading-relaxed whitespace-pre-wrap">
+                    {renderFormattedMessage(m.content || m.text || m.message || m.message_text)}
                   </p>
 
                   {/* Attachments rendering */}
                   {m.attachments && m.attachments.length > 0 && (
-                    <div className="mt-1.5 space-y-1">
-                      {m.attachments.map((att, idx) => (
-                        <div
-                          key={idx}
-                          className="flex items-center gap-1.5 p-1 rounded bg-black/20 text-[11px]"
-                        >
-                          <FileText className="w-3.5 h-3.5 flex-shrink-0" />
-                          <span className="truncate flex-1">{att.name || 'Attachment'}</span>
-                          <span className="text-[9px] opacity-70">
-                            {formatBytes(att.size)}
-                          </span>
-                        </div>
-                      ))}
+                    <div className="mt-2 space-y-1.5">
+                      {m.attachments.map((att, attIdx) => {
+                        const isImg = isImageAttachment(att);
+                        const viewUrl = getAttachmentUrl(att, false);
+                        const dlUrl = getAttachmentUrl(att, true);
+                        const fileName = att.name || att.filename || att.file_name || 'Attachment';
+
+                        if (isImg) {
+                          return (
+                            <div
+                              key={attIdx}
+                              className="relative group rounded-xl overflow-hidden border border-white/10 bg-black/30 shadow-md max-w-xs transition-all hover:border-emerald-500/50"
+                            >
+                              <div
+                                onClick={() => setPreviewImage({ url: viewUrl, name: fileName, size: att.size, dlUrl })}
+                                className="cursor-pointer relative overflow-hidden flex items-center justify-center bg-slate-950/60 min-h-[90px] max-h-52"
+                                title="Click to open image preview"
+                              >
+                                <img
+                                  src={viewUrl}
+                                  alt={fileName}
+                                  className="w-full h-full object-cover max-h-52 hover:scale-[1.02] transition-transform duration-200"
+                                  loading="lazy"
+                                />
+                                <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-between p-2">
+                                  <span className="text-[10px] text-white font-medium truncate max-w-[140px] drop-shadow">
+                                    {fileName}
+                                  </span>
+                                  <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                                    <a
+                                      href={viewUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="p-1 rounded-md bg-black/60 hover:bg-black/90 text-white transition-colors"
+                                      title="Open in new tab"
+                                    >
+                                      <ExternalLink className="w-3.5 h-3.5" />
+                                    </a>
+                                    <a
+                                      href={dlUrl}
+                                      download={fileName}
+                                      className="p-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
+                                      title="Download image"
+                                    >
+                                      <Download className="w-3.5 h-3.5" />
+                                    </a>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="px-2 py-1 bg-black/40 flex items-center justify-between text-[10px] text-slate-300">
+                                <span className="truncate flex-1 pr-2 font-mono">{formatBytes(att.size)}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewImage({ url: viewUrl, name: fileName, size: att.size, dlUrl })}
+                                  className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1 text-[10px] cursor-pointer"
+                                >
+                                  <Eye className="w-3 h-3" />
+                                  <span>View</span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div
+                            key={attIdx}
+                            className="flex items-center gap-2 p-2 rounded-xl bg-black/30 border border-white/10 hover:border-emerald-500/40 transition-all text-[11px] group"
+                          >
+                            <div className="p-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 flex-shrink-0">
+                              <FileText className="w-4 h-4" />
+                            </div>
+                            <div className="truncate flex-1 min-w-0">
+                              <a
+                                href={viewUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-medium hover:underline text-slate-100 truncate block"
+                                title={`Open ${fileName}`}
+                              >
+                                {fileName}
+                              </a>
+                              <span className="text-[9px] opacity-70 font-mono block">
+                                {formatBytes(att.size)}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              <a
+                                href={viewUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="p-1 rounded bg-black/40 hover:bg-black/70 text-slate-300 hover:text-white transition-colors"
+                                title="Open in new tab"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                              <a
+                                href={dlUrl}
+                                download={fileName}
+                                className="p-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
+                                title="Download file"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </a>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
+
+                  <div
+                    className={`text-[9px] mt-1 flex items-center justify-end gap-1 font-mono ${
+                      isSelf ? 'text-emerald-200' : 'text-slate-400'
+                    }`}
+                  >
+                    <span>
+                      {m.created_at
+                        ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                        : ''}
+                    </span>
+                    {isSelf && <span className="text-[10px]">✓✓</span>}
+                  </div>
                 </div>
-                <span className="text-[9px] text-slate-500 mt-0.5 px-1">
-                  {formatTime(m.created_at)}
-                </span>
               </div>
             );
           })
@@ -616,6 +887,23 @@ function FloatingChatWindow({
 
         <div ref={messagesEndRef} />
       </div>
+
+      {/* Floating Down-Arrow Button */}
+      {showScrollDownBtn && (
+        <button
+          type="button"
+          onClick={() => scrollToBottom('smooth')}
+          title="Scroll to latest messages"
+          className="absolute bottom-16 right-4 z-20 flex items-center gap-1.5 px-2.5 py-2 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg border border-emerald-400/40 transition-all cursor-pointer animate-fadeIn"
+        >
+          <ArrowDown className="w-4 h-4" />
+          {unreadBelowCount > 0 && (
+            <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-white text-emerald-700">
+              {unreadBelowCount}
+            </span>
+          )}
+        </button>
+      )}
 
       {/* 4. AUTOCOMPLETE POPOVER (@mentions or #channels) */}
       {autocomplete.active && autocompleteItems.length > 0 && (
@@ -712,7 +1000,7 @@ function FloatingChatWindow({
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               placeholder={`Message #${channel.channel_slug || channel.name}... (@ to mention)`}
-              className="w-full bg-slate-800/90 text-slate-200 text-xs px-3 py-2 rounded-xl border border-slate-700/80 focus:outline-none focus:border-emerald-500 placeholder:text-slate-500 resize-none max-h-[100px] leading-relaxed"
+              className="w-full bg-slate-800/90 text-slate-200 text-xs px-3 py-2 pr-10 rounded-xl border border-slate-700/80 focus:outline-none focus:border-blue-500 placeholder:text-slate-500 resize-none max-h-[100px] leading-relaxed"
             />
           </div>
 
@@ -722,11 +1010,70 @@ function FloatingChatWindow({
             id="chat-send-button"
             disabled={!inputText.trim() && !attachments.length}
             title="Send Message (Enter)"
-            className="p-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-600 text-white rounded-xl transition-colors shadow-md flex-shrink-0"
+            className="p-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-600 text-white rounded-xl transition-colors shadow-md flex-shrink-0 cursor-pointer disabled:cursor-not-allowed"
           >
             <Send className="w-4 h-4" />
           </button>
         </form>
+      )}
+
+      {/* 7. IMAGE LIGHTBOX MODAL */}
+      {previewImage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+          onClick={() => setPreviewImage(null)}
+        >
+          <div
+            className="relative max-w-4xl max-h-[90vh] bg-slate-900 border border-slate-700/80 rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Top bar */}
+            <div className="px-4 py-2.5 bg-slate-950/90 border-b border-slate-800 flex items-center justify-between gap-4">
+              <div className="truncate min-w-0">
+                <p className="text-xs font-semibold text-white truncate">{previewImage.name}</p>
+                <p className="text-[10px] text-slate-400 font-mono">{formatBytes(previewImage.size)}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={previewImage.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs flex items-center gap-1.5 transition-colors"
+                  title="Open in full browser window"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Open Tab</span>
+                </a>
+                <a
+                  href={previewImage.dlUrl || previewImage.url}
+                  download={previewImage.name}
+                  className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs flex items-center gap-1.5 transition-colors shadow-xs"
+                  title="Download original file"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPreviewImage(null)}
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-red-500/20 hover:text-red-400 text-slate-400 transition-colors cursor-pointer"
+                  title="Close preview"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Preview Body */}
+            <div className="p-2 flex items-center justify-center overflow-auto max-h-[calc(90vh-60px)] bg-slate-950/40">
+              <img
+                src={previewImage.url}
+                alt={previewImage.name}
+                className="max-h-[calc(90vh-80px)] max-w-full object-contain rounded-lg shadow-lg"
+              />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

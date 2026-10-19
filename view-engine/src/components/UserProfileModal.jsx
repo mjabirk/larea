@@ -21,12 +21,15 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { useTenancy } from '../context/TenancyContext';
+import { useAuth } from '../context/AuthContext';
 import { useLocale } from '../context/LocaleContext';
 import { useTheme, ACCENT_PRESETS, FONT_SCALE_PRESETS } from '../context/ThemeContext';
 import { DataDeletionManager } from './legal/DataDeletionManager';
 
 export function UserProfileModal({ isOpen, onClose }) {
   const { currentUser, currentOrganization, currentBranch, userMemberships, resetToSetup } = useTenancy();
+  const { getAuthHeaders, currentUser: authUser, user: sessionUser } = useAuth();
+  const activeUser = authUser || sessionUser || currentUser;
   const {
     t,
     language,
@@ -57,9 +60,34 @@ export function UserProfileModal({ isOpen, onClose }) {
   const [localTz, setLocalTz] = useState(timezone);
   const [localDateFmt, setLocalDateFmt] = useState(dateFormat);
   const [localTimeFmt, setLocalTimeFmt] = useState(timeFormat);
+  const [localIdleTimeout, setLocalIdleTimeout] = useState('');
+  const [globalMax, setGlobalMax] = useState(30);
   const [savedSuccess, setSavedSuccess] = useState(false);
 
   const modalRef = useRef(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (currentUser?.idle_timeout_minutes) {
+      setLocalIdleTimeout(String(currentUser.idle_timeout_minutes));
+    } else {
+      setLocalIdleTimeout('');
+    }
+    if (currentUser?.global_max_idle_timeout_minutes) {
+      setGlobalMax(currentUser.global_max_idle_timeout_minutes);
+    } else {
+      fetch('/api/v1/settings/security-policies', {
+        headers: getAuthHeaders ? getAuthHeaders() : {},
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.global_max_idle_timeout_minutes) {
+            setGlobalMax(data.global_max_idle_timeout_minutes);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isOpen, currentUser, getAuthHeaders]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -115,6 +143,32 @@ export function UserProfileModal({ isOpen, onClose }) {
       accentColor: localAccent,
     });
 
+    // 3. Save idle_timeout_minutes to /api/v1/iam/users/{id}
+    if (currentUser?.id) {
+      const parsedTimeout = localIdleTimeout === '' ? null : parseInt(localIdleTimeout, 10);
+      const token = typeof window !== 'undefined'
+        ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
+        : null;
+
+      fetch(`/api/v1/iam/users/${currentUser.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          idle_timeout_minutes: parsedTimeout,
+        }),
+      })
+        .then(() => {
+          if (currentUser) {
+            currentUser.idle_timeout_minutes = parsedTimeout;
+            currentUser.effective_idle_timeout_minutes = Math.min(parsedTimeout || 15, globalMax);
+          }
+        })
+        .catch((e) => console.error('Failed to save inactivity timeout:', e));
+    }
+
     setSavedSuccess(true);
     setTimeout(() => {
       setSavedSuccess(false);
@@ -144,14 +198,16 @@ export function UserProfileModal({ isOpen, onClose }) {
         <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs ring-2 ring-slate-800" aria-label="User Avatar">
-              {currentUser?.full_name ? currentUser.full_name.slice(0, 2).toUpperCase() : 'SJ'}
+              {activeUser?.full_name
+                ? activeUser.full_name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
+                : (activeUser?.username?.slice(0, 2).toUpperCase() || 'U')}
             </div>
             <div>
               <h3 id="user-profile-modal-title" className="font-bold text-sm text-slate-100">
-                {currentUser?.full_name || 'Sarah Jenkins'}
+                {activeUser?.full_name || 'Authenticated User'}
               </h3>
               <p className="text-[11px] text-slate-400 font-mono">
-                {currentUser?.email || 's.jenkins@apexglobal.com'}
+                {activeUser?.email || ''}
               </p>
             </div>
           </div>
@@ -429,6 +485,30 @@ export function UserProfileModal({ isOpen, onClose }) {
                   <option value="Europe/London">Europe/London (GMT+1)</option>
                   <option value="America/New_York">America/New_York (EST)</option>
                 </select>
+              </div>
+
+              {/* Inactivity / Auto-Logoff Timeout */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Auto Logoff / Inactivity Timeout</span>
+                  </span>
+                </label>
+                <select
+                  value={localIdleTimeout}
+                  onChange={(e) => setLocalIdleTimeout(e.target.value)}
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 cursor-pointer"
+                >
+                  <option value="">System Default</option>
+                  <option value="5" disabled={globalMax < 5}>5 Minutes</option>
+                  <option value="10" disabled={globalMax < 10}>10 Minutes</option>
+                  <option value="15" disabled={globalMax < 15}>15 Minutes</option>
+                  <option value="30" disabled={globalMax < 30}>30 Minutes</option>
+                </select>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  System maximum is capped at {globalMax} minutes by corporate security policy.
+                </p>
               </div>
             </div>
           )}

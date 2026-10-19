@@ -2,10 +2,13 @@ import time
 import secrets
 import ipaddress
 import json
+import logging
 from typing import Optional, Dict, Any, List
 import redis.asyncio as aioredis
 from fastapi import Request, HTTPException, status
 from backend.core.config import settings
+
+logger = logging.getLogger("enterprise.session")
 
 # Global async Redis/DragonflyDB pool
 redis_client: Optional[aioredis.Redis] = None
@@ -23,10 +26,43 @@ def get_redis_client() -> Optional[aioredis.Redis]:
     global redis_client
     return redis_client
 
+async def get_system_security_policies() -> Dict[str, Any]:
+    """Retrieves system security policies (global ceiling and default idle timeout)."""
+    global redis_client
+    if redis_client:
+        try:
+            cached = await redis_client.get("cache:security_policies")
+            if cached:
+                return json.loads(cached)
+        except Exception:
+            pass
+
+    try:
+        from backend.core.database import get_db_pool
+        pool = get_db_pool()
+        if pool:
+            async with pool.acquire() as conn:
+                row = await conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:security_policies';")
+                if row:
+                    policies = json.loads(row)
+                    if redis_client:
+                        try:
+                            await redis_client.set("cache:security_policies", json.dumps(policies), ex=300)
+                        except Exception:
+                            pass
+                    return policies
+    except Exception as e:
+        logger.warning(f"Failed to fetch security policies: {e}")
+
+    return {
+        "global_max_idle_timeout_minutes": 30,
+        "default_idle_timeout_minutes": 15
+    }
+
 class SessionManager:
     """
     DragonflyDB / Redis Stateful Session Engine
-    Implements 30-min idle rolling timeout, 8-hr absolute hard cap,
+    Implements tiered rolling idle timeout, 8-hr absolute hard cap,
     device tracking, and remote revocation.
     """
     
@@ -54,6 +90,24 @@ class SessionManager:
         sec_groups = user_data.get("security_groups", [])
         perms = user_data.get("permissions", {})
 
+        # Compute tiered auto-logoff timeout
+        policies = await get_system_security_policies()
+        global_max = int(policies.get("global_max_idle_timeout_minutes", 30))
+        default_idle = int(policies.get("default_idle_timeout_minutes", 15))
+
+        user_timeout = user_data.get("idle_timeout_minutes")
+        if user_timeout is not None and str(user_timeout).strip() and str(user_timeout).strip() != "None":
+            try:
+                candidate = int(user_timeout)
+                timeout_val = candidate if candidate > 0 else default_idle
+            except (ValueError, TypeError):
+                timeout_val = default_idle
+        else:
+            timeout_val = default_idle
+
+        effective_timeout_minutes = min(timeout_val, global_max)
+        idle_timeout_seconds = effective_timeout_minutes * 60
+
         session_payload = {
             "token": token,
             "user_id": str(user_id),
@@ -68,17 +122,20 @@ class SessionManager:
             "branch_id": str(user_data.get("branch_id") or ""),
             "security_groups": json.dumps(sec_groups),
             "permissions": json.dumps(perms),
+            "menu_access": json.dumps(user_data.get("menu_access", [])),
             "client_ip": client_ip,
             "user_agent": user_agent[:128],
             "created_at": str(now),
             "last_active": str(now),
-            "max_expiry": str(max_expiry)
+            "max_expiry": str(max_expiry),
+            "idle_timeout_seconds": str(idle_timeout_seconds),
+            "effective_idle_timeout_minutes": str(effective_timeout_minutes),
         }
         
-        # Pipeline: Write session hash, set 30m idle TTL, add token to user_sessions set
+        # Pipeline: Write session hash, set dynamic idle TTL, add token to user_sessions set
         async with redis_client.pipeline(transaction=True) as pipe:
             await pipe.hset(session_key, mapping=session_payload)
-            await pipe.expire(session_key, settings.SESSION_IDLE_TIMEOUT_SECONDS)
+            await pipe.expire(session_key, idle_timeout_seconds)
             await pipe.sadd(user_sessions_key, token)
             await pipe.execute()
             
@@ -103,14 +160,18 @@ class SessionManager:
             await SessionManager.revoke_session(token)
             return None
             
-        # Enforce Rolling Idle Timeout: extend TTL by 30 minutes
-        await redis_client.expire(session_key, settings.SESSION_IDLE_TIMEOUT_SECONDS)
+        # Enforce Rolling Idle Timeout: extend TTL by idle_timeout_seconds on each request
+        idle_timeout_seconds = int(session_data.get("idle_timeout_seconds", settings.SESSION_IDLE_TIMEOUT_SECONDS))
+        await redis_client.expire(session_key, idle_timeout_seconds)
         await redis_client.hset(session_key, "last_active", str(now))
         
         # Cast boolean is_superadmin
         session_data["is_superadmin"] = session_data.get("is_superadmin") == "true"
         if not session_data.get("username"):
             session_data["username"] = session_data.get("email", "") or session_data.get("full_name", "") or "Authorized User"
+
+        session_data["effective_idle_timeout_minutes"] = int(session_data.get("effective_idle_timeout_minutes", idle_timeout_seconds // 60))
+        session_data["idle_timeout_seconds"] = idle_timeout_seconds
 
         try:
             session_data["security_groups"] = json.loads(session_data.get("security_groups", "[]"))
@@ -121,6 +182,11 @@ class SessionManager:
             session_data["permissions"] = json.loads(session_data.get("permissions", "{}"))
         except Exception:
             session_data["permissions"] = {}
+
+        try:
+            session_data["menu_access"] = json.loads(session_data.get("menu_access", "[]"))
+        except Exception:
+            session_data["menu_access"] = []
             
         return session_data
 

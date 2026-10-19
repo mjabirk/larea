@@ -35,12 +35,13 @@ export default function ChatPopover() {
     pushEnabled,
     togglePushNotifications,
     openChat,
-    createChannel
+    createChannel,
+    refreshChannels
   } = useChat();
 
-  const { token, session } = useAuth();
+  const { token, session, currentUser } = useAuth();
   const dropdownRef = useRef(null);
-  const currentUserId = session?.id || session?.user_id;
+  const currentUserId = String(currentUser?.id || session?.user?.id || session?.id || session?.user_id || '').toLowerCase();
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -120,7 +121,13 @@ export default function ChatPopover() {
       <button
         type="button"
         id="discuss-topbar-button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => {
+          const willOpen = !isOpen;
+          setIsOpen(willOpen);
+          if (willOpen) {
+            refreshChannels();
+          }
+        }}
         title="Internal Messages & Channels (Odoo Discuss)"
         className={`relative p-2 rounded-lg transition-colors flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 ${
           isOpen ? 'bg-slate-800 text-emerald-400' : ''

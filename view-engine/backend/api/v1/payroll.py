@@ -708,64 +708,48 @@ async def lock_payroll_batch(
     client_ip = get_client_ip(request) if request else "127.0.0.1"
 
     async with pool.acquire() as conn:
-        batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", b_uuid)
-        if not batch:
-            raise HTTPException(status_code=404, detail="Payroll batch not found.")
+        async with conn.transaction():
+            batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1 FOR UPDATE;", b_uuid)
+            if not batch:
+                raise HTTPException(status_code=404, detail="Payroll batch not found.")
 
-        if batch["status"] != "draft":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Payroll batch {batch['batch_code']} is already {batch['status']}.",
+            if batch["status"] != "draft":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Payroll batch {batch['batch_code']} is already {batch['status']}.",
+                )
+
+            ym = batch["salary_year_month"]
+            user_id, author_name = await resolve_audit_author(conn, session)
+
+            await conn.execute("""
+                UPDATE payroll_batches SET
+                    status = 'locked',
+                    locked_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $1;
+            """, b_uuid)
+
+            synced_count = await conn.execute("""
+                UPDATE attendance_logs SET
+                    status = 'synced',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE TO_CHAR(check_in, 'YYYY-MM') = $1
+                  AND LOWER(status) = 'verified';
+            """, ym)
+
+            await conn.execute("""
+                INSERT INTO audit_logs (
+                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
+                ) VALUES (
+                    $1::uuid, 'payroll_batches', $2, 'LOCK', $3, $4, $5, $6
+                );
+            """, str(uuid.uuid4()), str(b_uuid), user_id, author_name,
+                f"Locked and sealed payroll batch {batch['batch_code']} ({ym}) with {batch['total_employees']} payslips.",
+                client_ip
             )
 
-        ym = batch["salary_year_month"]
-        user_id, author_name = await resolve_audit_author(conn, session)
-
-        await conn.execute("""
-            UPDATE payroll_batches SET
-                status = 'locked',
-                locked_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $1;
-        """, b_uuid)
-
-        synced_count = await conn.execute("""
-            UPDATE attendance_logs SET
-                status = 'synced',
-                updated_at = CURRENT_TIMESTAMP
-            WHERE TO_CHAR(check_in, 'YYYY-MM') = $1
-              AND LOWER(status) = 'verified';
-        """, ym)
-
-        await conn.execute("""
-            INSERT INTO audit_logs (
-                id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
-            ) VALUES (
-                $1::uuid, 'payroll_batches', $2, 'LOCK', $3, $4, $5, $6
-            );
-        """, str(uuid.uuid4()), str(b_uuid), user_id, author_name,
-            f"Locked and sealed payroll batch {batch['batch_code']} ({ym}) with {batch['total_employees']} payslips.",
-            client_ip
-        )
-
-        # Automated communication trigger execution
-        try:
-            from backend.core.communication_engine import execute_automation_trigger
-            # 1. Trigger for payroll_batch_locked
-            await execute_automation_trigger(
-                event_type="payroll_batch_locked",
-                record_model="payroll.batch",
-                record_id=str(b_uuid),
-                record_data={
-                    "batch_code": batch["batch_code"],
-                    "month": ym,
-                    "total_employees": batch["total_employees"],
-                    "total_net_salary": f"{float(batch['total_net_salary'] or 0):,.2f}"
-                },
-                author_name=author_name
-            )
-
-            # 2. Trigger for payslip_confirmed for each employee
+            updated_batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", b_uuid)
             p_rows = await conn.fetch("""
                 SELECT p.*, e.phone_number, e.work_email, e.full_name as emp_name
                 FROM payslips p
@@ -773,35 +757,52 @@ async def lock_payroll_batch(
                 WHERE p.batch_id = $1::uuid;
             """, b_uuid)
 
-            for p in p_rows:
-                await execute_automation_trigger(
-                    event_type="payslip_confirmed",
-                    record_model="payroll.payslip",
-                    record_id=str(p["id"]),
-                    record_data={
-                        "employee_id": str(p["employee_id"]),
-                        "employee_name": p["employee_name"] or p["emp_name"],
-                        "employee_number": p["employee_number"],
-                        "phone_number": p["phone_number"],
-                        "month": ym,
-                        "base_salary": float(p['base_salary'] or 0),
-                        "net_salary": float(p['net_salary'] or 0),
-                        "deductions": float(p['deductions'] or 0),
-                        "department": p["department"] or "Operations"
-                    },
-                    author_name=author_name
-                )
-        except Exception as e:
-            logger.exception("Error executing automated triggers on payroll batch lock: %s", e)
+    # Automated communication trigger execution (executed outside DB transaction to avoid connection leaks)
+    try:
+        from backend.core.communication_engine import execute_automation_trigger
+        # 1. Trigger for payroll_batch_locked
+        await execute_automation_trigger(
+            event_type="payroll_batch_locked",
+            record_model="payroll.batch",
+            record_id=str(b_uuid),
+            record_data={
+                "batch_code": batch["batch_code"],
+                "month": ym,
+                "total_employees": batch["total_employees"],
+                "total_net_salary": f"{float(batch['total_net_salary'] or 0):,.2f}"
+            },
+            author_name=author_name
+        )
 
-        updated_batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", b_uuid)
-        return {
-            "status": "success",
-            "message": f"Payroll batch {batch['batch_code']} locked and sealed successfully.",
-            "batch": serialize_row(dict(updated_batch)),
-            "attendance_sync_info": synced_count,
-            "synced_attendance_records": synced_count,
-        }
+        # 2. Trigger for payslip_confirmed for each employee
+        for p in p_rows:
+            await execute_automation_trigger(
+                event_type="payslip_confirmed",
+                record_model="payroll.payslip",
+                record_id=str(p["id"]),
+                record_data={
+                    "employee_id": str(p["employee_id"]),
+                    "employee_name": p["employee_name"] or p["emp_name"],
+                    "employee_number": p["employee_number"],
+                    "phone_number": p["phone_number"],
+                    "month": ym,
+                    "base_salary": float(p['base_salary'] or 0),
+                    "net_salary": float(p['net_salary'] or 0),
+                    "deductions": float(p['deductions'] or 0),
+                    "department": p["department"] or "Operations"
+                },
+                author_name=author_name
+            )
+    except Exception as e:
+        logger.exception("Error executing automated triggers on payroll batch lock: %s", e)
+
+    return {
+        "status": "success",
+        "message": f"Payroll batch {batch['batch_code']} locked and sealed successfully.",
+        "batch": serialize_row(dict(updated_batch)),
+        "attendance_sync_info": synced_count,
+        "synced_attendance_records": synced_count,
+    }
 
 
 @router.delete("/batches/{batch_id}")
@@ -821,30 +822,31 @@ async def delete_payroll_batch(
     client_ip = get_client_ip(request) if request else "127.0.0.1"
 
     async with pool.acquire() as conn:
-        batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", b_uuid)
-        if not batch:
-            raise HTTPException(status_code=404, detail="Payroll batch not found.")
+        async with conn.transaction():
+            batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1 FOR UPDATE;", b_uuid)
+            if not batch:
+                raise HTTPException(status_code=404, detail="Payroll batch not found.")
 
-        if batch["status"] != "draft":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot delete a {batch['status']} payroll batch. Only 'draft' batches can be deleted."
+            if batch["status"] != "draft":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot delete a {batch['status']} payroll batch. Only 'draft' batches can be deleted."
+                )
+
+            user_id, author_name = await resolve_audit_author(conn, session)
+
+            await conn.execute("DELETE FROM payroll_batches WHERE id = $1;", b_uuid)
+
+            await conn.execute("""
+                INSERT INTO audit_logs (
+                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
+                ) VALUES (
+                    $1::uuid, 'payroll_batches', $2, 'DELETE', $3, $4, $5, $6
+                );
+            """, str(uuid.uuid4()), str(b_uuid), user_id, author_name,
+                f"Deleted draft payroll batch {batch['batch_code']} ({batch['salary_year_month']}).",
+                client_ip
             )
-
-        user_id, author_name = await resolve_audit_author(conn, session)
-
-        await conn.execute("DELETE FROM payroll_batches WHERE id = $1;", b_uuid)
-
-        await conn.execute("""
-            INSERT INTO audit_logs (
-                id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
-            ) VALUES (
-                $1::uuid, 'payroll_batches', $2, 'DELETE', $3, $4, $5, $6
-            );
-        """, str(uuid.uuid4()), str(b_uuid), user_id, author_name,
-            f"Deleted draft payroll batch {batch['batch_code']} ({batch['salary_year_month']}).",
-            client_ip
-        )
 
         return {
             "status": "success",
@@ -915,97 +917,103 @@ async def export_qatar_wps_sif(
         raise HTTPException(status_code=400, detail="Invalid batch UUID.")
 
     async with pool.acquire() as conn:
-        batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", b_uuid)
-        if not batch:
-            raise HTTPException(status_code=404, detail="Payroll batch not found.")
+        async with conn.transaction():
+            batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1 FOR UPDATE;", b_uuid)
+            if not batch:
+                raise HTTPException(status_code=404, detail="Payroll batch not found.")
 
-        # Read Qatar WPS Bank Configuration from system_metadata
-        wps_raw = await conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:qatar_wps_config';")
-        wps_cfg = {}
-        if wps_raw:
-            try:
-                wps_cfg = json.loads(wps_raw) if isinstance(wps_raw, str) else dict(wps_raw)
-            except Exception:
-                pass
+            # Read Qatar WPS Bank Configuration from system_metadata
+            wps_raw = await conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:qatar_wps_config';")
+            wps_cfg = {}
+            if wps_raw:
+                try:
+                    wps_cfg = json.loads(wps_raw) if isinstance(wps_raw, str) else dict(wps_raw)
+                except Exception:
+                    pass
 
-        employer_eid = str(wps_cfg.get("employer_eid") or "12345678").strip()
-        payer_bank_short_code = str(wps_cfg.get("payer_bank_short_code") or "QNBA").strip().upper()
-        payer_iban = str(wps_cfg.get("payer_iban") or "QA55QNBA000000001122334455667").strip().upper()
+            employer_eid = str(wps_cfg.get("employer_eid") or "12345678").strip()
+            payer_bank_short_code = str(wps_cfg.get("payer_bank_short_code") or "QNBA").strip().upper()
+            payer_iban = str(wps_cfg.get("payer_iban") or "QA55QNBA000000001122334455667").strip().upper()
 
-        payslips = await conn.fetch("""
-            SELECT * FROM payslips
-            WHERE batch_id = $1
-            ORDER BY employee_number ASC, employee_name ASC;
-        """, b_uuid)
+            rows = await conn.fetch("""
+                SELECT * FROM payslips
+                WHERE batch_id = $1
+                ORDER BY employee_number ASC, employee_name ASC;
+            """, b_uuid)
+            payslips = [dict(r) for r in rows]
 
-        now = datetime.datetime.now(datetime.timezone.utc)
-        file_date = now.strftime("%Y%m%d")
-        file_time = now.strftime("%H%M")
-        salary_ym = batch["salary_year_month"].replace("-", "").strip()
+            if batch["status"] == "locked":
+                await conn.execute(
+                    "UPDATE payroll_batches SET status = 'exported', updated_at = CURRENT_TIMESTAMP WHERE id = $1;",
+                    b_uuid
+                )
 
-        total_net = float(batch["total_net_salary"] or 0.0)
-        total_records = len(payslips)
+    # Connection is now safely returned to pool; generate WPS .SIF CSV content
+    now = datetime.datetime.now(datetime.timezone.utc)
+    file_date = now.strftime("%Y%m%d")
+    file_time = now.strftime("%H%M")
+    salary_ym = batch["salary_year_month"].replace("-", "").strip()
 
-        # Build SIF File Rows per Qatar WPS Banking Specification
-        # Row 1 (Header schema)
-        row1 = "Employer EID,File Creation Date,File Creation Time,Payer EID,Payer QID,Payer Bank Short Name,Payer IBAN,Salary Year and Month,Total Salaries,Total Records,SIF Version"
-        # Row 2 (Header values)
-        row2 = f"{employer_eid},{file_date},{file_time},{employer_eid},,{payer_bank_short_code},{payer_iban},{salary_ym},{total_net:.2f},{total_records},01"
-        # Row 3 (EDR Column headers)
-        row3 = "Record Sequence,Employee QID,Employee Visa ID,Employee Name,Employee Bank Short Name,Employee Account,Salary Frequency,Number of Working Days,Net Salary,Basic Salary,Extra Hours,Extra Income,Deductions,Payment Type,Notes/Comments"
+    total_net = float(batch["total_net_salary"] or 0.0)
+    total_records = len(payslips)
 
-        edr_rows = []
-        for idx, p in enumerate(payslips, start=1):
-            qid = str(p["national_id_number"] or "").strip()
-            visa = str(p["visa_number"] or "").strip()
-            emp_name = str(p["employee_name"] or "").replace(",", " ").strip()
-            iban = str(p["bank_iban"] or "").strip().upper()
+    # Build SIF File Rows per Qatar WPS Banking Specification
+    # Row 1 (Header schema)
+    row1 = "Employer EID,File Creation Date,File Creation Time,Payer EID,Payer QID,Payer Bank Short Name,Payer IBAN,Salary Year and Month,Total Salaries,Total Records,SIF Version"
+    # Row 2 (Header values)
+    row2 = f"{employer_eid},{file_date},{file_time},{employer_eid},,{payer_bank_short_code},{payer_iban},{salary_ym},{total_net:.2f},{total_records},01"
+    # Row 3 (EDR Column headers)
+    row3 = "Record Sequence,Employee QID,Employee Visa ID,Employee Name,Employee Bank Short Name,Employee Account,Salary Frequency,Number of Working Days,Net Salary,Basic Salary,Extra Hours,Extra Income,Deductions,Payment Type,Notes/Comments"
 
-            # Extract 4-letter Qatar Bank Code from SWIFT or IBAN
-            bank_short = "QNBA"
-            swift = str(p["bank_swift"] or "").strip().upper()
-            if len(swift) >= 4:
-                bank_short = swift[:4]
-            elif len(iban) >= 8 and iban.startswith("QA"):
-                bank_short = iban[4:8]
+    edr_rows = []
+    for idx, p in enumerate(payslips, start=1):
+        qid = str(p["national_id_number"] or "").strip()
+        visa = str(p["visa_number"] or "").strip()
+        emp_name = str(p["employee_name"] or "").replace(",", " ").strip()
+        iban = str(p["bank_iban"] or "").strip().upper()
 
-            working_days = p["working_days"] or 30
-            net_sal = float(p["net_salary"] or 0.0)
-            base_sal = float(p["base_salary"] or 0.0)
-            ot_hours = float(p["overtime_hours"] or 0.0)
-            extra_income = (
-                float(p["housing_allowance"] or 0.0)
-                + float(p["transport_allowance"] or 0.0)
-                + float(p["other_allowances"] or 0.0)
-                + float(p["overtime_pay"] or 0.0)
-                + float(p.get("bonus_pay") or 0.0)
-                + float(p.get("task_benefit_pay") or 0.0)
-            )
-            ded = float(p["deductions"] or 0.0)
-            notes = str(p["notes"] or "").replace(",", " ").replace("\n", " ").strip()
+        # Extract 4-letter Qatar Bank Code from SWIFT or IBAN
+        bank_short = "QNBA"
+        swift = str(p["bank_swift"] or "").strip().upper()
+        if len(swift) >= 4:
+            bank_short = swift[:4]
+        elif len(iban) >= 8 and iban.startswith("QA"):
+            bank_short = iban[4:8]
 
-            edr_line = (
-                f"{idx},{qid},{visa},{emp_name},{bank_short},{iban},M,{working_days},"
-                f"{net_sal:.2f},{base_sal:.2f},{ot_hours:.1f},{extra_income:.2f},{ded:.2f},Normal,{notes}"
-            )
-            edr_rows.append(edr_line)
-
-        sif_content = "\r\n".join([row1, row2, row3] + edr_rows) + "\r\n"
-        filename = f"SIF_{employer_eid}_{payer_bank_short_code}_{file_date}_{file_time}.sif"
-
-        if batch["status"] == "locked":
-            await conn.execute("UPDATE payroll_batches SET status = 'exported', updated_at = CURRENT_TIMESTAMP WHERE id = $1;", b_uuid)
-
-        return Response(
-            content=sif_content.encode("utf-8"),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Access-Control-Expose-Headers": "Content-Disposition",
-                "X-WPS-Total-Records": str(total_records),
-                "X-WPS-Total-Salaries": f"{total_net:.2f}",
-            },
+        working_days = p["working_days"] or 30
+        net_sal = float(p["net_salary"] or 0.0)
+        base_sal = float(p["base_salary"] or 0.0)
+        ot_hours = float(p["overtime_hours"] or 0.0)
+        extra_income = (
+            float(p["housing_allowance"] or 0.0)
+            + float(p["transport_allowance"] or 0.0)
+            + float(p["other_allowances"] or 0.0)
+            + float(p["overtime_pay"] or 0.0)
+            + float(p.get("bonus_pay") or 0.0)
+            + float(p.get("task_benefit_pay") or 0.0)
         )
+        ded = float(p["deductions"] or 0.0)
+        notes = str(p["notes"] or "").replace(",", " ").replace("\n", " ").strip()
+
+        edr_line = (
+            f"{idx},{qid},{visa},{emp_name},{bank_short},{iban},M,{working_days},"
+            f"{net_sal:.2f},{base_sal:.2f},{ot_hours:.1f},{extra_income:.2f},{ded:.2f},Normal,{notes}"
+        )
+        edr_rows.append(edr_line)
+
+    sif_content = "\r\n".join([row1, row2, row3] + edr_rows) + "\r\n"
+    filename = f"SIF_{employer_eid}_{payer_bank_short_code}_{file_date}_{file_time}.sif"
+
+    return Response(
+        content=sif_content.encode("utf-8"),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+            "X-WPS-Total-Records": str(total_records),
+            "X-WPS-Total-Salaries": f"{total_net:.2f}",
+        },
+    )
 
 
 # ==============================================================================

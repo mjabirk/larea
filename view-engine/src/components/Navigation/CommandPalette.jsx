@@ -61,11 +61,20 @@ export function CommandPalette({
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [employees, setEmployees] = useState([]);
+  const cachedEmployeesRef = useRef(null);
+  const isFetchingEmployeesRef = useRef(false);
   const inputRef = useRef(null);
   const listRef = useRef(null);
 
   useEffect(() => {
     if (isOpen) {
+      if (cachedEmployeesRef.current !== null) {
+        setEmployees(cachedEmployeesRef.current);
+        return;
+      }
+      if (isFetchingEmployeesRef.current) return;
+      isFetchingEmployeesRef.current = true;
+
       const token = typeof window !== 'undefined'
         ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
         : null;
@@ -75,10 +84,14 @@ export function CommandPalette({
         .then((res) => res.json())
         .then((data) => {
           if (Array.isArray(data.employees)) {
+            cachedEmployeesRef.current = data.employees;
             setEmployees(data.employees);
           }
         })
-        .catch(() => { });
+        .catch(() => { })
+        .finally(() => {
+          isFetchingEmployeesRef.current = false;
+        });
     }
   }, [isOpen]);
 
@@ -115,18 +128,35 @@ export function CommandPalette({
     // =========================================================================
     APP_MODULES.forEach((mod) => {
       if (hasAppAccess(mod.id)) {
+        const menuEntries = [];
+        if (mod.menuGroups && mod.menuGroups.length > 0) {
+          mod.menuGroups.forEach((group) => {
+            (group.menus || []).forEach((menu) => {
+              menuEntries.push({ ...menu, groupLabel: group.label });
+            });
+          });
+        }
         (mod.menus || []).forEach((menu) => {
+          if (!menuEntries.some((m) => m.id === menu.id)) {
+            menuEntries.push(menu);
+          }
+        });
+
+        menuEntries.forEach((menu) => {
           if (hasMenuAccess(menu.id)) {
+            const subtitle = menu.groupLabel
+              ? `${mod.name} › ${menu.groupLabel} › ${menu.label} (${menu.model})`
+              : `${mod.name} › ${menu.label} (${menu.model})`;
             items.push({
               id: `menu_${mod.id}_${menu.id}`,
               scope: 'navigation',
               scopeLabel: 'Navigation & Menus',
               title: menu.label,
-              subtitle: `${mod.name} › ${menu.label} (${menu.model})`,
+              subtitle,
               icon: Layers,
               iconBg: mod.color,
               badge: menu.model,
-              keywords: [menu.label, menu.model, mod.name, 'table', 'view'],
+              keywords: [menu.label, menu.model, mod.name, menu.groupLabel || '', 'table', 'view'].filter(Boolean),
               action: () => {
                 onNavigate({ moduleId: mod.id, menuId: menu.id });
                 onClose();

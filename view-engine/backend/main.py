@@ -2,12 +2,16 @@ import json
 import uuid
 import datetime
 import hashlib
+import logging
 import re
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, Depends, HTTPException, Header, Request, status, Response
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+logger = logging.getLogger("enterprise.main")
 
 from backend.core.config import settings
 from backend.core.session import (
@@ -15,7 +19,8 @@ from backend.core.session import (
     close_redis,
     SessionManager,
     verify_client_cidr,
-    get_redis_client
+    get_redis_client,
+    get_system_security_policies
 )
 from backend.core.database import (
     init_db_pool,
@@ -57,6 +62,16 @@ app.add_middleware(
     expose_headers=["Content-Disposition", "X-Vault-Decrypted"],
 )
 
+# Browser Security Headers Middleware (OWASP standard baseline)
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
 from backend.api.v1.documents import router as documents_router
 from backend.api.v1.employees import router as employees_router
 from backend.api.v1.audit import router as audit_router
@@ -68,7 +83,7 @@ from backend.api.v1.zkteco import router as zkteco_router
 from backend.api.v1.notifications import router as notifications_router
 from backend.api.v1.mail import router as mail_router
 from backend.api.v1.communication import router as communication_router
-from backend.api.v1.chat import router as chat_router, push_router, websocket_chat_endpoint
+from backend.api.v1.chat import router as chat_router, push_router, websocket_chat_endpoint, websocket_channel_endpoint
 
 app.include_router(documents_router)
 app.include_router(employees_router)
@@ -87,6 +102,7 @@ app.include_router(push_router)
 # Direct root WebSocket alias for /ws/chat and /ws/notifications
 app.add_api_websocket_route("/ws/chat", websocket_chat_endpoint)
 app.add_api_websocket_route("/ws/notifications", websocket_chat_endpoint)
+app.add_api_websocket_route("/api/v1/chat/ws/{channel_id}", websocket_channel_endpoint)
 
 # Request Models
 class LoginRequest(BaseModel):
@@ -150,6 +166,11 @@ class UpdateUserRequest(BaseModel):
     age: Optional[int] = None
     guardian_name: Optional[str] = None
     guardian_email: Optional[str] = None
+    idle_timeout_minutes: Optional[int] = None
+
+class SecurityPolicyPayload(BaseModel):
+    global_max_idle_timeout_minutes: int
+    default_idle_timeout_minutes: Optional[int] = 15
 
 class ResetPasswordRequest(BaseModel):
     password: str
@@ -177,7 +198,12 @@ class CreateAPIKeyRequest(BaseModel):
     scopes: Optional[List[str]] = None
 
 
-from backend.core.dependencies import get_client_ip, get_current_user_session
+from backend.core.dependencies import (
+    get_client_ip,
+    get_current_user_session,
+    require_permission,
+    check_permission
+)
 
 # Redis-based Atomic Rate Limiting Helpers (DoS Protection & Brute Force Prevention)
 async def enforce_rate_limit(key_prefix: str, identifier: str, max_attempts: int, window_seconds: int = 60):
@@ -207,6 +233,57 @@ async def enforce_setup_boot_limit(max_calls: int = 3):
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"System setup initialization limit exceeded (maximum {max_calls} invocations allowed)."
         )
+
+# ==============================================================================
+# 0. UNAUTHENTICATED HEALTH CHECK (LIVENESS & READINESS)
+# ==============================================================================
+@app.get("/healthz")
+async def healthz():
+    """
+    Unauthenticated system health check endpoint.
+    - Verifies active PostgreSQL connection by executing 'SELECT 1;'.
+    - Verifies Redis/DragonflyDB responsiveness by calling 'await redis.ping()'.
+    - Returns HTTP 200 {"status": "healthy", "database": "up", "redis": "up", "timestamp": "..."}
+      or HTTP 503 if any dependent service is down.
+    """
+    db_status = "down"
+    redis_status = "down"
+
+    # 1. Probe PostgreSQL Pool
+    try:
+        pool = get_db_pool()
+        if pool:
+            async with pool.acquire() as conn:
+                probe = await conn.fetchval("SELECT 1;")
+                if probe == 1:
+                    db_status = "up"
+    except Exception as e:
+        logger.error(f"Health check PostgreSQL probe failure: {e}")
+        db_status = "down"
+
+    # 2. Probe Redis / DragonflyDB
+    try:
+        redis = get_redis_client()
+        if redis:
+            pong = await redis.ping()
+            if pong:
+                redis_status = "up"
+    except Exception as e:
+        logger.error(f"Health check Redis probe failure: {e}")
+        redis_status = "down"
+
+    is_healthy = (db_status == "up" and redis_status == "up")
+    payload = {
+        "status": "healthy" if is_healthy else "unhealthy",
+        "database": db_status,
+        "redis": redis_status,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+    }
+
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if is_healthy else status.HTTP_503_SERVICE_UNAVAILABLE,
+        content=payload
+    )
 
 # ==============================================================================
 # 1. SYSTEM METADATA & STATUS ENDPOINTS
@@ -319,6 +396,14 @@ async def setup_init(req: SetupInitRequest, request: Request):
         "menu_access": ["attendances", "rosters", "users", "roles", "orgs", "terminals", "batches"]
     }
     
+    policies = await get_system_security_policies()
+    global_max = int(policies.get("global_max_idle_timeout_minutes", 30))
+    default_idle = int(policies.get("default_idle_timeout_minutes", 15))
+
+    user_data["idle_timeout_minutes"] = None
+    user_data["effective_idle_timeout_minutes"] = min(default_idle, global_max)
+    user_data["global_max_idle_timeout_minutes"] = global_max
+
     session_token = await SessionManager.create_session(
         user_id=str(user_id),
         user_data=user_data,
@@ -425,7 +510,16 @@ async def login(req: LoginRequest, request: Request):
             "security_groups": ["*"] if row["is_superadmin"] else role_sec_groups,
             "menu_access": menu_access,
             "permissions": permissions,
+            "idle_timeout_minutes": row.get("idle_timeout_minutes"),
         }
+
+        policies = await get_system_security_policies()
+        global_max = int(policies.get("global_max_idle_timeout_minutes", 30))
+        default_idle = int(policies.get("default_idle_timeout_minutes", 15))
+        eff_idle = min(user_data["idle_timeout_minutes"] or default_idle, global_max)
+
+        user_data["effective_idle_timeout_minutes"] = eff_idle
+        user_data["global_max_idle_timeout_minutes"] = global_max
         
         # 4. Check if Two-Factor Authentication is enforced on account
         if row.get("is_2fa_enabled") and row.get("totp_secret"):
@@ -539,7 +633,16 @@ async def verify_2fa(req: Verify2FARequest, request: Request):
         "security_groups": ["*"] if row["is_superadmin"] else [],
         "menu_access": menu_access,
         "permissions": permissions,
+        "idle_timeout_minutes": row.get("idle_timeout_minutes"),
     }
+
+    policies = await get_system_security_policies()
+    global_max = int(policies.get("global_max_idle_timeout_minutes", 30))
+    default_idle = int(policies.get("default_idle_timeout_minutes", 15))
+    eff_idle = min(user_data["idle_timeout_minutes"] or default_idle, global_max)
+
+    user_data["effective_idle_timeout_minutes"] = eff_idle
+    user_data["global_max_idle_timeout_minutes"] = global_max
     
     if req.pending_token and redis:
         await redis.delete(f"2fa_pending:{req.pending_token}")
@@ -623,6 +726,12 @@ async def get_current_user_profile(session: Dict[str, Any] = Depends(get_current
             
         menu_access = json.loads(row["menu_access"]) if row["menu_access"] else []
         permissions = json.loads(row["permissions"]) if row["permissions"] else {}
+
+        policies = await get_system_security_policies()
+        global_max = int(policies.get("global_max_idle_timeout_minutes", 30))
+        default_idle = int(policies.get("default_idle_timeout_minutes", 15))
+        user_idle = row.get("idle_timeout_minutes")
+        effective_idle = session.get("effective_idle_timeout_minutes") or min(user_idle or default_idle, global_max)
         
         return {
             "id": str(row["id"]),
@@ -642,6 +751,9 @@ async def get_current_user_profile(session: Dict[str, Any] = Depends(get_current
             "security_groups": ["*"] if row["is_superadmin"] else [],
             "menu_access": menu_access,
             "permissions": permissions,
+            "idle_timeout_minutes": user_idle,
+            "effective_idle_timeout_minutes": effective_idle,
+            "global_max_idle_timeout_minutes": global_max,
         }
 
 @app.get("/api/v1/auth/sessions")
@@ -675,20 +787,48 @@ async def revoke_other_sessions(
 @app.get("/api/v1/iam/users")
 async def list_users(session: Dict[str, Any] = Depends(get_current_user_session)):
     """Returns list of users from PostgreSQL with tenancy and role info."""
+    if not (check_permission(session, "users.read") or check_permission(session, "users.manage")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Missing required permission 'users.read'."
+        )
+
     pool = get_db_pool()
+    is_admin = bool(session.get("is_superadmin")) or check_permission(session, "users.manage")
+
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT u.id, u.email, u.full_name, u.status, u.is_superadmin, u.role_id,
-                   r.name as role_name, u.organization_id, o.legal_name as organization_name,
-                   u.branch_id, b.name as branch_name, b.code as branch_code,
-                   u.department, u.allowed_cidrs, u.date_of_birth, u.age,
-                   u.guardian_name, u.guardian_email, u.created_at, u.updated_at
-            FROM users u
-            LEFT JOIN roles r ON u.role_id = r.id
-            LEFT JOIN organizations o ON u.organization_id = o.id
-            LEFT JOIN branches b ON u.branch_id = b.id
-            ORDER BY u.created_at DESC
-        """)
+        if is_admin:
+            rows = await conn.fetch("""
+                SELECT u.id, u.email, u.full_name, u.status, u.is_superadmin, u.role_id,
+                       r.name as role_name, u.organization_id, o.legal_name as organization_name,
+                       u.branch_id, b.name as branch_name, b.code as branch_code,
+                       u.department, u.allowed_cidrs, u.date_of_birth, u.age,
+                       u.guardian_name, u.guardian_email, u.created_at, u.updated_at
+                FROM users u
+                LEFT JOIN roles r ON u.role_id = r.id
+                LEFT JOIN organizations o ON u.organization_id = o.id
+                LEFT JOIN branches b ON u.branch_id = b.id
+                ORDER BY u.created_at DESC
+            """)
+        else:
+            # Standard user: only return their own user record so profile modals still work without leaking user directory
+            try:
+                curr_uid = uuid.UUID(str(session.get("user_id")))
+            except Exception:
+                curr_uid = None
+            rows = await conn.fetch("""
+                SELECT u.id, u.email, u.full_name, u.status, u.is_superadmin, u.role_id,
+                       r.name as role_name, u.organization_id, o.legal_name as organization_name,
+                       u.branch_id, b.name as branch_name, b.code as branch_code,
+                       u.department, u.allowed_cidrs, u.date_of_birth, u.age,
+                       u.guardian_name, u.guardian_email, u.created_at, u.updated_at
+                FROM users u
+                LEFT JOIN roles r ON u.role_id = r.id
+                LEFT JOIN organizations o ON u.organization_id = o.id
+                LEFT JOIN branches b ON u.branch_id = b.id
+                WHERE u.id = $1
+                ORDER BY u.created_at DESC
+            """, curr_uid)
         
         users_list = []
         for r in rows:
@@ -723,6 +863,7 @@ async def create_user(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Provisions a new identity directly in PostgreSQL with a bcrypt password."""
+    require_permission(session, "users.manage")
     pool = get_db_pool()
     clean_email = req.email.strip().lower()
     
@@ -803,38 +944,68 @@ async def update_user(
         u_id = uuid.UUID(user_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid user UUID.")
+
+    is_superadmin = bool(session.get("is_superadmin"))
+    can_manage = check_permission(session, "users.manage")
+    is_self = str(session.get("user_id")) == str(u_id)
+
+    if not (is_superadmin or can_manage or is_self):
+        raise HTTPException(status_code=403, detail="Access denied: Cannot update other users.")
         
     async with pool.acquire() as conn:
         existing = await conn.fetchrow("SELECT * FROM users WHERE id = $1", u_id)
         if not existing:
             raise HTTPException(status_code=404, detail="User not found.")
+
+        # Validate idle_timeout_minutes against corporate security policy ceiling
+        policies = await get_system_security_policies()
+        global_max = int(policies.get("global_max_idle_timeout_minutes", 30))
+
+        if "idle_timeout_minutes" in req.model_fields_set:
+            if req.idle_timeout_minutes is not None and req.idle_timeout_minutes > global_max:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Inactivity timeout cannot exceed corporate security ceiling of {global_max} minutes."
+                )
+            new_idle = req.idle_timeout_minutes if (req.idle_timeout_minutes and req.idle_timeout_minutes > 0) else None
+        else:
+            new_idle = existing["idle_timeout_minutes"]
             
-        role_id = req.role_id or existing["role_id"]
-        if req.role:
-            matched_role = await conn.fetchval("SELECT id FROM roles WHERE LOWER(name) = LOWER($1)", req.role)
-            if matched_role:
-                role_id = matched_role
-                
-        is_super = req.is_superadmin if req.is_superadmin is not None else existing["is_superadmin"]
+        # CRITICAL: If not superadmin, forbid/ignore changes to is_superadmin, role_id, role, status, and allowed_cidrs
+        if not is_superadmin:
+            is_super = bool(existing["is_superadmin"])
+            role_id = existing["role_id"]
+            status_val = existing["status"]
+            cidrs = existing["allowed_cidrs"]
+        else:
+            role_id = req.role_id or existing["role_id"]
+            if req.role:
+                matched_role = await conn.fetchval("SELECT id FROM roles WHERE LOWER(name) = LOWER($1)", req.role)
+                if matched_role:
+                    role_id = matched_role
+            is_super = req.is_superadmin if req.is_superadmin is not None else bool(existing["is_superadmin"])
+            status_val = req.status or existing["status"]
+            cidrs = req.allowed_cidrs or existing["allowed_cidrs"]
         
         await conn.execute("""
             UPDATE users SET
                 full_name = COALESCE($2, full_name),
                 email = COALESCE($3, email),
-                status = COALESCE($4, status),
+                status = $4,
                 is_superadmin = $5,
                 role_id = $6,
                 department = COALESCE($7, department),
-                allowed_cidrs = COALESCE($8, allowed_cidrs),
+                allowed_cidrs = $8,
                 date_of_birth = COALESCE($9, date_of_birth),
                 age = COALESCE($10, age),
                 guardian_name = COALESCE($11, guardian_name),
                 guardian_email = COALESCE($12, guardian_email),
+                idle_timeout_minutes = $13,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = $1
-        """, u_id, req.full_name, req.email, req.status, is_super, role_id,
-           req.department, req.allowed_cidrs, req.date_of_birth, req.age,
-           req.guardian_name, req.guardian_email)
+        """, u_id, req.full_name, req.email, status_val, is_super, role_id,
+           req.department, cidrs, req.date_of_birth, req.age,
+           req.guardian_name, req.guardian_email, new_idle)
            
         return {"status": "success", "message": "User updated successfully."}
 
@@ -850,6 +1021,13 @@ async def reset_user_password(
         u_id = uuid.UUID(user_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid user UUID.")
+
+    is_superadmin = bool(session.get("is_superadmin"))
+    can_manage = check_permission(session, "users.manage")
+    is_self = str(session.get("user_id")) == str(u_id)
+
+    if not (is_superadmin or can_manage or is_self):
+        raise HTTPException(status_code=403, detail="Access denied: Cannot reset password for this user.")
         
     complexity_err = validate_password_complexity(req.password)
     if complexity_err:
@@ -857,6 +1035,11 @@ async def reset_user_password(
         
     hashed_pwd = hash_password(req.password)
     async with pool.acquire() as conn:
+        if not is_superadmin and not is_self and can_manage:
+            target_is_super = await conn.fetchval("SELECT is_superadmin FROM users WHERE id = $1", u_id)
+            if target_is_super:
+                raise HTTPException(status_code=403, detail="Cannot reset password of a Superadmin.")
+
         updated = await conn.execute(
             "UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
             hashed_pwd, u_id
@@ -872,6 +1055,7 @@ async def delete_user(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Deletes user from PostgreSQL."""
+    require_permission(session, "users.manage")
     pool = get_db_pool()
     try:
         u_id = uuid.UUID(user_id)
@@ -892,6 +1076,11 @@ async def delete_user(
 @app.get("/api/v1/iam/roles")
 async def list_roles(session: Dict[str, Any] = Depends(get_current_user_session)):
     """Lists roles and permissions matrix from PostgreSQL."""
+    if not (check_permission(session, "roles.read") or check_permission(session, "users.read")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Missing required permission 'roles.read'."
+        )
     pool = get_db_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
@@ -921,6 +1110,7 @@ async def create_role(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Creates a custom security role in PostgreSQL."""
+    require_permission(session, "roles.manage")
     pool = get_db_pool()
     clean_name = req.name.strip()
     if not clean_name:
@@ -963,6 +1153,7 @@ async def update_role(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Dynamically updates role permissions and menu_access in PostgreSQL."""
+    require_permission(session, "roles.manage")
     pool = get_db_pool()
     async with pool.acquire() as conn:
         existing = await conn.fetchrow("SELECT * FROM roles WHERE id = $1", role_id)
@@ -1005,6 +1196,7 @@ async def delete_role(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Deletes custom role from PostgreSQL (system roles are protected)."""
+    require_permission(session, "roles.manage")
     pool = get_db_pool()
     async with pool.acquire() as conn:
         role = await conn.fetchrow("SELECT is_system FROM roles WHERE id = $1", role_id)
@@ -1027,6 +1219,7 @@ async def delete_role(
 @app.get("/api/v1/iam/api-keys")
 async def list_api_keys(session: Dict[str, Any] = Depends(get_current_user_session)):
     """Lists persistent API keys from PostgreSQL."""
+    require_permission(session, "hardware.manage")
     keys = await APIKeyEngine.list_api_keys()
     return {"api_keys": keys}
 
@@ -1036,6 +1229,7 @@ async def create_api_key(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Creates a new API key in PostgreSQL and populates Redis cache."""
+    require_permission(session, "hardware.manage")
     created = await APIKeyEngine.create_api_key(
         owner=req.owner,
         role=req.role or "service_daemon",
@@ -1050,6 +1244,7 @@ async def revoke_api_key(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Revokes API key from PostgreSQL and purges Redis cache."""
+    require_permission(session, "hardware.manage")
     success = await APIKeyEngine.revoke_api_key(key_id)
     if not success:
         raise HTTPException(status_code=404, detail="API key not found.")
@@ -1117,6 +1312,7 @@ async def update_organization(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Updates organization legal name, Qatar CR/Tax ID, currency, and timezone."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     try:
         o_uuid = uuid.UUID(org_id)
@@ -1151,6 +1347,7 @@ async def create_branch(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Creates a new operating branch in PostgreSQL."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     async with pool.acquire() as conn:
         org_uuid = (
@@ -1180,6 +1377,7 @@ async def update_branch(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Updates an operating branch and its CIDR IP allowlist."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     try:
         b_uuid = uuid.UUID(branch_id)
@@ -1201,6 +1399,7 @@ async def delete_branch(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Deletes an operating branch if more than 1 branch exists."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     try:
         b_uuid = uuid.UUID(branch_id)
@@ -1213,6 +1412,52 @@ async def delete_branch(
             raise HTTPException(status_code=400, detail="Cannot delete the primary operating branch.")
         await conn.execute("DELETE FROM branches WHERE id = $1", b_uuid)
         return {"status": "success", "deleted_id": str(b_uuid)}
+
+@app.get("/api/v1/settings/security-policies")
+async def get_security_policies_setting(session: Dict[str, Any] = Depends(get_current_user_session)):
+    """Fetches system security policies."""
+    policies = await get_system_security_policies()
+    return policies
+
+@app.put("/api/v1/settings/security-policies")
+async def update_security_policies_setting(
+    payload: SecurityPolicyPayload,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Adjusts system security policies. Superadmin only."""
+    if not session.get("is_superadmin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Superadmin privileges required to modify security policies."
+        )
+
+    if payload.global_max_idle_timeout_minutes < 1:
+        raise HTTPException(status_code=400, detail="Global maximum idle timeout must be at least 1 minute.")
+
+    policies = {
+        "global_max_idle_timeout_minutes": payload.global_max_idle_timeout_minutes,
+        "default_idle_timeout_minutes": payload.default_idle_timeout_minutes or 15
+    }
+
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO system_metadata (key, value, updated_at)
+            VALUES ('cfg:security_policies', $1, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET
+                value = EXCLUDED.value,
+                updated_at = CURRENT_TIMESTAMP;
+        """, json.dumps(policies))
+
+    # Invalidate / update Redis cache
+    redis = get_redis_client()
+    if redis:
+        try:
+            await redis.set("cache:security_policies", json.dumps(policies), ex=300)
+        except Exception:
+            pass
+
+    return {"status": "success", "policies": policies}
 
 @app.get("/api/v1/settings/{config_key}")
 async def get_system_setting(
@@ -1240,6 +1485,7 @@ async def save_system_setting(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Persists a JSON configuration setting into PostgreSQL system_metadata."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     clean_key = f"cfg:{config_key.strip().lower()}"
     async with pool.acquire() as conn:
@@ -1334,8 +1580,18 @@ async def get_business_details():
     return VERIFIED_BUSINESS_DETAILS
 
 @app.post("/api/v1/compliance/gdpr/delete-request")
-async def request_data_deletion(req: GDPRDeletionRequest):
+async def request_data_deletion(
+    req: GDPRDeletionRequest,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
     """GDPR Article 17: Right-to-be-Forgotten / Data Purge."""
+    caller_id = str(session.get("user_id") or session.get("id") or "")
+    if not session.get("is_superadmin") and caller_id != str(req.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Cannot submit GDPR deletion request for another user."
+        )
+
     if not req.confirm_purge:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1367,8 +1623,18 @@ async def request_data_deletion(req: GDPRDeletionRequest):
     return record
 
 @app.post("/api/v1/compliance/gdpr/cancel-request")
-async def cancel_data_deletion(req: GDPRCancelDeletionRequest):
+async def cancel_data_deletion(
+    req: GDPRCancelDeletionRequest,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
     """Cancels an active pending data deletion request within grace period."""
+    caller_id = str(session.get("user_id") or session.get("id") or "")
+    if not session.get("is_superadmin") and caller_id != str(req.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Cannot cancel GDPR deletion request for another user."
+        )
+
     if req.user_id in _gdpr_deletion_registry:
         del _gdpr_deletion_registry[req.user_id]
         return {
@@ -1381,8 +1647,18 @@ async def cancel_data_deletion(req: GDPRCancelDeletionRequest):
     }
 
 @app.get("/api/v1/compliance/gdpr/status/{user_id}")
-async def get_deletion_status(user_id: str):
+async def get_deletion_status(
+    user_id: str,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
     """Checks the GDPR right-to-be-forgotten status of a given user."""
+    caller_id = str(session.get("user_id") or session.get("id") or "")
+    if not session.get("is_superadmin") and caller_id != str(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Cannot view GDPR deletion status for another user."
+        )
+
     if user_id in _gdpr_deletion_registry:
         return _gdpr_deletion_registry[user_id]
     return {

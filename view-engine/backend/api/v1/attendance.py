@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
 from pydantic import BaseModel
 from backend.core.database import get_db_pool
-from backend.core.dependencies import get_current_user_session, get_client_ip
+from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["Attendance Logs"])
 
@@ -55,14 +55,18 @@ async def list_attendance_logs(
     q: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     status_filter: Optional[str] = Query(None),
+    limit: int = Query(500, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
     session: Dict[str, Any] = Depends(get_current_user_session),
 ):
     """List all attendance logs with relational employee details and PostgreSQL WHERE filtering."""
+    require_permission(session, "attendance.read")
     pool = get_db_pool()
     org_id = session.get("organization_id")
 
     query = """
-        SELECT a.id, a.code, a.employee_id, a.employee_name, a.department,
+        SELECT count(*) OVER() as full_count,
+               a.id, a.code, a.employee_id, a.employee_name, a.department,
                a.terminal_id, a.check_in, a.check_out, a.duration_hours,
                a.status, a.notes, a.machine_ip, a.ingestion_source,
                a.ingestion_time, a.last_modified_by, a.organization_id,
@@ -100,12 +104,18 @@ async def list_attendance_logs(
         params.append(status_filter)
         idx += 1
 
-    query += " ORDER BY a.check_in DESC;"
+    query += f" ORDER BY a.check_in DESC LIMIT ${idx} OFFSET ${idx + 1};"
+    params.extend([limit, offset])
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *params)
-        records = [serialize_row(dict(r)) for r in rows]
-        return {"records": records, "total": len(records)}
+        total_count = int(rows[0]["full_count"]) if rows else 0
+        records = []
+        for r in rows:
+            d = dict(r)
+            d.pop("full_count", None)
+            records.append(serialize_row(d))
+        return {"records": records, "total": total_count, "limit": limit, "offset": offset}
 
 @router.post("")
 async def create_attendance_log(
@@ -114,6 +124,7 @@ async def create_attendance_log(
     session: Dict[str, Any] = Depends(get_current_user_session),
 ):
     """Create an attendance log linked to a strict employee foreign key."""
+    require_permission(session, "attendance.write")
     pool = get_db_pool()
     try:
         emp_uuid = uuid.UUID(payload.employee_id)
@@ -184,6 +195,7 @@ async def update_attendance_log(
     session: Dict[str, Any] = Depends(get_current_user_session),
 ):
     """Update attendance log attributes or check-out time."""
+    require_permission(session, "attendance.write")
     pool = get_db_pool()
     try:
         l_uuid = uuid.UUID(log_id)
@@ -237,6 +249,7 @@ async def delete_attendance_log(
     session: Dict[str, Any] = Depends(get_current_user_session),
 ):
     """Delete an attendance log."""
+    require_permission(session, "attendance.delete")
     pool = get_db_pool()
     try:
         l_uuid = uuid.UUID(log_id)

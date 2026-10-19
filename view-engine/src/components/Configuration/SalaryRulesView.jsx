@@ -20,7 +20,11 @@ import {
     Info,
     Calendar,
     FileText,
-    Paperclip
+    Paperclip,
+    ArrowLeft,
+    ChevronLeft,
+    ChevronRight,
+    Save
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useAccessControl } from '../../context/AccessControlContext';
@@ -55,8 +59,12 @@ export function SalaryRulesView() {
     const [isSaving, setIsSaving] = useState(false);
     const [feedback, setFeedback] = useState(null);
 
-    // Modal states for Contract Salary Rules (Tab 1)
-    const [isSalaryRuleModalOpen, setIsSalaryRuleModalOpen] = useState(false);
+    // In-place Form State
+    const [formMode, setFormMode] = useState(null); // null | 'salary_rule' | 'grade' | 'preset' | 'leave_type'
+    const [selectedRecordId, setSelectedRecordId] = useState(null);
+    const [isFormDirty, setIsFormDirty] = useState(false);
+
+    // Form states for Contract Salary Rules (Tab 1)
     const [salaryRuleForm, setSalaryRuleForm] = useState({
         id: '',
         name: '',
@@ -70,8 +78,7 @@ export function SalaryRulesView() {
         grade_rates: {},
     });
 
-    // Modal states for Employee Grades (Tab 1b)
-    const [isGradeModalOpen, setIsGradeModalOpen] = useState(false);
+    // Form states for Employee Grades (Tab 1b)
     const [gradeForm, setGradeForm] = useState({
         id: '',
         code: '',
@@ -81,8 +88,7 @@ export function SalaryRulesView() {
         is_active: true,
     });
 
-    // Modal states for Task Rate Preset Rules (Tabs 2 - 5)
-    const [isPresetModalOpen, setIsPresetModalOpen] = useState(false);
+    // Form states for Task Rate Preset Rules (Tabs 2 - 5)
     const [isEditingPreset, setIsEditingPreset] = useState(false);
     const [presetForm, setPresetForm] = useState({
         id: '',
@@ -97,8 +103,7 @@ export function SalaryRulesView() {
         is_active: true,
     });
 
-    // Modal states for Leave Types & Policies (Tab 6)
-    const [isLeaveTypeModalOpen, setIsLeaveTypeModalOpen] = useState(false);
+    // Form states for Leave Types & Policies (Tab 6)
     const [leaveTypeForm, setLeaveTypeForm] = useState({
         id: '',
         name: '',
@@ -178,7 +183,9 @@ export function SalaryRulesView() {
             is_active: true,
             grade_rates: initGrades,
         });
-        setIsSalaryRuleModalOpen(true);
+        setSelectedRecordId(null);
+        setIsFormDirty(false);
+        setFormMode('salary_rule');
     };
 
     const handleOpenEditSalaryRule = (rule) => {
@@ -200,11 +207,13 @@ export function SalaryRulesView() {
             is_active: rule.is_active !== false,
             grade_rates: initGrades,
         });
-        setIsSalaryRuleModalOpen(true);
+        setSelectedRecordId(rule.id);
+        setIsFormDirty(false);
+        setFormMode('salary_rule');
     };
 
     const handleSubmitSalaryRule = async (e) => {
-        e.preventDefault();
+        if (e && e.preventDefault) e.preventDefault();
         if (!salaryRuleForm.id.trim() || !salaryRuleForm.name.trim()) {
             showToast('Rule Code and Name are required.', 'error');
             return;
@@ -231,7 +240,8 @@ export function SalaryRulesView() {
             }
 
             showToast(`Salary Rule "${salaryRuleForm.name}" saved successfully.`);
-            setIsSalaryRuleModalOpen(false);
+            setSelectedRecordId(cleanId);
+            setIsFormDirty(false);
             await fetchAllData();
         } catch (err) {
             showToast(err.message, 'error');
@@ -252,7 +262,9 @@ export function SalaryRulesView() {
             description: '',
             is_active: true,
         });
-        setIsGradeModalOpen(true);
+        setSelectedRecordId(null);
+        setIsFormDirty(false);
+        setFormMode('grade');
     };
 
     const handleOpenEditGrade = (grade) => {
@@ -264,11 +276,13 @@ export function SalaryRulesView() {
             description: grade.description || '',
             is_active: grade.is_active !== false,
         });
-        setIsGradeModalOpen(true);
+        setSelectedRecordId(grade.id);
+        setIsFormDirty(false);
+        setFormMode('grade');
     };
 
     const handleSubmitGrade = async (e) => {
-        e.preventDefault();
+        if (e && e.preventDefault) e.preventDefault();
         if (!gradeForm.code.trim() || !gradeForm.name.trim()) {
             showToast('Grade Code and Name are required.', 'error');
             return;
@@ -293,7 +307,8 @@ export function SalaryRulesView() {
             }
 
             showToast(`Grade "${gradeForm.name}" saved successfully.`);
-            setIsGradeModalOpen(false);
+            setSelectedRecordId(cleanId);
+            setIsFormDirty(false);
             await fetchAllData();
         } catch (err) {
             showToast(err.message, 'error');
@@ -389,7 +404,9 @@ export function SalaryRulesView() {
             subtype: defaultSubtype,
             is_active: true,
         });
-        setIsPresetModalOpen(true);
+        setSelectedRecordId(null);
+        setIsFormDirty(false);
+        setFormMode('preset');
     };
 
     const handleOpenEditPreset = (rule) => {
@@ -417,10 +434,13 @@ export function SalaryRulesView() {
             subtype: rule.subtype || 'general',
             is_active: rule.is_active !== false,
         });
-        setIsPresetModalOpen(true);
+        setSelectedRecordId(rule.id);
+        setIsFormDirty(false);
+        setFormMode('preset');
     };
 
     const handleToggleBenefitInBasis = (ruleCode) => {
+        setIsFormDirty(true);
         setPresetForm((prev) => {
             const current = prev.included_benefit_rules || [];
             if (current.includes(ruleCode)) {
@@ -432,7 +452,7 @@ export function SalaryRulesView() {
     };
 
     const handleSubmitPreset = async (e) => {
-        e.preventDefault();
+        if (e && e.preventDefault) e.preventDefault();
         if (!presetForm.id.trim() || !presetForm.name.trim()) {
             showToast('Rule Code and Name are required.', 'error');
             return;
@@ -458,7 +478,8 @@ export function SalaryRulesView() {
             }
 
             showToast(`Preset "${presetForm.name}" saved successfully.`);
-            setIsPresetModalOpen(false);
+            setSelectedRecordId(cleanId);
+            setIsFormDirty(false);
             await fetchAllData();
         } catch (err) {
             showToast(err.message, 'error');
@@ -499,7 +520,9 @@ export function SalaryRulesView() {
             requires_attachment: false,
             is_active: true,
         });
-        setIsLeaveTypeModalOpen(true);
+        setSelectedRecordId(null);
+        setIsFormDirty(false);
+        setFormMode('leave_type');
     };
 
     const handleOpenEditLeaveType = (lt) => {
@@ -523,10 +546,13 @@ export function SalaryRulesView() {
             requires_attachment: Boolean(lt.requires_attachment),
             is_active: lt.is_active !== false,
         });
-        setIsLeaveTypeModalOpen(true);
+        setSelectedRecordId(lt.id);
+        setIsFormDirty(false);
+        setFormMode('leave_type');
     };
 
     const handleToggleLeaveDeductionRule = (ruleCode) => {
+        setIsFormDirty(true);
         setLeaveTypeForm((prev) => {
             const current = prev.deduction_basis_rules || [];
             if (current.includes(ruleCode)) {
@@ -538,7 +564,7 @@ export function SalaryRulesView() {
     };
 
     const handleSubmitLeaveType = async (e) => {
-        e.preventDefault();
+        if (e && e.preventDefault) e.preventDefault();
         if (!leaveTypeForm.id.trim() || !leaveTypeForm.name.trim()) {
             showToast('Leave policy ID and Name are required.', 'error');
             return;
@@ -564,13 +590,82 @@ export function SalaryRulesView() {
             }
 
             showToast(`Leave policy "${leaveTypeForm.name}" saved successfully.`);
-            setIsLeaveTypeModalOpen(false);
+            setSelectedRecordId(cleanId);
+            setIsFormDirty(false);
             await fetchAllData();
         } catch (err) {
             showToast(err.message, 'error');
         } finally {
             setIsSaving(false);
         }
+    };
+
+    const handleDiscardForm = () => {
+        if (isFormDirty) {
+            if (!window.confirm('Discard unsaved changes?')) return;
+        }
+        setFormMode(null);
+        setSelectedRecordId(null);
+        setIsFormDirty(false);
+    };
+
+    const activeRecordList = useMemo(() => {
+        if (formMode === 'salary_rule') return salaryRules;
+        if (formMode === 'grade') return employeeGrades;
+        if (formMode === 'preset') {
+            const type = presetForm.entry_type || activeTab;
+            return taskRules.filter((r) => r.entry_type === type);
+        }
+        if (formMode === 'leave_type') return leaveTypes;
+        return [];
+    }, [formMode, salaryRules, employeeGrades, taskRules, presetForm.entry_type, activeTab, leaveTypes]);
+
+    const currentRecordIndex = useMemo(() => {
+        if (!selectedRecordId) return -1;
+        return activeRecordList.findIndex((r) => r.id === selectedRecordId);
+    }, [activeRecordList, selectedRecordId]);
+
+    const handleStepRecord = (direction) => {
+        if (isFormDirty) {
+            if (!window.confirm('You have unsaved changes. Discard and switch record?')) return;
+        }
+        const nextIdx = currentRecordIndex + direction;
+        if (nextIdx >= 0 && nextIdx < activeRecordList.length) {
+            const nextRecord = activeRecordList[nextIdx];
+            if (formMode === 'salary_rule') handleOpenEditSalaryRule(nextRecord);
+            else if (formMode === 'grade') handleOpenEditGrade(nextRecord);
+            else if (formMode === 'preset') handleOpenEditPreset(nextRecord);
+            else if (formMode === 'leave_type') handleOpenEditLeaveType(nextRecord);
+        }
+    };
+
+    const formCategoryLabel = useMemo(() => {
+        if (formMode === 'salary_rule') return 'Contract Salary Rules';
+        if (formMode === 'grade') return 'Employee Grades';
+        if (formMode === 'preset') {
+            if (presetForm.entry_type === 'overtime') return 'Overtime Rules';
+            if (presetForm.entry_type === 'task_benefit') return 'Task Benefits';
+            if (presetForm.entry_type === 'bonus') return 'Bonuses & Incentives';
+            if (presetForm.entry_type === 'deduction') return 'Disciplinary Deductions';
+            return 'Rule Presets';
+        }
+        if (formMode === 'leave_type') return 'Leave Policies';
+        return 'Configuration';
+    }, [formMode, presetForm.entry_type]);
+
+    const currentRecordTitle = useMemo(() => {
+        if (formMode === 'salary_rule') return salaryRuleForm.name || salaryRuleForm.id || 'New Salary Rule';
+        if (formMode === 'grade') return gradeForm.name || gradeForm.code || 'New Employee Grade';
+        if (formMode === 'preset') return presetForm.name || presetForm.id || 'New Preset';
+        if (formMode === 'leave_type') return leaveTypeForm.name || leaveTypeForm.id || 'New Leave Policy';
+        return '';
+    }, [formMode, salaryRuleForm.name, salaryRuleForm.id, gradeForm.name, gradeForm.code, presetForm.name, presetForm.id, leaveTypeForm.name, leaveTypeForm.id]);
+
+    const handleSaveCurrentForm = (e) => {
+        if (formMode === 'salary_rule') handleSubmitSalaryRule(e);
+        else if (formMode === 'preset') handleSubmitPreset(e);
+        else if (formMode === 'leave_type') handleSubmitLeaveType(e);
+        else if (formMode === 'grade') handleSubmitGrade(e);
     };
 
     const handleDeleteLeaveType = async (ltId, ltName) => {
@@ -597,6 +692,651 @@ export function SalaryRulesView() {
         if (activeTab === 'salary_rules' || activeTab === 'leave_types') return [];
         return taskRules.filter((r) => r.entry_type === activeTab);
     }, [taskRules, activeTab]);
+
+    if (formMode !== null) {
+        return (
+            <div className="max-w-5xl mx-auto space-y-6 animate-fadeIn pb-16">
+                {/* Top Breadcrumb & Record Pager Bar */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs">
+                    <div className="flex items-center gap-3">
+                        <button
+                            type="button"
+                            onClick={handleDiscardForm}
+                            className="p-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition cursor-pointer"
+                            title="Back to Rules List"
+                        >
+                            <ArrowLeft className="w-4 h-4" />
+                        </button>
+                        <div>
+                            <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                                <span>System Configuration</span>
+                                <span>/</span>
+                                <span>{formCategoryLabel}</span>
+                                <span>/</span>
+                                <span className="text-slate-900 dark:text-white font-medium truncate max-w-xs">
+                                    {currentRecordTitle}
+                                </span>
+                            </div>
+                            <h2 className="text-base font-bold text-slate-900 dark:text-white mt-0.5">
+                                {selectedRecordId ? `Edit ${formCategoryLabel}` : `New ${formCategoryLabel}`}
+                            </h2>
+                        </div>
+                    </div>
+
+                    {/* Right Actions: Record Pager + Discard + Sticky Save */}
+                    <div className="flex items-center gap-3 self-end sm:self-auto">
+                        {activeRecordList.length > 0 && selectedRecordId && (
+                            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
+                                <button
+                                    type="button"
+                                    disabled={currentRecordIndex <= 0}
+                                    onClick={() => handleStepRecord(-1)}
+                                    className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                                    title="Previous record"
+                                >
+                                    <ChevronLeft className="w-3.5 h-3.5" />
+                                </button>
+                                <span className="text-[11px] font-mono px-1">
+                                    {currentRecordIndex + 1} of {activeRecordList.length}
+                                </span>
+                                <button
+                                    type="button"
+                                    disabled={currentRecordIndex >= activeRecordList.length - 1}
+                                    onClick={() => handleStepRecord(1)}
+                                    className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                                    title="Next record"
+                                >
+                                    <ChevronRight className="w-3.5 h-3.5" />
+                                </button>
+                            </div>
+                        )}
+
+                        <button
+                            type="button"
+                            onClick={handleDiscardForm}
+                            className="px-3 py-2 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                        >
+                            Discard
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={handleSaveCurrentForm}
+                            disabled={isSaving || (selectedRecordId && !isFormDirty)}
+                            className={`px-4 py-2 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition cursor-pointer ${
+                                selectedRecordId && !isFormDirty
+                                    ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-600 border border-slate-200 dark:border-slate-700 cursor-not-allowed'
+                                    : 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs'
+                            }`}
+                        >
+                            {isSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                            <span>Save Changes</span>
+                        </button>
+                    </div>
+                </div>
+
+                {/* Form Panels */}
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xs">
+                    {/* FORM: CONTRACT SALARY RULE */}
+                    {formMode === 'salary_rule' && (
+                        <form onSubmit={handleSubmitSalaryRule} onChange={() => setIsFormDirty(true)} className="space-y-4 text-xs">
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                        Rule Code *
+                                    </label>
+                                    <input
+                                        type="text"
+                                        required
+                                        disabled={Boolean(selectedRecordId)}
+                                        placeholder="e.g. ALW_SITE_OFFSHORE"
+                                        value={salaryRuleForm.id}
+                                        onChange={(e) => setSalaryRuleForm({ ...salaryRuleForm, id: e.target.value.toUpperCase() })}
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono disabled:opacity-60"
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                        Category *
+                                    </label>
+                                    <select
+                                        value={salaryRuleForm.category}
+                                        onChange={(e) => setSalaryRuleForm({ ...salaryRuleForm, category: e.target.value })}
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                    >
+                                        <option value="allowance">Allowance (Contract Addition)</option>
+                                        <option value="deduction">Deduction (Statutory / Contract)</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                    Allowance Name *
+                                </label>
+                                <input
+                                    type="text"
+                                    required
+                                    placeholder="e.g. Offshore Industrial Hardship Allowance"
+                                    value={salaryRuleForm.name}
+                                    onChange={(e) => setSalaryRuleForm({ ...salaryRuleForm, name: e.target.value })}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                        Calculation Type
+                                    </label>
+                                    <select
+                                        value={salaryRuleForm.calculation_type}
+                                        onChange={(e) => setSalaryRuleForm({ ...salaryRuleForm, calculation_type: e.target.value })}
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                    >
+                                        <option value="fixed_amount">Fixed Amount (QAR)</option>
+                                        <option value="percentage_of_base">Percentage of Base Salary (%)</option>
+                                        <option value="grade_based">Grade-Based Matrix (Per Employee Grade)</option>
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                        {salaryRuleForm.calculation_type === 'percentage_of_base'
+                                            ? 'Percentage Rate (%)'
+                                            : salaryRuleForm.calculation_type === 'grade_based'
+                                                ? 'Fallback Default (QAR)'
+                                                : 'Default Amount (QAR)'}
+                                    </label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        required
+                                        value={
+                                            salaryRuleForm.calculation_type === 'percentage_of_base'
+                                                ? salaryRuleForm.percentage_rate
+                                                : salaryRuleForm.default_amount
+                                        }
+                                        onChange={(e) =>
+                                            setSalaryRuleForm({
+                                                ...salaryRuleForm,
+                                                [salaryRuleForm.calculation_type === 'percentage_of_base'
+                                                    ? 'percentage_rate'
+                                                    : 'default_amount']: e.target.value,
+                                            })
+                                        }
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Grade-Based Allowance Matrix Inputs */}
+                            {salaryRuleForm.calculation_type === 'grade_based' && (
+                                <div className="p-3.5 bg-violet-50/70 dark:bg-violet-950/30 rounded-xl border border-violet-200 dark:border-violet-900/60 space-y-2.5">
+                                    <div className="flex items-center justify-between">
+                                        <span className="font-bold text-violet-900 dark:text-violet-200 text-xs">
+                                            Per-Grade Allowance Rates (QAR)
+                                        </span>
+                                        <span className="text-[10px] text-violet-700 dark:text-violet-300">
+                                            Auto-resolved by Employee Grade
+                                        </span>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {employeeGrades.map((g) => (
+                                            <div key={g.id} className="flex items-center justify-between gap-2 bg-white dark:bg-slate-900 p-2 rounded-lg border border-violet-100 dark:border-violet-900/40">
+                                                <div className="min-w-0">
+                                                    <div className="font-bold text-[11px] text-slate-800 dark:text-slate-200 truncate">
+                                                        {g.code}
+                                                    </div>
+                                                    <div className="text-[9px] text-slate-400 truncate">
+                                                        {g.name}
+                                                    </div>
+                                                </div>
+                                                <div className="w-20 shrink-0 flex items-center gap-1 font-mono">
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        min="0"
+                                                        placeholder="0.00"
+                                                        value={salaryRuleForm.grade_rates?.[g.id] ?? ''}
+                                                        onChange={(e) => {
+                                                            const val = parseFloat(e.target.value) || 0;
+                                                            setSalaryRuleForm({
+                                                                ...salaryRuleForm,
+                                                                grade_rates: {
+                                                                    ...salaryRuleForm.grade_rates,
+                                                                    [g.id]: val,
+                                                                },
+                                                            });
+                                                        }}
+                                                        className="w-full px-1.5 py-1 text-right text-xs rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                                    />
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            <div>
+                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                    Qatar WPS Banking Code
+                                </label>
+                                <select
+                                    value={salaryRuleForm.wps_code}
+                                    onChange={(e) => setSalaryRuleForm({ ...salaryRuleForm, wps_code: e.target.value })}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                >
+                                    {WPS_CODES.map((w) => (
+                                        <option key={w.code} value={w.code}>
+                                            {w.label}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </form>
+                    )}
+
+                    {/* FORM: TASK RATE PRESET */}
+                    {formMode === 'preset' && (
+                        <form onSubmit={handleSubmitPreset} onChange={() => setIsFormDirty(true)} className="space-y-4 text-xs">
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                        Preset Code *
+                                    </label>
+                                    <input
+                                        type="text"
+                                        required
+                                        disabled={Boolean(selectedRecordId)}
+                                        placeholder="e.g. OT_SPECIAL_135"
+                                        value={presetForm.id}
+                                        onChange={(e) => setPresetForm({ ...presetForm, id: e.target.value.toUpperCase() })}
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono disabled:opacity-50"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                        Calculation Mode
+                                    </label>
+                                    <select
+                                        value={presetForm.calculation_mode}
+                                        onChange={(e) => setPresetForm({ ...presetForm, calculation_mode: e.target.value })}
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
+                                    >
+                                        <option value="hourly_multiplier">Hourly Multiplier (Overtime: /240h)</option>
+                                        <option value="piece_rate">Piece-Rate (Per Task / Trip)</option>
+                                        <option value="daily_rate">Daily Rate (Absence / Fine: /30d)</option>
+                                        <option value="percentage_of_basis">Percentage of Basis (% of Salary)</option>
+                                        <option value="fixed_amount">Fixed Amount (QAR)</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                    Preset Title / Display Name *
+                                </label>
+                                <input
+                                    type="text"
+                                    required
+                                    placeholder="e.g. Hazardous Site Overnight Overtime (135%)"
+                                    value={presetForm.name}
+                                    onChange={(e) => setPresetForm({ ...presetForm, name: e.target.value })}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                        Unit Label (Display)
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={presetForm.unit_label}
+                                        onChange={(e) => setPresetForm({ ...presetForm, unit_label: e.target.value })}
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                    />
+                                </div>
+
+                                {presetForm.calculation_mode === 'hourly_multiplier' ||
+                                    presetForm.calculation_mode === 'daily_rate' ||
+                                    presetForm.calculation_mode === 'percentage_of_basis' ? (
+                                    <div>
+                                        <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                            Multiplier Ratio (%)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            step="1"
+                                            min="0"
+                                            value={presetForm.ot_multiplier_pct}
+                                            onChange={(e) => setPresetForm({ ...presetForm, ot_multiplier_pct: e.target.value })}
+                                            className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                                        />
+                                    </div>
+                                ) : (
+                                    <div>
+                                        <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                            Locked Unit Rate (QAR)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            step="0.5"
+                                            min="0"
+                                            value={presetForm.default_unit_rate}
+                                            onChange={(e) => setPresetForm({ ...presetForm, default_unit_rate: e.target.value })}
+                                            className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                                        />
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Subtype Dropdown */}
+                            <div>
+                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                    Category Subtype
+                                </label>
+                                <select
+                                    value={presetForm.subtype}
+                                    onChange={(e) => setPresetForm({ ...presetForm, subtype: e.target.value })}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                >
+                                    {presetForm.entry_type === 'overtime' && (
+                                        <>
+                                            <option value="overtime_basic">Overtime Basic Basis</option>
+                                            <option value="overtime_basic_housing">Overtime Basic + Housing Basis</option>
+                                        </>
+                                    )}
+                                    {presetForm.entry_type === 'task_benefit' && (
+                                        <>
+                                            <option value="trip_completion">Delivery / Transport Trip</option>
+                                            <option value="task_completion">Field Inspection / Site Task</option>
+                                        </>
+                                    )}
+                                    {presetForm.entry_type === 'bonus' && (
+                                        <>
+                                            <option value="performance_bonus">Performance Bonus</option>
+                                            <option value="safety_incentive">Zero-Incident Safety Incentive</option>
+                                            <option value="festival_bonus">Eid / Festival Bonus</option>
+                                            <option value="arrears_addition">Salary Arrears Addition</option>
+                                        </>
+                                    )}
+                                    {presetForm.entry_type === 'deduction' && (
+                                        <>
+                                            <option value="disciplinary_fine">Disciplinary Fine / Absence</option>
+                                            <option value="loan_installment">Company Loan Installment</option>
+                                            <option value="overpayment_recovery">Overpayment Recovery</option>
+                                            <option value="other_deduction">Other Deduction</option>
+                                        </>
+                                    )}
+                                </select>
+                            </div>
+
+                            {/* Benefits Included in Calculation Basis */}
+                            {(presetForm.calculation_mode === 'hourly_multiplier' ||
+                                presetForm.calculation_mode === 'daily_rate' ||
+                                presetForm.calculation_mode === 'percentage_of_basis') && (
+                                    <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                                        <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300 font-semibold">
+                                            <Layers className="w-3.5 h-3.5 text-blue-500" />
+                                            <span>Benefits Included in Calculation Basis</span>
+                                        </div>
+                                        <p className="text-[11px] text-slate-400">
+                                            Select which employee allowances are aggregated with Basic Salary to form the hourly/daily denominator.
+                                        </p>
+
+                                        <div className="space-y-1.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
+                                            <label className="flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-not-allowed opacity-90">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={true}
+                                                    disabled={true}
+                                                    className="w-3.5 h-3.5 rounded text-blue-600 accent-blue-600"
+                                                />
+                                                <span className="font-semibold">Basic Salary</span>
+                                                <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono">
+                                                    (Always Included)
+                                                </span>
+                                            </label>
+
+                                            {activeAllowanceRules.map((alw) => {
+                                                const isChecked = presetForm.included_benefit_rules.includes(alw.id);
+                                                return (
+                                                    <label
+                                                        key={alw.id}
+                                                        className="flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-pointer hover:text-blue-600 dark:hover:text-blue-400"
+                                                    >
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={isChecked}
+                                                            onChange={() => handleToggleBenefitInBasis(alw.id)}
+                                                            className="w-3.5 h-3.5 rounded text-blue-600 accent-blue-600 cursor-pointer"
+                                                        />
+                                                        <span className="font-medium">{alw.name}</span>
+                                                        <span className="text-[10px] text-slate-400 font-mono">
+                                                            ({alw.id})
+                                                        </span>
+                                                    </label>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+                        </form>
+                    )}
+
+                    {/* FORM: LEAVE TYPE & POLICY */}
+                    {formMode === 'leave_type' && (
+                        <form onSubmit={handleSubmitLeaveType} onChange={() => setIsFormDirty(true)} className="space-y-4 text-xs">
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                        Policy ID / Code *
+                                    </label>
+                                    <input
+                                        type="text"
+                                        required
+                                        disabled={Boolean(selectedRecordId)}
+                                        placeholder="e.g. LEAVE_STUDY"
+                                        value={leaveTypeForm.id}
+                                        onChange={(e) => setLeaveTypeForm({ ...leaveTypeForm, id: e.target.value.toUpperCase() })}
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono disabled:opacity-60"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                        Max Days / Year *
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        max="365"
+                                        required
+                                        value={leaveTypeForm.max_days_per_year}
+                                        onChange={(e) => setLeaveTypeForm({ ...leaveTypeForm, max_days_per_year: e.target.value })}
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                                    />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                    Leave Policy Title *
+                                </label>
+                                <input
+                                    type="text"
+                                    required
+                                    placeholder="e.g. Authorized Examination / Study Leave (Qatar Art. 83)"
+                                    value={leaveTypeForm.name}
+                                    onChange={(e) => setLeaveTypeForm({ ...leaveTypeForm, name: e.target.value })}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                        Salary Coverage Percentage
+                                    </label>
+                                    <select
+                                        value={leaveTypeForm.pay_percentage}
+                                        onChange={(e) => setLeaveTypeForm({ ...leaveTypeForm, pay_percentage: parseFloat(e.target.value) })}
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-semibold"
+                                    >
+                                        <option value={100.0}>100% — Fully Paid Leave</option>
+                                        <option value={50.0}>50% — Half-Pay Leave (Tier 2)</option>
+                                        <option value={0.0}>0% — Unpaid Leave / Full Deduction</option>
+                                    </select>
+                                </div>
+
+                                <div className="flex flex-col justify-end">
+                                    <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            checked={leaveTypeForm.requires_attachment}
+                                            onChange={(e) => setLeaveTypeForm({ ...leaveTypeForm, requires_attachment: e.target.checked })}
+                                            className="w-4 h-4 rounded text-purple-600 accent-purple-600 cursor-pointer"
+                                        />
+                                        <span className="font-semibold text-slate-700 dark:text-slate-300 text-xs">
+                                            Requires Proof / Attachment
+                                        </span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            {/* Deduction Basis Checkboxes (for Unpaid or Partial Pay Leaves) */}
+                            {leaveTypeForm.pay_percentage < 100.0 && (
+                                <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                                    <div className="flex items-center gap-1.5 text-rose-600 dark:text-rose-400 font-semibold">
+                                        <AlertOctagon className="w-3.5 h-3.5" />
+                                        <span>Allowances Deducted on Unpaid / Half-Pay Leave</span>
+                                    </div>
+                                    <p className="text-[11px] text-slate-400">
+                                        Select which contract allowances are included in the daily salary deduction formula alongside Basic Salary.
+                                    </p>
+
+                                    <div className="space-y-1.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
+                                        <label className="flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-not-allowed opacity-90">
+                                            <input
+                                                type="checkbox"
+                                                checked={true}
+                                                disabled={true}
+                                                className="w-3.5 h-3.5 rounded text-rose-600 accent-rose-600"
+                                            />
+                                            <span className="font-semibold">Basic Salary</span>
+                                            <span className="text-[10px] text-rose-600 dark:text-rose-400 font-mono">
+                                                (Always Deducted Pro-Rata)
+                                            </span>
+                                        </label>
+
+                                        {activeAllowanceRules.map((alw) => {
+                                            const isChecked = leaveTypeForm.deduction_basis_rules.includes(alw.id);
+                                            return (
+                                                <label
+                                                    key={alw.id}
+                                                    className="flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-pointer hover:text-rose-600 dark:hover:text-rose-400"
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={isChecked}
+                                                        onChange={() => handleToggleLeaveDeductionRule(alw.id)}
+                                                        className="w-3.5 h-3.5 rounded text-rose-600 accent-rose-600 cursor-pointer"
+                                                    />
+                                                    <span className="font-medium">{alw.name}</span>
+                                                    <span className="text-[10px] text-slate-400 font-mono">
+                                                        ({alw.id})
+                                                    </span>
+                                                </label>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+                        </form>
+                    )}
+
+                    {/* FORM: EMPLOYEE GRADE */}
+                    {formMode === 'grade' && (
+                        <form onSubmit={handleSubmitGrade} onChange={() => setIsFormDirty(true)} className="space-y-4 text-xs">
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                        Grade Code *
+                                    </label>
+                                    <input
+                                        type="text"
+                                        required
+                                        disabled={Boolean(selectedRecordId)}
+                                        placeholder="e.g. G1"
+                                        value={gradeForm.code}
+                                        onChange={(e) => setGradeForm({ ...gradeForm, code: e.target.value.toUpperCase() })}
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono font-bold disabled:opacity-60"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                        Rank Order (1 = Top) *
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        required
+                                        value={gradeForm.rank_order}
+                                        onChange={(e) => setGradeForm({ ...gradeForm, rank_order: parseInt(e.target.value, 10) || 1 })}
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                                    />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                    Grade Title / Name *
+                                </label>
+                                <input
+                                    type="text"
+                                    required
+                                    placeholder="e.g. Grade 1 — Executive & Senior Specialist"
+                                    value={gradeForm.name}
+                                    onChange={(e) => setGradeForm({ ...gradeForm, name: e.target.value })}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                                    Description & Target Job Roles
+                                </label>
+                                <textarea
+                                    rows="3"
+                                    placeholder="e.g. Senior management, lead engineers, project directors"
+                                    value={gradeForm.description}
+                                    onChange={(e) => setGradeForm({ ...gradeForm, description: e.target.value })}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                />
+                            </div>
+
+                            <div className="flex items-center gap-2 pt-1">
+                                <input
+                                    type="checkbox"
+                                    id="grade_active_cb"
+                                    checked={gradeForm.is_active}
+                                    onChange={(e) => setGradeForm({ ...gradeForm, is_active: e.target.checked })}
+                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                />
+                                <label htmlFor="grade_active_cb" className="text-slate-700 dark:text-slate-300 font-medium">
+                                    Active Grade (Available for Employee assignment)
+                                </label>
+                            </div>
+                        </form>
+                    )}
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="max-w-7xl mx-auto space-y-6 animate-fadeIn pb-12">
@@ -1269,703 +2009,6 @@ export function SalaryRulesView() {
                             )}
                         </tbody>
                     </table>
-                </div>
-            )}
-
-            {/* MODAL 1: CREATE / EDIT SALARY RULE */}
-            {isSalaryRuleModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-                    <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4">
-                        <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-                            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                                {salaryRuleForm.id ? `Edit Salary Rule (${salaryRuleForm.id})` : 'New Contract Salary Rule'}
-                            </h3>
-                            <button
-                                type="button"
-                                onClick={() => setIsSalaryRuleModalOpen(false)}
-                                className="text-slate-400 hover:text-slate-700 dark:hover:text-white"
-                            >
-                                <X className="w-4 h-4" />
-                            </button>
-                        </div>
-
-                        <form onSubmit={handleSubmitSalaryRule} className="space-y-4 text-xs">
-                            <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                        Rule Code *
-                                    </label>
-                                    <input
-                                        type="text"
-                                        required
-                                        placeholder="e.g. ALW_SITE_OFFSHORE"
-                                        value={salaryRuleForm.id}
-                                        onChange={(e) => setSalaryRuleForm({ ...salaryRuleForm, id: e.target.value.toUpperCase() })}
-                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                                    />
-                                </div>
-
-                                <div>
-                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                        Category *
-                                    </label>
-                                    <select
-                                        value={salaryRuleForm.category}
-                                        onChange={(e) => setSalaryRuleForm({ ...salaryRuleForm, category: e.target.value })}
-                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                                    >
-                                        <option value="allowance">Allowance (Contract Addition)</option>
-                                        <option value="deduction">Deduction (Statutory / Contract)</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                    Allowance Name *
-                                </label>
-                                <input
-                                    type="text"
-                                    required
-                                    placeholder="e.g. Offshore Industrial Hardship Allowance"
-                                    value={salaryRuleForm.name}
-                                    onChange={(e) => setSalaryRuleForm({ ...salaryRuleForm, name: e.target.value })}
-                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                                />
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                        Calculation Type
-                                    </label>
-                                    <select
-                                        value={salaryRuleForm.calculation_type}
-                                        onChange={(e) => setSalaryRuleForm({ ...salaryRuleForm, calculation_type: e.target.value })}
-                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                                    >
-                                        <option value="fixed_amount">Fixed Amount (QAR)</option>
-                                        <option value="percentage_of_base">Percentage of Base Salary (%)</option>
-                                        <option value="grade_based">Grade-Based Matrix (Per Employee Grade)</option>
-                                    </select>
-                                </div>
-
-                                <div>
-                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                        {salaryRuleForm.calculation_type === 'percentage_of_base'
-                                            ? 'Percentage Rate (%)'
-                                            : salaryRuleForm.calculation_type === 'grade_based'
-                                                ? 'Fallback Default (QAR)'
-                                                : 'Default Amount (QAR)'}
-                                    </label>
-                                    <input
-                                        type="number"
-                                        step="0.01"
-                                        min="0"
-                                        required
-                                        value={
-                                            salaryRuleForm.calculation_type === 'percentage_of_base'
-                                                ? salaryRuleForm.percentage_rate
-                                                : salaryRuleForm.default_amount
-                                        }
-                                        onChange={(e) =>
-                                            setSalaryRuleForm({
-                                                ...salaryRuleForm,
-                                                [salaryRuleForm.calculation_type === 'percentage_of_base'
-                                                    ? 'percentage_rate'
-                                                    : 'default_amount']: e.target.value,
-                                            })
-                                        }
-                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                                    />
-                                </div>
-                            </div>
-
-                            {/* Grade-Based Allowance Matrix Inputs */}
-                            {salaryRuleForm.calculation_type === 'grade_based' && (
-                                <div className="p-3.5 bg-violet-50/70 dark:bg-violet-950/30 rounded-xl border border-violet-200 dark:border-violet-900/60 space-y-2.5">
-                                    <div className="flex items-center justify-between">
-                                        <span className="font-bold text-violet-900 dark:text-violet-200 text-xs">
-                                            Per-Grade Allowance Rates (QAR)
-                                        </span>
-                                        <span className="text-[10px] text-violet-700 dark:text-violet-300">
-                                            Auto-resolved by Employee Grade
-                                        </span>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        {employeeGrades.map((g) => (
-                                            <div key={g.id} className="flex items-center justify-between gap-2 bg-white dark:bg-slate-900 p-2 rounded-lg border border-violet-100 dark:border-violet-900/40">
-                                                <div className="min-w-0">
-                                                    <div className="font-bold text-[11px] text-slate-800 dark:text-slate-200 truncate">
-                                                        {g.code}
-                                                    </div>
-                                                    <div className="text-[9px] text-slate-400 truncate">
-                                                        {g.name}
-                                                    </div>
-                                                </div>
-                                                <div className="w-20 shrink-0 flex items-center gap-1 font-mono">
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        min="0"
-                                                        placeholder="0.00"
-                                                        value={salaryRuleForm.grade_rates?.[g.id] ?? ''}
-                                                        onChange={(e) => {
-                                                            const val = parseFloat(e.target.value) || 0;
-                                                            setSalaryRuleForm({
-                                                                ...salaryRuleForm,
-                                                                grade_rates: {
-                                                                    ...salaryRuleForm.grade_rates,
-                                                                    [g.id]: val,
-                                                                },
-                                                            });
-                                                        }}
-                                                        className="w-full px-1.5 py-1 text-right text-xs rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                                                    />
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-
-                            <div>
-                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                    Qatar WPS Banking Code
-                                </label>
-                                <select
-                                    value={salaryRuleForm.wps_code}
-                                    onChange={(e) => setSalaryRuleForm({ ...salaryRuleForm, wps_code: e.target.value })}
-                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                                >
-                                    {WPS_CODES.map((w) => (
-                                        <option key={w.code} value={w.code}>
-                                            {w.label}
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
-
-                            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-200 dark:border-slate-800">
-                                <button
-                                    type="button"
-                                    onClick={() => setIsSalaryRuleModalOpen(false)}
-                                    className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold cursor-pointer"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="submit"
-                                    disabled={isSaving}
-                                    className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold flex items-center gap-1.5 cursor-pointer"
-                                >
-                                    {isSaving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                                    <span>Save Rule</span>
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            )}
-
-            {/* MODAL 2: CREATE / EDIT TASK RATE PRESET */}
-            {isPresetModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-                    <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
-                        <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-                            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                                {isEditingPreset ? `Edit ${presetForm.name}` : `New ${presetForm.entry_type.replace('_', ' ')} Preset`}
-                            </h3>
-                            <button
-                                type="button"
-                                onClick={() => setIsPresetModalOpen(false)}
-                                className="text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
-                            >
-                                <X className="w-4 h-4" />
-                            </button>
-                        </div>
-
-                        <form onSubmit={handleSubmitPreset} className="space-y-4 text-xs">
-                            <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                        Preset Code *
-                                    </label>
-                                    <input
-                                        type="text"
-                                        required
-                                        disabled={isEditingPreset}
-                                        placeholder="e.g. OT_SPECIAL_135"
-                                        value={presetForm.id}
-                                        onChange={(e) => setPresetForm({ ...presetForm, id: e.target.value.toUpperCase() })}
-                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono disabled:opacity-50"
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                        Calculation Mode
-                                    </label>
-                                    <select
-                                        value={presetForm.calculation_mode}
-                                        onChange={(e) => setPresetForm({ ...presetForm, calculation_mode: e.target.value })}
-                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
-                                    >
-                                        <option value="hourly_multiplier">Hourly Multiplier (Overtime: /240h)</option>
-                                        <option value="piece_rate">Piece-Rate (Per Task / Trip)</option>
-                                        <option value="daily_rate">Daily Rate (Absence / Fine: /30d)</option>
-                                        <option value="percentage_of_basis">Percentage of Basis (% of Salary)</option>
-                                        <option value="fixed_amount">Fixed Amount (QAR)</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                    Preset Title / Display Name *
-                                </label>
-                                <input
-                                    type="text"
-                                    required
-                                    placeholder="e.g. Hazardous Site Overnight Overtime (135%)"
-                                    value={presetForm.name}
-                                    onChange={(e) => setPresetForm({ ...presetForm, name: e.target.value })}
-                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                                />
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                        Unit Label (Display)
-                                    </label>
-                                    <input
-                                        type="text"
-                                        value={presetForm.unit_label}
-                                        onChange={(e) => setPresetForm({ ...presetForm, unit_label: e.target.value })}
-                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                                    />
-                                </div>
-
-                                {presetForm.calculation_mode === 'hourly_multiplier' ||
-                                    presetForm.calculation_mode === 'daily_rate' ||
-                                    presetForm.calculation_mode === 'percentage_of_basis' ? (
-                                    <div>
-                                        <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                            Multiplier Ratio (%)
-                                        </label>
-                                        <input
-                                            type="number"
-                                            step="1"
-                                            min="0"
-                                            value={presetForm.ot_multiplier_pct}
-                                            onChange={(e) => setPresetForm({ ...presetForm, ot_multiplier_pct: e.target.value })}
-                                            className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                                        />
-                                    </div>
-                                ) : (
-                                    <div>
-                                        <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                            Locked Unit Rate (QAR)
-                                        </label>
-                                        <input
-                                            type="number"
-                                            step="0.5"
-                                            min="0"
-                                            value={presetForm.default_unit_rate}
-                                            onChange={(e) => setPresetForm({ ...presetForm, default_unit_rate: e.target.value })}
-                                            className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                                        />
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Subtype Dropdown */}
-                            <div>
-                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                    Category Subtype
-                                </label>
-                                <select
-                                    value={presetForm.subtype}
-                                    onChange={(e) => setPresetForm({ ...presetForm, subtype: e.target.value })}
-                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                                >
-                                    {presetForm.entry_type === 'overtime' && (
-                                        <>
-                                            <option value="overtime_basic">Overtime Basic Basis</option>
-                                            <option value="overtime_basic_housing">Overtime Basic + Housing Basis</option>
-                                        </>
-                                    )}
-                                    {presetForm.entry_type === 'task_benefit' && (
-                                        <>
-                                            <option value="trip_completion">Delivery / Transport Trip</option>
-                                            <option value="task_completion">Field Inspection / Site Task</option>
-                                        </>
-                                    )}
-                                    {presetForm.entry_type === 'bonus' && (
-                                        <>
-                                            <option value="performance_bonus">Performance Bonus</option>
-                                            <option value="safety_incentive">Zero-Incident Safety Incentive</option>
-                                            <option value="festival_bonus">Eid / Festival Bonus</option>
-                                            <option value="arrears_addition">Salary Arrears Addition</option>
-                                        </>
-                                    )}
-                                    {presetForm.entry_type === 'deduction' && (
-                                        <>
-                                            <option value="disciplinary_fine">Disciplinary Fine / Absence</option>
-                                            <option value="loan_installment">Company Loan Installment</option>
-                                            <option value="overpayment_recovery">Overpayment Recovery</option>
-                                            <option value="other_deduction">Other Deduction</option>
-                                        </>
-                                    )}
-                                </select>
-                            </div>
-
-                            {/* Benefits Included in Calculation Basis (Interactive Multi-Select Checkboxes) */}
-                            {(presetForm.calculation_mode === 'hourly_multiplier' ||
-                                presetForm.calculation_mode === 'daily_rate' ||
-                                presetForm.calculation_mode === 'percentage_of_basis') && (
-                                    <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                                        <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300 font-semibold">
-                                            <Layers className="w-3.5 h-3.5 text-blue-500" />
-                                            <span>Benefits Included in Calculation Basis</span>
-                                        </div>
-                                        <p className="text-[11px] text-slate-400">
-                                            Select which employee allowances are aggregated with Basic Salary to form the hourly/daily denominator.
-                                        </p>
-
-                                        <div className="space-y-1.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
-                                            {/* Basic Salary is always included */}
-                                            <label className="flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-not-allowed opacity-90">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={true}
-                                                    disabled={true}
-                                                    className="w-3.5 h-3.5 rounded text-blue-600 accent-blue-600"
-                                                />
-                                                <span className="font-semibold">Basic Salary</span>
-                                                <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono">
-                                                    (Always Included)
-                                                </span>
-                                            </label>
-
-                                            {/* Dynamic Checkboxes for each active allowance rule */}
-                                            {activeAllowanceRules.map((alw) => {
-                                                const isChecked = presetForm.included_benefit_rules.includes(alw.id);
-                                                return (
-                                                    <label
-                                                        key={alw.id}
-                                                        className="flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-pointer hover:text-blue-600 dark:hover:text-blue-400"
-                                                    >
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={isChecked}
-                                                            onChange={() => handleToggleBenefitInBasis(alw.id)}
-                                                            className="w-3.5 h-3.5 rounded text-blue-600 accent-blue-600 cursor-pointer"
-                                                        />
-                                                        <span className="font-medium">{alw.name}</span>
-                                                        <span className="text-[10px] text-slate-400 font-mono">
-                                                            ({alw.id})
-                                                        </span>
-                                                    </label>
-                                                );
-                                            })}
-                                        </div>
-                                    </div>
-                                )}
-
-                            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-200 dark:border-slate-800">
-                                <button
-                                    type="button"
-                                    onClick={() => setIsPresetModalOpen(false)}
-                                    className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold cursor-pointer"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="submit"
-                                    disabled={isSaving}
-                                    className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold flex items-center gap-1.5 cursor-pointer"
-                                >
-                                    {isSaving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                                    <span>Save Preset</span>
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            )}
-
-            {/* MODAL 3: CREATE / EDIT LEAVE TYPE & POLICY */}
-            {isLeaveTypeModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-                    <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
-                        <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-                            <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                                <Calendar className="w-4 h-4 text-purple-600" />
-                                <span>{leaveTypeForm.id ? `Edit Leave Policy (${leaveTypeForm.id})` : 'New Qatar Leave Policy'}</span>
-                            </h3>
-                            <button
-                                type="button"
-                                onClick={() => setIsLeaveTypeModalOpen(false)}
-                                className="text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
-                            >
-                                <X className="w-4 h-4" />
-                            </button>
-                        </div>
-
-                        <form onSubmit={handleSubmitLeaveType} className="space-y-4 text-xs">
-                            <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                        Policy ID / Code *
-                                    </label>
-                                    <input
-                                        type="text"
-                                        required
-                                        placeholder="e.g. LEAVE_STUDY"
-                                        value={leaveTypeForm.id}
-                                        onChange={(e) => setLeaveTypeForm({ ...leaveTypeForm, id: e.target.value.toUpperCase() })}
-                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                        Max Days / Year *
-                                    </label>
-                                    <input
-                                        type="number"
-                                        min="1"
-                                        max="365"
-                                        required
-                                        value={leaveTypeForm.max_days_per_year}
-                                        onChange={(e) => setLeaveTypeForm({ ...leaveTypeForm, max_days_per_year: e.target.value })}
-                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                                    />
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                    Leave Policy Title *
-                                </label>
-                                <input
-                                    type="text"
-                                    required
-                                    placeholder="e.g. Authorized Examination / Study Leave (Qatar Art. 83)"
-                                    value={leaveTypeForm.name}
-                                    onChange={(e) => setLeaveTypeForm({ ...leaveTypeForm, name: e.target.value })}
-                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                                />
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                        Salary Coverage Percentage
-                                    </label>
-                                    <select
-                                        value={leaveTypeForm.pay_percentage}
-                                        onChange={(e) => setLeaveTypeForm({ ...leaveTypeForm, pay_percentage: parseFloat(e.target.value) })}
-                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-semibold"
-                                    >
-                                        <option value={100.0}>100% — Fully Paid Leave</option>
-                                        <option value={50.0}>50% — Half-Pay Leave (Tier 2)</option>
-                                        <option value={0.0}>0% — Unpaid Leave / Full Deduction</option>
-                                    </select>
-                                </div>
-
-                                <div className="flex flex-col justify-end">
-                                    <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 cursor-pointer">
-                                        <input
-                                            type="checkbox"
-                                            checked={leaveTypeForm.requires_attachment}
-                                            onChange={(e) => setLeaveTypeForm({ ...leaveTypeForm, requires_attachment: e.target.checked })}
-                                            className="w-4 h-4 rounded text-purple-600 accent-purple-600 cursor-pointer"
-                                        />
-                                        <span className="font-semibold text-slate-700 dark:text-slate-300 text-xs">
-                                            Requires Proof / Attachment
-                                        </span>
-                                    </label>
-                                </div>
-                            </div>
-
-                            {/* Deduction Basis Checkboxes (for Unpaid or Partial Pay Leaves) */}
-                            {leaveTypeForm.pay_percentage < 100.0 && (
-                                <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                                    <div className="flex items-center gap-1.5 text-rose-600 dark:text-rose-400 font-semibold">
-                                        <AlertOctagon className="w-3.5 h-3.5" />
-                                        <span>Allowances Deducted on Unpaid / Half-Pay Leave</span>
-                                    </div>
-                                    <p className="text-[11px] text-slate-400">
-                                        Select which contract allowances are included in the daily salary deduction formula alongside Basic Salary.
-                                    </p>
-
-                                    <div className="space-y-1.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
-                                        <label className="flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-not-allowed opacity-90">
-                                            <input
-                                                type="checkbox"
-                                                checked={true}
-                                                disabled={true}
-                                                className="w-3.5 h-3.5 rounded text-rose-600 accent-rose-600"
-                                            />
-                                            <span className="font-semibold">Basic Salary</span>
-                                            <span className="text-[10px] text-rose-600 dark:text-rose-400 font-mono">
-                                                (Always Deducted Pro-Rata)
-                                            </span>
-                                        </label>
-
-                                        {activeAllowanceRules.map((alw) => {
-                                            const isChecked = leaveTypeForm.deduction_basis_rules.includes(alw.id);
-                                            return (
-                                                <label
-                                                    key={alw.id}
-                                                    className="flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-pointer hover:text-rose-600 dark:hover:text-rose-400"
-                                                >
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={isChecked}
-                                                        onChange={() => handleToggleLeaveDeductionRule(alw.id)}
-                                                        className="w-3.5 h-3.5 rounded text-rose-600 accent-rose-600 cursor-pointer"
-                                                    />
-                                                    <span className="font-medium">{alw.name}</span>
-                                                    <span className="text-[10px] text-slate-400 font-mono">
-                                                        ({alw.id})
-                                                    </span>
-                                                </label>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-                            )}
-
-                            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-200 dark:border-slate-800">
-                                <button
-                                    type="button"
-                                    onClick={() => setIsLeaveTypeModalOpen(false)}
-                                    className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold cursor-pointer"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="submit"
-                                    disabled={isSaving}
-                                    className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-semibold flex items-center gap-1.5 cursor-pointer"
-                                >
-                                    {isSaving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                                    <span>Save Policy</span>
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            )}
-
-            {/* MODAL: CREATE / EDIT EMPLOYEE GRADE */}
-            {isGradeModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-                    <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4">
-                        <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-                            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                                {gradeForm.id ? `Edit Grade (${gradeForm.code})` : 'New Employee Grade'}
-                            </h3>
-                            <button
-                                type="button"
-                                onClick={() => setIsGradeModalOpen(false)}
-                                className="text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
-                            >
-                                <X className="w-4 h-4" />
-                            </button>
-                        </div>
-
-                        <form onSubmit={handleSubmitGrade} className="space-y-4 text-xs">
-                            <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                        Grade Code *
-                                    </label>
-                                    <input
-                                        type="text"
-                                        required
-                                        placeholder="e.g. G1"
-                                        value={gradeForm.code}
-                                        onChange={(e) => setGradeForm({ ...gradeForm, code: e.target.value.toUpperCase() })}
-                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono font-bold"
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                        Rank Order (1 = Top) *
-                                    </label>
-                                    <input
-                                        type="number"
-                                        min="1"
-                                        required
-                                        value={gradeForm.rank_order}
-                                        onChange={(e) => setGradeForm({ ...gradeForm, rank_order: parseInt(e.target.value, 10) || 1 })}
-                                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                                    />
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                    Grade Title / Name *
-                                </label>
-                                <input
-                                    type="text"
-                                    required
-                                    placeholder="e.g. Grade 1 — Executive & Senior Specialist"
-                                    value={gradeForm.name}
-                                    onChange={(e) => setGradeForm({ ...gradeForm, name: e.target.value })}
-                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                                />
-                            </div>
-
-                            <div>
-                                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                    Description & Target Job Roles
-                                </label>
-                                <textarea
-                                    rows="3"
-                                    placeholder="e.g. Senior management, lead engineers, project directors"
-                                    value={gradeForm.description}
-                                    onChange={(e) => setGradeForm({ ...gradeForm, description: e.target.value })}
-                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                                />
-                            </div>
-
-                            <div className="flex items-center gap-2 pt-1">
-                                <input
-                                    type="checkbox"
-                                    id="grade_active_cb"
-                                    checked={gradeForm.is_active}
-                                    onChange={(e) => setGradeForm({ ...gradeForm, is_active: e.target.checked })}
-                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                                />
-                                <label htmlFor="grade_active_cb" className="text-slate-700 dark:text-slate-300 font-medium">
-                                    Active Grade (Available for Employee assignment)
-                                </label>
-                            </div>
-
-                            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-200 dark:border-slate-800">
-                                <button
-                                    type="button"
-                                    onClick={() => setIsGradeModalOpen(false)}
-                                    className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold cursor-pointer"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="submit"
-                                    disabled={isSaving}
-                                    className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold flex items-center gap-1.5 cursor-pointer"
-                                >
-                                    {isSaving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                                    <span>Save Grade</span>
-                                </button>
-                            </div>
-                        </form>
-                    </div>
                 </div>
             )}
         </div>

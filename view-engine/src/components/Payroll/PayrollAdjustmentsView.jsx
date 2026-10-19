@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Check,
   ShieldCheck,
+  ShieldAlert,
   Calendar,
   Layers,
   Trash2,
@@ -19,7 +20,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Eye,
-  EyeOff
+  EyeOff,
+  ArrowLeft
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useAccessControl } from '../../context/AccessControlContext';
@@ -73,21 +75,6 @@ export function PayrollAdjustmentsView() {
   const [rejectionReason, setRejectionReason] = useState('');
   const [isRejecting, setIsRejecting] = useState(false);
 
-  // Global Escape key listener for modals
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        if (rejectingAdj) {
-          setRejectingAdj(null);
-        } else if (isNewEntryOpen) {
-          setIsNewEntryOpen(false);
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [rejectingAdj, isNewEntryOpen]);
-
   // Form State
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
   const [employeeBasis, setEmployeeBasis] = useState(null); // { base_salary, housing_allowance, allowances_by_rule, ... }
@@ -99,6 +86,36 @@ export function PayrollAdjustmentsView() {
   const [title, setTitle] = useState('');
   const [fixedAmount, setFixedAmount] = useState(0.0);
   const [notes, setNotes] = useState('');
+
+  const handleDiscardEntry = useCallback(() => {
+    const isDirty = Boolean(selectedEmployeeId || title || notes || fixedAmount > 0 || (quantity !== 1.0 && quantity !== '1.0' && quantity !== ''));
+    if (isDirty) {
+      if (!window.confirm('Discard unsaved entry and return to variable payroll list?')) return;
+    }
+    setSelectedEmployeeId('');
+    setRulePresetId('');
+    setQuantity(1.0);
+    setTitle('');
+    setFixedAmount(0.0);
+    setNotes('');
+    setEmployeeBasis(null);
+    setIsNewEntryOpen(false);
+  }, [selectedEmployeeId, title, notes, fixedAmount, quantity]);
+
+  // Global Escape key listener for modals
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (rejectingAdj) {
+          setRejectingAdj(null);
+        } else if (isNewEntryOpen) {
+          handleDiscardEntry();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [rejectingAdj, isNewEntryOpen, handleDiscardEntry]);
 
   const getAuthHeaders = useCallback(() => {
     const headers = { 'Content-Type': 'application/json' };
@@ -461,6 +478,473 @@ export function PayrollAdjustmentsView() {
   const pagedAdjustments = useMemo(() => {
     return filteredAdjustments.slice(startIndex, endIndex);
   }, [filteredAdjustments, startIndex, endIndex]);
+
+  if (isNewEntryOpen) {
+    return (
+      <div className="max-w-4xl mx-auto space-y-6 animate-fadeIn pb-16">
+        {/* Top Breadcrumb & Action Bar */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleDiscardEntry}
+              className="p-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition cursor-pointer"
+              title="Back to Adjustments List"
+            >
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+            <div>
+              <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                <span>Payroll & WPS</span>
+                <span>/</span>
+                <span>Variable Pay & Approvals</span>
+                <span>/</span>
+                <span className="text-slate-900 dark:text-white font-medium">New Variable Payroll Entry</span>
+              </div>
+              <h2 className="text-base font-bold text-slate-900 dark:text-white mt-0.5">
+                New Variable Payroll Entry
+              </h2>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 self-end sm:self-auto">
+            <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
+              Target Month: <span className="font-bold text-slate-700 dark:text-slate-200">{selectedYm}</span>
+            </span>
+            <button
+              type="button"
+              onClick={handleDiscardEntry}
+              className="px-3 py-2 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+            >
+              Discard
+            </button>
+            <button
+              type="submit"
+              form="variableEntryForm"
+              disabled={isSubmitting}
+              className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-xs transition cursor-pointer disabled:opacity-50"
+            >
+              {isSubmitting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+              <span>Submit for Sign-Off</span>
+            </button>
+          </div>
+        </div>
+
+        {/* In-place Form Content */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xs space-y-6">
+          {/* Mode Tabs */}
+          <div className="grid grid-cols-4 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold">
+            <button
+              type="button"
+              onClick={() => setEntryMode('overtime')}
+              className={`py-2 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                entryMode === 'overtime'
+                  ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Clock className="w-3.5 h-3.5" />
+              <span>Overtime</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setEntryMode('task_benefit')}
+              className={`py-2 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                entryMode === 'task_benefit'
+                  ? 'bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Truck className="w-3.5 h-3.5" />
+              <span>Task / Trips</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setEntryMode('bonus')}
+              className={`py-2 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                entryMode === 'bonus'
+                  ? 'bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Gift className="w-3.5 h-3.5" />
+              <span>Bonus</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setEntryMode('deduction')}
+              className={`py-2 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                entryMode === 'deduction'
+                  ? 'bg-white dark:bg-slate-900 text-rose-600 dark:text-rose-400 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <AlertOctagon className="w-3.5 h-3.5" />
+              <span>Deduction</span>
+            </button>
+          </div>
+
+          <form id="variableEntryForm" onSubmit={handleSubmitEntry} className="space-y-4 text-xs">
+            {/* Employee Selection */}
+            <div>
+              <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                Select Employee *
+              </label>
+              <select
+                required
+                value={selectedEmployeeId}
+                onChange={(e) => setSelectedEmployeeId(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden"
+              >
+                <option value="">-- Choose Employee --</option>
+                {employees.map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.full_name} ({emp.employee_number}) - {emp.department_id || emp.department || 'General'}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Live Salary Basis Banner: STRICTLY HIDDEN IF !canReadSalary */}
+            {canReadSalary && loadingBasis && (
+              <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-800/60 flex items-center gap-2 text-slate-500">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                <span>Loading live employee contract basis...</span>
+              </div>
+            )}
+
+            {canReadSalary && employeeBasis && !employeeBasis.restricted && (
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/60 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                <div>
+                  <span className="text-slate-400 block text-[10px] uppercase">Base Salary</span>
+                  <strong className="font-mono text-slate-900 dark:text-white">{Number(employeeBasis.base_salary || 0).toLocaleString()} QAR</strong>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[10px] uppercase">Housing Allowance</span>
+                  <strong className="font-mono text-slate-900 dark:text-white">{Number(employeeBasis.housing_allowance || 0).toLocaleString()} QAR</strong>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[10px] uppercase">Basic Rate / Hr</span>
+                  <strong className="font-mono text-blue-600 dark:text-blue-400">{employeeBasis.hourly_basic_rate} QAR/h</strong>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[10px] uppercase">Basic+Housing / Hr</span>
+                  <strong className="font-mono text-blue-600 dark:text-blue-400">{employeeBasis.hourly_basic_plus_housing_rate} QAR/h</strong>
+                </div>
+              </div>
+            )}
+
+            {/* Dynamic Preset Dropdown Across All Modes */}
+            <div>
+              <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                Preset Configuration Rule *
+              </label>
+              <select
+                required
+                value={rulePresetId}
+                onChange={(e) => handleSelectRule(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
+              >
+                {availableRules.length === 0 ? (
+                  <option value="">No presets configured for this category</option>
+                ) : (
+                  availableRules.map((rule) => (
+                    <option key={rule.id} value={rule.id}>
+                      {rule.name}
+                      {canReadSalary && Number(rule.default_unit_rate || 0) > 0 ? ` (${rule.default_unit_rate} QAR/${rule.unit_label || 'Unit'})` : ''}
+                      {rule.calculation_mode === 'hourly_multiplier' ? ` (${rule.ot_multiplier_pct}%)` : ''}
+                      {rule.calculation_mode === 'daily_rate' ? ` (${rule.ot_multiplier_pct}% of Daily Basis)` : ''}
+                      {rule.calculation_mode === 'percentage_of_basis' ? ` (${rule.ot_multiplier_pct}% of Basis)` : ''}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+
+            {/* MODE 1: OVERTIME */}
+            {entryMode === 'overtime' && (
+              <div className="space-y-3 p-4 rounded-xl border border-blue-100 dark:border-blue-900/40 bg-blue-50/30 dark:bg-blue-950/20">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                      Overtime Hours Completed *
+                    </label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="0.5"
+                      required
+                      value={quantity}
+                      onChange={(e) => setQuantity(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                      Calculation Multiplier
+                    </label>
+                    <div className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 font-mono font-bold text-slate-700 dark:text-slate-300">
+                      {selectedRule?.ot_multiplier_pct || 125}%
+                    </div>
+                  </div>
+                </div>
+
+                {/* Rate / Total Preview or Confidentiality Pill */}
+                {canReadSalary ? (
+                  <div className="p-3 rounded-xl bg-blue-100/60 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-900 flex items-center justify-between">
+                    <div>
+                      <span className="font-bold text-blue-900 dark:text-blue-200 block text-xs">
+                        Total Overtime Disbursement:
+                      </span>
+                      <span className="text-[11px] text-blue-700 dark:text-blue-400 font-mono">
+                        {quantity} hrs × {livePreviewMath.unitRate} QAR/h
+                      </span>
+                    </div>
+                    <div className="text-base font-bold font-mono text-blue-900 dark:text-blue-200">
+                      +{livePreviewMath.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} QAR
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 rounded-xl bg-blue-100/40 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 text-blue-800 dark:text-blue-300 text-xs flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 shrink-0 text-blue-600" />
+                    <span>Compensation rates are calculated automatically by the Payroll Engine based on the selected preset.</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* MODE 2: TASK / TRIP PIECE-RATE */}
+            {entryMode === 'task_benefit' && (
+              <div className="space-y-3 p-4 rounded-xl border border-amber-100 dark:border-amber-900/40 bg-amber-50/30 dark:bg-amber-950/20">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                      Completed Qty ({selectedRule?.unit_label || 'Trips'}) *
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      required
+                      value={quantity}
+                      onChange={(e) => setQuantity(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                      Unit Type
+                    </label>
+                    <div className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 font-mono font-bold text-slate-700 dark:text-slate-300">
+                      {selectedRule?.unit_label || 'Trips'} (Locked)
+                    </div>
+                  </div>
+                </div>
+
+                {canReadSalary ? (
+                  <div className="p-3 rounded-xl bg-amber-100/60 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-900 flex items-center justify-between">
+                    <div>
+                      <span className="font-bold text-amber-900 dark:text-amber-200 block text-xs">
+                        Piece-Rate Incentive Total:
+                      </span>
+                      <span className="text-[11px] text-amber-700 dark:text-amber-400 font-mono">
+                        {quantity} {selectedRule?.unit_label || 'Trips'} × {selectedRule?.default_unit_rate || 0} QAR
+                      </span>
+                    </div>
+                    <div className="text-base font-bold font-mono text-amber-900 dark:text-amber-200">
+                      +{livePreviewMath.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} QAR
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 rounded-xl bg-amber-100/40 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 text-amber-800 dark:text-amber-300 text-xs flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 shrink-0 text-amber-600" />
+                    <span>Compensation rates are calculated automatically by the Payroll Engine based on the selected preset.</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* MODE 3: BONUS */}
+            {entryMode === 'bonus' && (
+              <div className="space-y-3 p-4 rounded-xl border border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/30 dark:bg-emerald-950/20">
+                {selectedRule?.calculation_mode === 'fixed_amount' && Number(selectedRule?.default_unit_rate || 0) === 0 ? (
+                  canReadSalary ? (
+                    <div>
+                      <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                        Bonus Amount (QAR) *
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="1"
+                        required
+                        value={fixedAmount}
+                        onChange={(e) => setFixedAmount(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                      />
+                    </div>
+                  ) : (
+                    <div className="p-3 rounded-xl bg-emerald-100/40 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300 text-xs flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-600" />
+                      <span>Compensation rates are calculated automatically by the Payroll Engine based on the selected preset.</span>
+                    </div>
+                  )
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                        Completed Qty ({selectedRule?.unit_label || 'Units'}) *
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        required
+                        value={quantity}
+                        onChange={(e) => setQuantity(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                        Calculation Mode
+                      </label>
+                      <div className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 font-mono font-bold text-slate-700 dark:text-slate-300">
+                        {selectedRule?.calculation_mode || 'fixed_amount'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {canReadSalary && (selectedRule?.calculation_mode !== 'fixed_amount' || Number(selectedRule?.default_unit_rate || 0) > 0) && (
+                  <div className="p-3 rounded-xl bg-emerald-100/60 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-900 flex items-center justify-between">
+                    <span className="font-bold text-emerald-900 dark:text-emerald-200 block text-xs">
+                      Estimated Bonus Disbursement:
+                    </span>
+                    <div className="text-base font-bold font-mono text-emerald-900 dark:text-emerald-200">
+                      +{livePreviewMath.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} QAR
+                    </div>
+                  </div>
+                )}
+
+                {!canReadSalary && (
+                  <div className="p-3 rounded-xl bg-emerald-100/40 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300 text-xs flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-600" />
+                    <span>Compensation rates are calculated automatically by the Payroll Engine based on the selected preset.</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* MODE 4: DEDUCTION */}
+            {entryMode === 'deduction' && (
+              <div className="space-y-3 p-4 rounded-xl border border-rose-100 dark:border-rose-900/40 bg-rose-50/30 dark:bg-rose-950/20">
+                {selectedRule?.calculation_mode === 'daily_rate' ? (
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                      Number of Disciplinary Days *
+                    </label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="0.5"
+                      required
+                      value={quantity}
+                      onChange={(e) => setQuantity(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                    />
+                  </div>
+                ) : selectedRule?.calculation_mode === 'fixed_amount' && Number(selectedRule?.default_unit_rate || 0) === 0 ? (
+                  canReadSalary ? (
+                    <div>
+                      <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                        Deduction Amount (QAR) *
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="1"
+                        required
+                        value={fixedAmount}
+                        onChange={(e) => setFixedAmount(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                      />
+                    </div>
+                  ) : (
+                    <div className="p-3 rounded-xl bg-rose-100/40 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300 text-xs flex items-center gap-2">
+                      <ShieldAlert className="w-4 h-4 shrink-0 text-rose-600" />
+                      <span>Deduction amounts are calculated or verified by HR during payroll review.</span>
+                    </div>
+                  )
+                ) : (
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                      Quantity ({selectedRule?.unit_label || 'Units'}) *
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      required
+                      value={quantity}
+                      onChange={(e) => setQuantity(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                    />
+                  </div>
+                )}
+
+                {canReadSalary && (
+                  <div className="p-3 rounded-xl bg-rose-100/60 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 flex items-center justify-between">
+                    <span className="font-bold text-rose-900 dark:text-rose-200 block text-xs">
+                      Estimated Deduction Total:
+                    </span>
+                    <div className="text-base font-bold font-mono text-rose-900 dark:text-rose-200">
+                      -{livePreviewMath.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} QAR
+                    </div>
+                  </div>
+                )}
+
+                {!canReadSalary && (
+                  <div className="p-3 rounded-xl bg-rose-100/40 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300 text-xs flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 shrink-0 text-rose-600" />
+                    <span>Compensation rates are calculated automatically by the Payroll Engine based on the selected preset.</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Title & Notes */}
+            <div>
+              <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                Title / Reference Description *
+              </label>
+              <input
+                type="text"
+                required
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+              />
+            </div>
+
+            <div>
+              <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                {entryMode === 'deduction' ? 'Mandatory Audit Note *' : 'Audit Notes / Justification (Optional)'}
+              </label>
+              <textarea
+                rows={2}
+                required={entryMode === 'deduction'}
+                placeholder={entryMode === 'deduction' ? 'Provide legal / contractual reason for salary deduction...' : 'Trip details, shift remarks...'}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+              />
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-2.5">
@@ -890,474 +1374,6 @@ export function PayrollAdjustmentsView() {
           </tbody>
         </table>
       </div>
-
-      {/* 4. MODAL: New Variable Pay / Deduction Entry */}
-      {isNewEntryOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fadeIn"
-          onClick={() => setIsNewEntryOpen(false)}
-        >
-          <div
-            className="bg-white dark:bg-slate-900 w-full max-w-xl rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-600 flex items-center justify-center">
-                  <Plus className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                    New Variable Payroll Entry
-                  </h3>
-                  <p className="text-xs text-slate-400">Target Month: {selectedYm}</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsNewEntryOpen(false)}
-                className="flex items-center gap-1.5 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer group"
-                title="Close (Esc)"
-                aria-label="Close dialog"
-              >
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700">
-                  Esc
-                </span>
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Mode Tabs */}
-            <div className="grid grid-cols-4 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold">
-              <button
-                type="button"
-                onClick={() => setEntryMode('overtime')}
-                className={`py-2 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  entryMode === 'overtime'
-                    ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                <Clock className="w-3.5 h-3.5" />
-                <span>Overtime</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setEntryMode('task_benefit')}
-                className={`py-2 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  entryMode === 'task_benefit'
-                    ? 'bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                <Truck className="w-3.5 h-3.5" />
-                <span>Task / Trips</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setEntryMode('bonus')}
-                className={`py-2 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  entryMode === 'bonus'
-                    ? 'bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                <Gift className="w-3.5 h-3.5" />
-                <span>Bonus</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setEntryMode('deduction')}
-                className={`py-2 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  entryMode === 'deduction'
-                    ? 'bg-white dark:bg-slate-900 text-rose-600 dark:text-rose-400 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                <AlertOctagon className="w-3.5 h-3.5" />
-                <span>Deduction</span>
-              </button>
-            </div>
-
-            {/* Form */}
-            <form onSubmit={handleSubmitEntry} className="space-y-4 text-xs">
-              {/* Employee Selection */}
-              <div>
-                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                  Select Employee *
-                </label>
-                <select
-                  required
-                  value={selectedEmployeeId}
-                  onChange={(e) => setSelectedEmployeeId(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden"
-                >
-                  <option value="">-- Choose Employee --</option>
-                  {employees.map((emp) => (
-                    <option key={emp.id} value={emp.id}>
-                      {emp.full_name} ({emp.employee_number}) - {emp.department_id || emp.department || 'General'}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Live Salary Basis Banner: STRICTLY HIDDEN IF !canReadSalary */}
-              {canReadSalary && loadingBasis && (
-                <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-800/60 flex items-center gap-2 text-slate-500">
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Loading live employee contract basis...</span>
-                </div>
-              )}
-
-              {canReadSalary && employeeBasis && !employeeBasis.restricted && (
-                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/60 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                  <div>
-                    <span className="text-slate-400 block text-[10px] uppercase">Base Salary</span>
-                    <strong className="font-mono text-slate-900 dark:text-white">{Number(employeeBasis.base_salary || 0).toLocaleString()} QAR</strong>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 block text-[10px] uppercase">Housing Allowance</span>
-                    <strong className="font-mono text-slate-900 dark:text-white">{Number(employeeBasis.housing_allowance || 0).toLocaleString()} QAR</strong>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 block text-[10px] uppercase">Basic Rate / Hr</span>
-                    <strong className="font-mono text-blue-600 dark:text-blue-400">{employeeBasis.hourly_basic_rate} QAR/h</strong>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 block text-[10px] uppercase">Basic+Housing / Hr</span>
-                    <strong className="font-mono text-blue-600 dark:text-blue-400">{employeeBasis.hourly_basic_plus_housing_rate} QAR/h</strong>
-                  </div>
-                </div>
-              )}
-
-              {/* Dynamic Preset Dropdown Across All Modes */}
-              <div>
-                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                  Preset Configuration Rule *
-                </label>
-                <select
-                  required
-                  value={rulePresetId}
-                  onChange={(e) => handleSelectRule(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
-                >
-                  {availableRules.length === 0 ? (
-                    <option value="">No presets configured for this category</option>
-                  ) : (
-                    availableRules.map((rule) => (
-                      <option key={rule.id} value={rule.id}>
-                        {rule.name}
-                        {canReadSalary && Number(rule.default_unit_rate || 0) > 0 ? ` (${rule.default_unit_rate} QAR/${rule.unit_label || 'Unit'})` : ''}
-                        {rule.calculation_mode === 'hourly_multiplier' ? ` (${rule.ot_multiplier_pct}%)` : ''}
-                        {rule.calculation_mode === 'daily_rate' ? ` (${rule.ot_multiplier_pct}% of Daily Basis)` : ''}
-                        {rule.calculation_mode === 'percentage_of_basis' ? ` (${rule.ot_multiplier_pct}% of Basis)` : ''}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </div>
-
-              {/* MODE 1: OVERTIME */}
-              {entryMode === 'overtime' && (
-                <div className="space-y-3 p-4 rounded-xl border border-blue-100 dark:border-blue-900/40 bg-blue-50/30 dark:bg-blue-950/20">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                        Overtime Hours Completed *
-                      </label>
-                      <input
-                        type="number"
-                        step="0.5"
-                        min="0.5"
-                        required
-                        value={quantity}
-                        onChange={(e) => setQuantity(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                        Calculation Multiplier
-                      </label>
-                      <div className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 font-mono font-bold text-slate-700 dark:text-slate-300">
-                        {selectedRule?.ot_multiplier_pct || 125}%
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Rate / Total Preview or Confidentiality Pill */}
-                  {canReadSalary ? (
-                    <div className="p-3 rounded-xl bg-blue-100/60 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-900 flex items-center justify-between">
-                      <div>
-                        <span className="font-bold text-blue-900 dark:text-blue-200 block text-xs">
-                          Total Overtime Disbursement:
-                        </span>
-                        <span className="text-[11px] text-blue-700 dark:text-blue-400 font-mono">
-                          {quantity} hrs × {livePreviewMath.unitRate} QAR/h
-                        </span>
-                      </div>
-                      <div className="text-base font-bold font-mono text-blue-900 dark:text-blue-200">
-                        +{livePreviewMath.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} QAR
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="p-3 rounded-xl bg-blue-100/40 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 text-blue-800 dark:text-blue-300 text-xs flex items-center gap-2">
-                      <ShieldCheck className="w-4 h-4 shrink-0 text-blue-600" />
-                      <span>Compensation rates are calculated automatically by the Payroll Engine based on the selected preset.</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* MODE 2: TASK / TRIP PIECE-RATE */}
-              {entryMode === 'task_benefit' && (
-                <div className="space-y-3 p-4 rounded-xl border border-amber-100 dark:border-amber-900/40 bg-amber-50/30 dark:bg-amber-950/20">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                        Completed Qty ({selectedRule?.unit_label || 'Trips'}) *
-                      </label>
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        required
-                        value={quantity}
-                        onChange={(e) => setQuantity(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                        Unit Type
-                      </label>
-                      <div className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 font-mono font-bold text-slate-700 dark:text-slate-300">
-                        {selectedRule?.unit_label || 'Trips'} (Locked)
-                      </div>
-                    </div>
-                  </div>
-
-                  {canReadSalary ? (
-                    <div className="p-3 rounded-xl bg-amber-100/60 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-900 flex items-center justify-between">
-                      <div>
-                        <span className="font-bold text-amber-900 dark:text-amber-200 block text-xs">
-                          Piece-Rate Incentive Total:
-                        </span>
-                        <span className="text-[11px] text-amber-700 dark:text-amber-400 font-mono">
-                          {quantity} {selectedRule?.unit_label || 'Trips'} × {selectedRule?.default_unit_rate || 0} QAR
-                        </span>
-                      </div>
-                      <div className="text-base font-bold font-mono text-amber-900 dark:text-amber-200">
-                        +{livePreviewMath.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} QAR
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="p-3 rounded-xl bg-amber-100/40 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 text-amber-800 dark:text-amber-300 text-xs flex items-center gap-2">
-                      <ShieldCheck className="w-4 h-4 shrink-0 text-amber-600" />
-                      <span>Compensation rates are calculated automatically by the Payroll Engine based on the selected preset.</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* MODE 3: BONUS */}
-              {entryMode === 'bonus' && (
-                <div className="space-y-3 p-4 rounded-xl border border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/30 dark:bg-emerald-950/20">
-                  {selectedRule?.calculation_mode === 'fixed_amount' && Number(selectedRule?.default_unit_rate || 0) === 0 ? (
-                    canReadSalary ? (
-                      <div>
-                        <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                          Bonus Amount (QAR) *
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="1"
-                          required
-                          value={fixedAmount}
-                          onChange={(e) => setFixedAmount(e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                        />
-                      </div>
-                    ) : (
-                      <div className="p-3 rounded-xl bg-emerald-100/40 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300 text-xs flex items-center gap-2">
-                        <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-600" />
-                        <span>Compensation rates are calculated automatically by the Payroll Engine based on the selected preset.</span>
-                      </div>
-                    )
-                  ) : (
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                          Completed Qty ({selectedRule?.unit_label || 'Units'}) *
-                        </label>
-                        <input
-                          type="number"
-                          min="1"
-                          step="1"
-                          required
-                          value={quantity}
-                          onChange={(e) => setQuantity(e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                          Calculation Mode
-                        </label>
-                        <div className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 font-mono font-bold text-slate-700 dark:text-slate-300">
-                          {selectedRule?.calculation_mode || 'fixed_amount'}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {canReadSalary && (selectedRule?.calculation_mode !== 'fixed_amount' || Number(selectedRule?.default_unit_rate || 0) > 0) && (
-                    <div className="p-3 rounded-xl bg-emerald-100/60 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-900 flex items-center justify-between">
-                      <span className="font-bold text-emerald-900 dark:text-emerald-200 block text-xs">
-                        Estimated Bonus Disbursement:
-                      </span>
-                      <div className="text-base font-bold font-mono text-emerald-900 dark:text-emerald-200">
-                        +{livePreviewMath.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} QAR
-                      </div>
-                    </div>
-                  )}
-
-                  {!canReadSalary && (
-                    <div className="p-3 rounded-xl bg-emerald-100/40 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300 text-xs flex items-center gap-2">
-                      <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-600" />
-                      <span>Compensation rates are calculated automatically by the Payroll Engine based on the selected preset.</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* MODE 4: DEDUCTION */}
-              {entryMode === 'deduction' && (
-                <div className="space-y-3 p-4 rounded-xl border border-rose-100 dark:border-rose-900/40 bg-rose-50/30 dark:bg-rose-950/20">
-                  {selectedRule?.calculation_mode === 'daily_rate' ? (
-                    <div>
-                      <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                        Number of Disciplinary Days *
-                      </label>
-                      <input
-                        type="number"
-                        step="0.5"
-                        min="0.5"
-                        required
-                        value={quantity}
-                        onChange={(e) => setQuantity(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                      />
-                    </div>
-                  ) : selectedRule?.calculation_mode === 'fixed_amount' && Number(selectedRule?.default_unit_rate || 0) === 0 ? (
-                    canReadSalary ? (
-                      <div>
-                        <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                          Deduction Amount (QAR) *
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="1"
-                          required
-                          value={fixedAmount}
-                          onChange={(e) => setFixedAmount(e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                        />
-                      </div>
-                    ) : (
-                      <div className="p-3 rounded-xl bg-rose-100/40 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300 text-xs flex items-center gap-2">
-                        <ShieldAlert className="w-4 h-4 shrink-0 text-rose-600" />
-                        <span>Deduction amounts are calculated or verified by HR during payroll review.</span>
-                      </div>
-                    )
-                  ) : (
-                    <div>
-                      <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                        Quantity ({selectedRule?.unit_label || 'Units'}) *
-                      </label>
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        required
-                        value={quantity}
-                        onChange={(e) => setQuantity(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
-                      />
-                    </div>
-                  )}
-
-                  {canReadSalary && (
-                    <div className="p-3 rounded-xl bg-rose-100/60 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 flex items-center justify-between">
-                      <span className="font-bold text-rose-900 dark:text-rose-200 block text-xs">
-                        Estimated Deduction Total:
-                      </span>
-                      <div className="text-base font-bold font-mono text-rose-900 dark:text-rose-200">
-                        -{livePreviewMath.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} QAR
-                      </div>
-                    </div>
-                  )}
-
-                  {!canReadSalary && (
-                    <div className="p-3 rounded-xl bg-rose-100/40 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300 text-xs flex items-center gap-2">
-                      <ShieldCheck className="w-4 h-4 shrink-0 text-rose-600" />
-                      <span>Compensation rates are calculated automatically by the Payroll Engine based on the selected preset.</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Title & Notes */}
-              <div>
-                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                  Title / Reference Description *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                  {entryMode === 'deduction' ? 'Mandatory Audit Note *' : 'Audit Notes / Justification (Optional)'}
-                </label>
-                <textarea
-                  rows={2}
-                  required={entryMode === 'deduction'}
-                  placeholder={entryMode === 'deduction' ? 'Provide legal / contractual reason for salary deduction...' : 'Trip details, shift remarks...'}
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setIsNewEntryOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold hover:bg-slate-200 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold shadow-xs cursor-pointer disabled:opacity-50"
-                >
-                  {isSubmitting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                  <span>Submit for Supervisor Sign-Off</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* 5. MODAL: Rejection Reason */}
       {rejectingAdj && (

@@ -78,6 +78,9 @@ async def init_schema():
                 value TEXT NOT NULL,
                 updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+            INSERT INTO system_metadata (key, value)
+            VALUES ('cfg:security_policies', '{"global_max_idle_timeout_minutes": 30, "default_idle_timeout_minutes": 15}')
+            ON CONFLICT (key) DO NOTHING;
         """)
 
         # 2. Roles & Permissions table
@@ -141,12 +144,14 @@ async def init_schema():
                 guardian_email VARCHAR(255),
                 totp_secret VARCHAR(64),
                 is_2fa_enabled BOOLEAN DEFAULT false,
+                idle_timeout_minutes INT DEFAULT NULL,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_users_email ON users(LOWER(email));
             ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64);
             ALTER TABLE users ADD COLUMN IF NOT EXISTS is_2fa_enabled BOOLEAN DEFAULT false;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS idle_timeout_minutes INT DEFAULT NULL;
         """)
 
         # 6. Persistent API Keys table (headless biometrics & daemon authentication)
@@ -304,6 +309,7 @@ async def init_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_attendance_logs_emp ON attendance_logs(employee_id);
             CREATE INDEX IF NOT EXISTS idx_attendance_logs_check_in ON attendance_logs(check_in DESC);
+            CREATE INDEX IF NOT EXISTS idx_attendance_org_checkin ON attendance_logs(organization_id, check_in DESC);
             ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS employee_id UUID REFERENCES employees(id) ON DELETE RESTRICT;
             ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS department VARCHAR(100);
         """)
@@ -1740,6 +1746,7 @@ async def init_schema():
             ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS reply_to_message_id UUID REFERENCES chat_messages(id) ON DELETE SET NULL;
 
             CREATE INDEX IF NOT EXISTS idx_chat_messages_channel ON chat_messages(channel_id, created_at ASC);
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_chan_created ON chat_messages(channel_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_chat_messages_sender ON chat_messages(sender_id);
         """)
 

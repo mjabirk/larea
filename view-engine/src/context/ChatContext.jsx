@@ -5,7 +5,7 @@ import { playNotificationSound, subscribeWebPush, unsubscribeWebPush } from '../
 const ChatContext = createContext(null);
 
 export function ChatProvider({ children }) {
-  const { session, token } = useAuth();
+  const { session, currentUser, token } = useAuth();
   const [channels, setChannels] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [onlineUsers, setOnlineUsers] = useState(new Set());
@@ -18,7 +18,8 @@ export function ChatProvider({ children }) {
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
-  const currentUserId = session?.id || session?.user_id;
+  const handleWsMessageRef = useRef(null);
+  const currentUserId = String(currentUser?.id || session?.user?.id || session?.id || session?.user_id || '').toLowerCase();
 
   // 1. Check current Push Notification status on mount
   useEffect(() => {
@@ -90,7 +91,7 @@ export function ChatProvider({ children }) {
           if (!isMounted) return;
           try {
             const data = JSON.parse(event.data);
-            handleWsMessage(data);
+            handleWsMessageRef.current?.(data);
           } catch (e) {
             console.error('Error parsing WebSocket message:', e);
           }
@@ -137,7 +138,9 @@ export function ChatProvider({ children }) {
   const handleWsMessage = useCallback((data) => {
     const type = data.type;
 
-    if (type === 'INIT_STATE') {
+    if (type === 'CHANNEL_CREATED') {
+      refreshChannels();
+    } else if (type === 'INIT_STATE') {
       const users = new Set(data.onlineUsers || []);
       setOnlineUsers(users);
     } else if (type === 'USER_PRESENCE') {
@@ -153,36 +156,75 @@ export function ChatProvider({ children }) {
       });
     } else if (type === 'NEW_MESSAGE' || type === 'CHANNEL_MESSAGE') {
       const msg = data.message || {};
-      const chId = msg.channel_id || msg.channelId;
-      const sId = msg.sender_id || msg.senderId;
-      const sName = msg.sender_name || msg.senderName;
-      const text = msg.message_text || msg.text || '';
-      const isSelf = sId === currentUserId;
+      const chId = msg.channel_id || msg.channelId || data.channelId;
+      const sId = String(msg.sender_id || msg.senderId || '').toLowerCase();
+      const sName = msg.sender_name || msg.senderName || data.senderName;
+      const text = msg.message_text || msg.content || msg.text || '';
+      const isSelf = Boolean(currentUserId && sId === currentUserId);
+
+      // Dispatch the custom DOM event so open ChatDock windows append the incoming message immediately without reloading:
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('chat_message_received', { detail: msg }));
+      }
 
       // Play soft audio chime if message is incoming from another user
       if (!isSelf) {
         playNotificationSound();
       }
 
-      // Update channels list last_message
+      // Update channels list last_message, unread_count, and re-sort / auto-insert
       setChannels((prev) => {
-        return prev.map((ch) => {
-          if (ch.id === chId) {
-            const isDockOpen = openDocks.some((d) => d.id === ch.id && !minimizedDockIds.has(ch.id));
-            return {
-              ...ch,
-              unread_count: isDockOpen || isSelf ? ch.unread_count : (ch.unread_count || 0) + 1,
-              last_message: {
-                id: msg.id,
-                text: text,
-                sender_id: sId,
-                sender_name: sName,
-                created_at: msg.created_at || msg.createdAt || new Date().toISOString()
-              }
-            };
-          }
-          return ch;
-        });
+        const isDockOpen = openDocks.some((d) => d.id === chId && !minimizedDockIds.has(chId));
+        const existingIndex = prev.findIndex((c) => c.id === chId);
+
+        if (existingIndex !== -1) {
+          const existingCh = prev[existingIndex];
+          const updatedChannel = {
+            ...existingCh,
+            unread_count: isDockOpen || isSelf ? existingCh.unread_count : (existingCh.unread_count || 0) + 1,
+            last_message: {
+              id: msg.id,
+              text: text,
+              sender_id: sId,
+              sender_name: sName,
+              created_at: msg.created_at || msg.createdAt || new Date().toISOString()
+            }
+          };
+          const rest = prev.filter((_, idx) => idx !== existingIndex);
+          return [updatedChannel, ...rest];
+        }
+
+        // If chId DOES NOT EXIST in prev (a brand-new DM or group channel):
+        const newChannelObj = {
+          id: chId,
+          name: data.channelType === 'direct' ? (sName || 'Direct Message') : (data.channelName || sName || 'Channel'),
+          channel_slug: data.channelSlug || `dm-${String(chId).slice(0, 8)}`,
+          channel_type: data.channelType || 'direct',
+          is_announcement_only: false,
+          can_post: true,
+          member_count: 2,
+          unread_count: isSelf ? 0 : 1,
+          created_at: msg.created_at || msg.createdAt || new Date().toISOString(),
+          last_message: {
+            id: msg.id,
+            text: text,
+            sender_id: sId,
+            sender_name: sName,
+            created_at: msg.created_at || msg.createdAt || new Date().toISOString(),
+          },
+          other_user: data.channelType === 'direct' ? {
+            id: sId,
+            full_name: sName,
+            is_online: true,
+          } : null,
+        };
+
+        // Also invoke refreshChannels() in the background so full metadata from PostgreSQL is synced
+        setTimeout(() => {
+          refreshChannels();
+        }, 100);
+
+        return [newChannelObj, ...prev];
       });
 
       // Update total unread if dock not active
@@ -220,9 +262,34 @@ export function ChatProvider({ children }) {
         );
       }
     }
-  }, [currentUserId, openDocks, minimizedDockIds, activeDockId]);
+  }, [currentUserId, openDocks, minimizedDockIds, activeDockId, refreshChannels]);
 
-  // 5. Open chat dock window (supports direct user ID or existing channel object)
+  handleWsMessageRef.current = handleWsMessage;
+
+  // 5. Mark channel as read
+  const markChannelAsRead = useCallback(async (channelId) => {
+    if (!token || !channelId) return;
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'MARK_READ',
+        channelId
+      }));
+    }
+
+    try {
+      await fetch(`/api/v1/chat/channels/${channelId}/read`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setChannels((prev) =>
+        prev.map((ch) => (ch.id === channelId ? { ...ch, unread_count: 0 } : ch))
+      );
+      setUnreadCount((prev) => Math.max(0, prev - 1));
+    } catch (e) {}
+  }, [token]);
+
+  // 6. Open chat dock window (supports direct user ID or existing channel object)
   const openChat = useCallback(async (channelOrUser) => {
     if (!token) return;
 
@@ -250,6 +317,10 @@ export function ChatProvider({ children }) {
         });
         if (res.ok) {
           targetChannel = await res.json();
+          setChannels((prev) => {
+            if (prev.some((c) => c.id === targetChannel.id)) return prev;
+            return [targetChannel, ...prev];
+          });
         }
       } catch (err) {
         console.error('Failed to open direct channel:', err);
@@ -258,6 +329,11 @@ export function ChatProvider({ children }) {
     }
 
     if (!targetChannel) return;
+
+    setChannels((prev) => {
+      if (prev.some((c) => c.id === targetChannel.id)) return prev;
+      return [targetChannel, ...prev];
+    });
 
     // Set as active dock
     setActiveDockId(targetChannel.id);
@@ -289,7 +365,7 @@ export function ChatProvider({ children }) {
     markChannelAsRead(targetChannel.id);
   }, [token, markChannelAsRead]);
 
-  // 6. Close a floating chat dock
+  // 7. Close a floating chat dock
   const closeDock = useCallback((channelId) => {
     setOpenDocks((prev) => prev.filter((d) => d.id !== channelId));
     setMinimizedDockIds((minSet) => {
@@ -300,12 +376,12 @@ export function ChatProvider({ children }) {
     setActiveDockId((prev) => (prev === channelId ? null : prev));
   }, []);
 
-  // 7. Minimize a floating chat dock to bottom pill
+  // 8. Minimize a floating chat dock to bottom pill
   const minimizeDock = useCallback((channelId) => {
     setMinimizedDockIds((minSet) => new Set([...minSet, channelId]));
   }, []);
 
-  // 8. Restore minimized dock back to open floating box
+  // 9. Restore minimized dock back to open floating box
   const restoreDock = useCallback((channelId) => {
     setMinimizedDockIds((minSet) => {
       const next = new Set(minSet);
@@ -316,7 +392,7 @@ export function ChatProvider({ children }) {
     markChannelAsRead(channelId);
   }, [markChannelAsRead]);
 
-  // 9. Send message (WebSocket or REST fallback)
+  // 10. Send message (WebSocket or REST fallback)
   const sendMessage = useCallback(async (channelId, text, attachments = [], replyToMessageId = null) => {
     if (!channelId || (!text.trim() && !attachments.length)) return;
 
@@ -348,7 +424,7 @@ export function ChatProvider({ children }) {
     }
   }, [token]);
 
-  // 10. Send typing indicator
+  // 11. Send typing indicator
   const sendTyping = useCallback((channelId, isTyping) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
@@ -358,29 +434,6 @@ export function ChatProvider({ children }) {
       }));
     }
   }, []);
-
-  // 11. Mark channel as read
-  const markChannelAsRead = useCallback(async (channelId) => {
-    if (!token || !channelId) return;
-
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'MARK_READ',
-        channelId
-      }));
-    }
-
-    try {
-      await fetch(`/api/v1/chat/channels/${channelId}/read`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setChannels((prev) =>
-        prev.map((ch) => (ch.id === channelId ? { ...ch, unread_count: 0 } : ch))
-      );
-      setUnreadCount((prev) => Math.max(0, prev - 1));
-    } catch (e) {}
-  }, [token]);
 
   // 12. Create custom channel
   const createChannel = useCallback(async (channelPayload) => {

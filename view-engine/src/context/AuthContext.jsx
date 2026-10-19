@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { useIdleTimer } from '../hooks/useIdleTimer';
+import { SessionExpiringModal } from '../components/Auth/SessionExpiringModal';
 
 const AuthContext = createContext(null);
 
@@ -100,6 +102,9 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
                 };
                 setSession(verifiedSession);
                 localStorage.setItem(STORAGE_SESSION_CACHE_KEY, JSON.stringify(verifiedSession));
+                if (onUserLogin && userProfile?.id) {
+                  onUserLogin(userProfile.id);
+                }
                 syncRoute(true, true);
               }
               return;
@@ -220,7 +225,7 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
   );
 
   // Logout handler
-  const logout = useCallback(() => {
+  const logout = useCallback((reason = null) => {
     const token = session?.token;
     if (token) {
       fetch('/api/v1/auth/sessions/revoke', {
@@ -238,7 +243,8 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
     localStorage.removeItem(STORAGE_SESSION_CACHE_KEY);
     sessionStorage.removeItem(STORAGE_SESSION_CACHE_KEY);
     setSession(null);
-    window.history.replaceState(null, '', '/login');
+    const redirectUrl = reason ? `/login?reason=${encodeURIComponent(reason)}` : '/login';
+    window.history.replaceState(null, '', redirectUrl);
   }, [session]);
 
   // Complete setup and activate system via POST /api/v1/setup/init directly in PostgreSQL
@@ -319,11 +325,24 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
     [sessionToken]
   );
 
+  const effectiveTimeoutMinutes = currentUser?.effective_idle_timeout_minutes || 15;
+  const handleIdleTimeout = useCallback(() => {
+    logout('idle_timeout');
+  }, [logout]);
+
+  const { isWarningVisible, secondsRemaining, stayLoggedIn } = useIdleTimer({
+    effectiveTimeoutMinutes,
+    isAuthenticated,
+    onTimeout: handleIdleTimeout,
+    getAuthHeaders,
+  });
+
   const value = {
     isSystemInitialized,
     isLoading,
     isAuthenticated,
     currentUser,
+    user: currentUser,
     session,
     sessionToken,
     token: sessionToken,
@@ -333,7 +352,16 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
     activateSystem,
   };
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+      <SessionExpiringModal
+        isOpen={isWarningVisible}
+        secondsRemaining={secondsRemaining}
+        onStayLoggedIn={stayLoggedIn}
+      />
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {

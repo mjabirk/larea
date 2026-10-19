@@ -10,6 +10,7 @@ import mimetypes
 from typing import Optional, Dict, Any, List, Set
 
 from fastapi import WebSocket
+from starlette.websockets import WebSocketState
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization
 
@@ -152,7 +153,8 @@ class ConnectionManager:
 
     async def connect(self, user_id: str, websocket: WebSocket, channel_ids: Optional[List[str]] = None):
         """Accept WebSocket connection, register user, and subscribe to their active channel rooms."""
-        await websocket.accept()
+        if websocket.client_state == WebSocketState.CONNECTING:
+            await websocket.accept()
         u_str = str(user_id)
         async with self.lock:
             if u_str not in self.active_connections:
@@ -389,7 +391,50 @@ class ConnectionManager:
                 )
 
 
-# Singleton connection manager
+# Central Channel WebSocket Manager
+class ChatConnectionManager:
+    def __init__(self):
+        # channel_id -> set of active WebSockets
+        self.channel_subscriptions: Dict[str, Set[WebSocket]] = {}
+        # user_id -> set of active WebSockets (for presence & direct alerts)
+        self.user_sockets: Dict[str, Set[WebSocket]] = {}
+
+    async def connect(self, websocket: WebSocket, channel_id: str, user_id: str):
+        if websocket.client_state == WebSocketState.CONNECTING:
+            await websocket.accept()
+        c_id = str(channel_id)
+        u_id = str(user_id)
+        self.channel_subscriptions.setdefault(c_id, set()).add(websocket)
+        self.user_sockets.setdefault(u_id, set()).add(websocket)
+
+    def disconnect(self, websocket: WebSocket, channel_id: str, user_id: str):
+        c_id = str(channel_id)
+        u_id = str(user_id)
+        if c_id in self.channel_subscriptions:
+            self.channel_subscriptions[c_id].discard(websocket)
+            if not self.channel_subscriptions[c_id]:
+                del self.channel_subscriptions[c_id]
+        if u_id in self.user_sockets:
+            self.user_sockets[u_id].discard(websocket)
+            if not self.user_sockets[u_id]:
+                del self.user_sockets[u_id]
+
+    async def broadcast_to_channel(self, channel_id: str, message_payload: dict):
+        c_id = str(channel_id)
+        subscribers = list(self.channel_subscriptions.get(c_id, []))
+        for socket in subscribers:
+            try:
+                await socket.send_json(message_payload)
+            except Exception:
+                pass
+
+    def is_user_online(self, user_id: str) -> bool:
+        return bool(self.user_sockets.get(str(user_id)))
+
+
+chat_ws_manager = ChatConnectionManager()
+
+# Singleton connection manager (Multi-room global presence)
 ws_manager = ConnectionManager()
 
 

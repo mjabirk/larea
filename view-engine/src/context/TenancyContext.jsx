@@ -68,6 +68,23 @@ export function TenancyProvider({ children }) {
           role: u.role || 'Standard User',
         }));
 
+        const getAuthenticatedUserId = () => {
+          try {
+            const raw = typeof window !== 'undefined'
+              ? (localStorage.getItem('enterprise_session_cache') || sessionStorage.getItem('enterprise_session_cache'))
+              : null;
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              return parsed?.user?.id || parsed?.id || null;
+            }
+          } catch (e) {
+            // ignore
+          }
+          return null;
+        };
+
+        const authUid = getAuthenticatedUserId();
+
         setTenancyState((prev) => ({
           ...prev,
           organizations: orgs,
@@ -77,7 +94,7 @@ export function TenancyProvider({ children }) {
           memberships: memberships,
           activeOrgId: prev.activeOrgId || orgs[0]?.id || null,
           activeBranchId: prev.activeBranchId || branches[0]?.id || null,
-          activeUserId: prev.activeUserId || users[0]?.id || null,
+          activeUserId: authUid || prev.activeUserId || users[0]?.id || null,
         }));
       }
     } catch (err) {
@@ -118,10 +135,43 @@ export function TenancyProvider({ children }) {
     };
   }, [refreshTenancyData, refreshAttendanceData]);
 
+  // Synchronize activeUserId with logged-in user session in storage
+  useEffect(() => {
+    const syncAuthUser = () => {
+      const authUid = getAuthenticatedUserId();
+      if (authUid && tenancyState.activeUserId !== authUid) {
+        setTenancyState((prev) => ({
+          ...prev,
+          activeUserId: authUid,
+        }));
+      }
+    };
+    syncAuthUser();
+    window.addEventListener('storage', syncAuthUser);
+    return () => window.removeEventListener('storage', syncAuthUser);
+  }, [tenancyState.activeUserId]);
+
   // Active entities
+  const getAuthenticatedUserId = () => {
+    try {
+      const raw = typeof window !== 'undefined'
+        ? (localStorage.getItem('enterprise_session_cache') || sessionStorage.getItem('enterprise_session_cache'))
+        : null;
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return parsed?.user?.id || parsed?.id || parsed?.user_id || null;
+      }
+    } catch (e) {
+      // ignore
+    }
+    return null;
+  };
+
+  const currentAuthUid = getAuthenticatedUserId();
+  const targetUserId = currentAuthUid || tenancyState.activeUserId;
   const currentUser =
-    tenancyState.users.find((u) => u.id === tenancyState.activeUserId) ||
-    tenancyState.users[0] ||
+    (targetUserId ? tenancyState.users.find((u) => u.id === targetUserId) : null) ||
+    (!currentAuthUid ? tenancyState.users[0] : null) ||
     null;
 
   const currentOrganization =

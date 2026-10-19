@@ -17,7 +17,7 @@ import { useTenancy } from '../../context/TenancyContext';
 import { useLocale } from '../../context/LocaleContext';
 import { NewUserModal } from './NewUserModal';
 
-export function UserListView({ onSelectUser }) {
+export function UserListView({ onSelectUser, onCreateNewUser }) {
   const { users, organizations, branches, organization_memberships } = useTenancy();
   const { formatDateTime } = useLocale();
 
@@ -113,7 +113,7 @@ export function UserListView({ onSelectUser }) {
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Filter by name, email, role, or branch..."
-              className="w-full h-[42px] text-[15px] font-normal pl-10 pr-9 rtl:pr-10 rtl:pl-9 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
+              className="w-full h-[42px] text-[15px] font-normal pl-10 pr-9 rtl:pr-10 rtl:pl-9 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 dark:focus:text-white transition"
             />
             {searchTerm && (
               <button
@@ -156,7 +156,7 @@ export function UserListView({ onSelectUser }) {
         <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
-            onClick={() => setIsNewUserModalOpen(true)}
+            onClick={() => (onCreateNewUser ? onCreateNewUser() : setIsNewUserModalOpen(true))}
             className="h-[42px] px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold flex items-center gap-2 transition cursor-pointer shadow-xs"
           >
             <UserPlus className="w-4 h-4" />

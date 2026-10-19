@@ -2,13 +2,14 @@ import os
 import uuid
 import json
 import datetime
+import asyncio
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.core.database import get_db_pool
-from backend.core.dependencies import get_current_user_session, get_client_ip
+from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission
 from backend.core.mail_engine import (
     encrypt_mail_password,
     decrypt_mail_password,
@@ -22,6 +23,18 @@ from backend.core.mail_engine import (
 )
 
 router = APIRouter(prefix="/api/v1/mail", tags=["Mail Engine"])
+
+
+def resolve_safe_mail_attachment_path(disk_path: str) -> str:
+    """Resolve and validate attachment storage path against Path Traversal / LFI."""
+    base_dir = os.path.realpath(os.path.join(os.getcwd(), "storage", "mail_attachments"))
+    target = os.path.realpath(os.path.join(os.getcwd(), disk_path))
+    if not target.startswith(base_dir + os.sep):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden attachment storage path."
+        )
+    return target
 
 
 # ==============================================================================
@@ -120,6 +133,7 @@ async def create_mail_server(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Register a new mail server with AES-256 encrypted credentials."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     server_id = uuid.uuid4()
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -153,6 +167,7 @@ async def update_mail_server(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Update mail server settings and optionally update encrypted password."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     now = datetime.datetime.now(datetime.timezone.utc)
 
@@ -193,6 +208,7 @@ async def delete_mail_server(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Delete a mail server configuration."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM mail_servers WHERE id = $1::uuid;", server_id)
@@ -208,6 +224,7 @@ async def test_mail_server_endpoint(
     Perform a live protocol handshake verification (SMTP NOOP or IMAP NOOP).
     Updates server connection status and error log in the database.
     """
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow("""
@@ -217,13 +234,15 @@ async def test_mail_server_endpoint(
             WHERE id = $1::uuid;
         """, server_id)
 
-        if not row:
-            raise HTTPException(status_code=404, detail="Mail server not found.")
+    if not row:
+        raise HTTPException(status_code=404, detail="Mail server not found.")
 
-        server_dict = dict(row)
-        success, message = test_mail_server_connection(server_dict)
+    server_dict = dict(row)
+    # Offload blocking network I/O to worker thread without holding DB connection
+    success, message = await asyncio.to_thread(test_mail_server_connection, server_dict)
 
-        status_val = "ready" if success else "failed"
+    status_val = "ready" if success else "failed"
+    async with pool.acquire() as conn:
         await conn.execute("""
             UPDATE mail_servers
             SET last_connection_status = $1, last_connection_error = $2, updated_at = CURRENT_TIMESTAMP
@@ -695,7 +714,7 @@ async def send_email(
 
         # If system report requested (Payslip PDF)
         if attach_report and payslip_record:
-            pdf_meta = generate_payslip_pdf_report(payslip_record, batch_record)
+            pdf_meta = await asyncio.to_thread(generate_payslip_pdf_report, payslip_record, batch_record)
             att_id = uuid.uuid4()
             await conn.execute("""
                 INSERT INTO mail_attachments (
@@ -711,7 +730,7 @@ async def send_email(
                 filename = sanitize_filename(c_att.get("filename") or "document.pdf")
                 disk_path = c_att.get("disk_path")
                 if disk_path:
-                    abs_p = os.path.join(os.getcwd(), disk_path)
+                    abs_p = resolve_safe_mail_attachment_path(disk_path)
                     if os.path.exists(abs_p):
                         size_b = os.path.getsize(abs_p)
                         c_id = uuid.uuid4()
@@ -727,19 +746,22 @@ async def send_email(
                             "abs_path": abs_p
                         })
 
-        # 5. Deliver via SMTP
-        is_success, error_log = send_smtp_email(
-            server_dict=server_dict,
-            to_addresses=payload.to_addresses,
-            subject=final_subject,
-            body_html=final_body,
-            cc_addresses=payload.cc_addresses,
-            attachments=dispatched_attachments
-        )
+    # 5. Deliver via SMTP in background worker thread (release db connection pool during network I/O)
+    is_success, error_log = await asyncio.to_thread(
+        send_smtp_email,
+        server_dict=server_dict,
+        to_addresses=payload.to_addresses,
+        subject=final_subject,
+        body_html=final_body,
+        cc_addresses=payload.cc_addresses,
+        attachments=dispatched_attachments
+    )
 
-        final_status = "sent" if is_success else "failed"
-        sent_timestamp = now if is_success else None
+    final_status = "sent" if is_success else "failed"
+    sent_timestamp = now if is_success else None
 
+    # Briefly re-acquire DB connection to update status and record audit log
+    async with pool.acquire() as conn:
         await conn.execute("""
             UPDATE mail_messages
             SET status = $1, error_log = $2, sent_at = $3
@@ -806,16 +828,19 @@ async def resend_mail_message(
         att_rows = await conn.fetch("SELECT * FROM mail_attachments WHERE mail_message_id = $1::uuid;", message_id)
         attachments = [dict(a) for a in att_rows]
 
-        is_success, error_log = send_smtp_email(
-            server_dict=server_dict,
-            to_addresses=to_addrs,
-            subject=msg_row["subject"],
-            body_html=msg_row["body_html"] or "",
-            cc_addresses=cc_addrs,
-            attachments=attachments
-        )
+    # Deliver via SMTP off thread without holding db connection
+    is_success, error_log = await asyncio.to_thread(
+        send_smtp_email,
+        server_dict=server_dict,
+        to_addresses=to_addrs,
+        subject=msg_row["subject"],
+        body_html=msg_row["body_html"] or "",
+        cc_addresses=cc_addrs,
+        attachments=attachments
+    )
 
-        new_status = "sent" if is_success else "failed"
+    new_status = "sent" if is_success else "failed"
+    async with pool.acquire() as conn:
         await conn.execute("""
             UPDATE mail_messages
             SET status = $1, error_log = $2, sent_at = $3
@@ -844,13 +869,13 @@ async def delete_mail_message(
         for att in att_rows:
             p = att["disk_path"]
             if p:
-                abs_p = os.path.join(os.getcwd(), p)
-                if os.path.exists(abs_p):
-                    try:
+                try:
+                    abs_p = resolve_safe_mail_attachment_path(p)
+                    if os.path.exists(abs_p):
                         os.remove(abs_p)
                         unlinked_files += 1
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
         await conn.execute("DELETE FROM mail_messages WHERE id = $1::uuid;", message_id)
 
@@ -879,7 +904,7 @@ async def download_mail_attachment(
             raise HTTPException(status_code=404, detail="Attachment metadata not found.")
 
         disk_path = row["disk_path"]
-        abs_path = os.path.join(os.getcwd(), disk_path)
+        abs_path = resolve_safe_mail_attachment_path(disk_path)
         if not os.path.exists(abs_path):
             raise HTTPException(status_code=404, detail="Physical attachment file missing from storage disk.")
 
@@ -920,5 +945,6 @@ async def trigger_retention_cleanup(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Manually trigger or schedule the mail retention auto-purge worker."""
+    require_permission(session, "org.manage")
     summary = await run_mail_retention_cleanup()
     return summary

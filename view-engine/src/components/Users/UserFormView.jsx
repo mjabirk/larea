@@ -17,24 +17,31 @@ import {
   Mail,
   ChevronDown,
   ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
   Save,
   RotateCcw,
   Loader2,
+  Eye,
+  EyeOff,
+  AlertCircle,
 } from 'lucide-react';
 import { useTenancy } from '../../context/TenancyContext';
 import { useAuth } from '../../context/AuthContext';
 import { useLocale } from '../../context/LocaleContext';
 import { useAccessControl } from '../../context/AccessControlContext';
 import { DEFAULT_ROLES } from '../../schema/rbacSchema';
+import { validatePasswordComplexity } from '../../schema/securityValidation';
 import { ResetPasswordModal } from './ResetPasswordModal';
 
-export function UserFormView({ user, onBackToList }) {
-  const { users, currentUser, organizations, branches, organization_memberships, updateUser } = useTenancy();
+export function UserFormView({ user, usersList = [], onSelectUser, onBackToList }) {
+  const { users, currentUser, organizations, branches, organization_memberships, updateUser, createUser } = useTenancy();
   const { session } = useAuth();
   const { roles } = useAccessControl();
   const { t } = useLocale();
 
-  const activeUser = user || currentUser || users[0];
+  const isCreateMode = !user?.id;
+  const activeUser = isCreateMode ? null : user;
 
   // Active stateful DragonflyDB sessions
   const [sessions, setSessions] = useState([]);
@@ -42,29 +49,79 @@ export function UserFormView({ user, onBackToList }) {
   const [isRevokingSession, setIsRevokingSession] = useState(false);
   const [isRevokingOthers, setIsRevokingOthers] = useState(false);
 
-  // State for modals
+  // State for modals & alerts
   const [sessionToRevoke, setSessionToRevoke] = useState(null);
   const [isResetPasswordModalOpen, setIsResetPasswordModalOpen] = useState(false);
   const [notification, setNotification] = useState('');
+  const [validationError, setValidationError] = useState('');
   const [isDirty, setIsDirty] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
-  const userMembership = organization_memberships.find((m) => m.user_id === activeUser?.id);
-  const userRole = activeUser?.role || userMembership?.role || (activeUser?.is_superadmin ? 'Superadmin' : 'Operations Lead');
+  const getInitialFormData = useCallback((targetUser) => {
+    if (!targetUser?.id) {
+      return {
+        full_name: '',
+        email: '',
+        status: 'active',
+        is_superadmin: false,
+        role: 'Operations Lead',
+        department: 'Operations',
+        allowed_cidrs: '0.0.0.0/0',
+        date_of_birth: '',
+        initial_password: 'TempAdminPass@2026',
+        age_consent_verified: false,
+        guardian_name: '',
+        guardian_email: '',
+      };
+    }
+    const mem = organization_memberships.find((m) => m.user_id === targetUser.id);
+    const uRole = targetUser.role || mem?.role || (targetUser.is_superadmin ? 'Superadmin' : 'Operations Lead');
+    return {
+      full_name: targetUser.full_name || '',
+      email: targetUser.email || '',
+      status: targetUser.status || 'active',
+      is_superadmin: Boolean(targetUser.is_superadmin),
+      role: uRole,
+      department: targetUser.department || 'Operations',
+      allowed_cidrs: targetUser.allowed_cidrs || '192.168.10.0/24, 10.0.4.0/24',
+      date_of_birth: targetUser.date_of_birth || '',
+      initial_password: '',
+      age_consent_verified: Boolean(targetUser.age_consent_verified),
+      guardian_name: targetUser.guardian_name || '',
+      guardian_email: targetUser.guardian_email || '',
+    };
+  }, [organization_memberships]);
 
   // Editable user state
-  const [formData, setFormData] = useState({
-    full_name: activeUser?.full_name || '',
-    email: activeUser?.email || '',
-    status: activeUser?.status || 'active',
-    is_superadmin: Boolean(activeUser?.is_superadmin),
-    role: userRole,
-    department: activeUser?.department || 'Operations',
-    allowed_cidrs: activeUser?.allowed_cidrs || '192.168.10.0/24, 10.0.4.0/24',
-    date_of_birth: activeUser?.date_of_birth || '',
-    age_consent_verified: Boolean(activeUser?.age_consent_verified),
-    guardian_name: activeUser?.guardian_name || '',
-    guardian_email: activeUser?.guardian_email || '',
-  });
+  const [formData, setFormData] = useState(() => getInitialFormData(user));
+
+  // Reset form data and isDirty whenever user?.id changes (e.g. record pager or switching from New to existing)
+  useEffect(() => {
+    setFormData(getInitialFormData(user));
+    setIsDirty(false);
+    setValidationError('');
+  }, [user?.id, getInitialFormData]);
+
+  // Calculate current index and total for Record Pager
+  const currentIndex = usersList.findIndex((u) => u.id === (user?.id || activeUser?.id));
+  const totalUsers = usersList.length;
+  const hasPrevious = currentIndex > 0;
+  const hasNext = currentIndex >= 0 && currentIndex < totalUsers - 1;
+
+  const handlePrevious = () => {
+    if (hasPrevious) {
+      if (isDirty && !window.confirm("You have unsaved changes. Discard and navigate to previous user?")) return;
+      onSelectUser(usersList[currentIndex - 1]);
+    }
+  };
+
+  const handleNext = () => {
+    if (hasNext) {
+      if (isDirty && !window.confirm("You have unsaved changes. Discard and navigate to next user?")) return;
+      onSelectUser(usersList[currentIndex + 1]);
+    }
+  };
 
   const calculateAge = (dob) => {
     if (!dob) return null;
@@ -86,25 +143,101 @@ export function UserFormView({ user, onBackToList }) {
   const handleFieldChange = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
     setIsDirty(true);
+    setValidationError('');
   };
 
-  const handleSaveUser = () => {
-    updateUser(activeUser.id, {
-      full_name: formData.full_name,
-      email: formData.email,
-      status: formData.status,
-      is_superadmin: formData.is_superadmin,
-      department: formData.department,
-      allowed_cidrs: formData.allowed_cidrs,
-      role: formData.role,
-      date_of_birth: formData.date_of_birth,
-      age_consent_verified: formData.age_consent_verified,
-      guardian_name: formData.guardian_name,
-      guardian_email: formData.guardian_email,
-    });
+  const handleSave = async () => {
+    setValidationError('');
+
+    if (!formData.full_name.trim() || !formData.email.trim()) {
+      setValidationError('Please provide full name and work email.');
+      return;
+    }
+    if (!formData.email.includes('@')) {
+      setValidationError('Please provide a valid email address.');
+      return;
+    }
+
+    if (isCreateMode) {
+      const pwdError = validatePasswordComplexity(formData.initial_password);
+      if (pwdError) {
+        setValidationError(pwdError);
+        return;
+      }
+
+      if (isMinor) {
+        if (!formData.guardian_name.trim() || !formData.guardian_email.trim()) {
+          setValidationError('Minor applicant: Parent or legal guardian name and email are mandatory under GDPR Art. 8.');
+          return;
+        }
+        if (!formData.age_consent_verified) {
+          setValidationError('Minor applicant: Explicit parental/guardian consent verification must be confirmed.');
+          return;
+        }
+      }
+
+      setIsSaving(true);
+      try {
+        const selectedRoleObj = (roles || DEFAULT_ROLES).find((r) => r.name === formData.role);
+        const createdUser = await createUser({
+          full_name: formData.full_name.trim(),
+          email: formData.email.trim(),
+          role: formData.role,
+          role_id: selectedRoleObj?.id,
+          branch_id: branches[0]?.id,
+          initial_password: formData.initial_password,
+          date_of_birth: formData.date_of_birth || null,
+          age: currentAge,
+          guardian_name: isMinor ? formData.guardian_name.trim() : null,
+          guardian_email: isMinor ? formData.guardian_email.trim() : null,
+        });
+
+        setIsDirty(false);
+        setNotification('User created successfully.');
+        setTimeout(() => setNotification(''), 3000);
+        if (onSelectUser && createdUser) {
+          onSelectUser(createdUser);
+        }
+      } catch (err) {
+        console.error('Failed to create user:', err);
+        setValidationError(err.message || 'Failed to create user.');
+      } finally {
+        setIsSaving(false);
+      }
+    } else {
+      if (!activeUser?.id) return;
+      setIsSaving(true);
+      try {
+        await updateUser(activeUser.id, {
+          full_name: formData.full_name,
+          email: formData.email,
+          status: formData.status,
+          is_superadmin: formData.is_superadmin,
+          department: formData.department,
+          allowed_cidrs: formData.allowed_cidrs,
+          role: formData.role,
+          date_of_birth: formData.date_of_birth,
+          age_consent_verified: formData.age_consent_verified,
+          guardian_name: formData.guardian_name,
+          guardian_email: formData.guardian_email,
+        });
+        setIsDirty(false);
+        setNotification('User profile successfully saved.');
+        setTimeout(() => setNotification(''), 3000);
+      } catch (err) {
+        console.error('Failed to save user:', err);
+        setValidationError('Failed to save user.');
+        setTimeout(() => setValidationError(''), 3000);
+      } finally {
+        setIsSaving(false);
+      }
+    }
+  };
+
+  const handleDiscard = () => {
+    setFormData(getInitialFormData(user));
     setIsDirty(false);
-    setNotification('User profile successfully saved.');
-    setTimeout(() => setNotification(''), 3000);
+    setValidationError('');
   };
 
   // Fetch real DragonflyDB active sessions for inspected identity
@@ -239,51 +372,88 @@ export function UserFormView({ user, onBackToList }) {
         }}
       />
 
-      {/* Top Sticky Tier 2 Control Bar with Back Button */}
-      <div className="sticky top-14 z-20 h-14 min-h-[56px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs px-4 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          {onBackToList && (
-            <button
-              type="button"
-              onClick={onBackToList}
-              className="h-[36px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-[13px] font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5 transition cursor-pointer"
-            >
-              <ArrowLeft className="w-3.5 h-3.5 rtl:rotate-180" />
-              <span>Back to Users</span>
-            </button>
-          )}
+      {/* Standard Global Top Control Bar */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 mb-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        {/* Left: Breadcrumbs & Back */}
+        <div className="flex items-center gap-2 text-xs">
+          <button
+            type="button"
+            onClick={onBackToList}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer"
+          >
+            <ChevronLeft className="w-3.5 h-3.5"/>
+            <span>Users</span>
+          </button>
 
-          <div className="flex items-center gap-1.5 text-[13px]">
-            <span className="text-slate-400">Users</span>
-            <span className="text-slate-300 dark:text-slate-700">/</span>
-            <span className="font-semibold text-slate-900 dark:text-white text-[15px]">
-              {formData.full_name}
+          <span className="text-slate-400">/</span>
+          <span className="font-bold text-slate-900 dark:text-white">
+            {formData.full_name || user?.full_name || 'New Identity'}
+          </span>
+          {!isCreateMode && user?.id && (
+            <span className="font-mono text-[10px] text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md">
+              {user.id.slice(0, 8)}...
             </span>
-          </div>
-
-          <span className="font-mono text-[12px] font-semibold px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-            {activeUser.id}
+          )}
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+            isCreateMode
+              ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300 border border-blue-200'
+              : formData.status === 'active'
+                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200'
+                : 'bg-slate-100 text-slate-600'
+          }`}>
+            {isCreateMode ? 'New' : (formData.status || 'Draft')}
           </span>
         </div>
 
-        {/* Center: Record Status Badge */}
-        <div className="hidden sm:flex items-center">
-          <span className={formData.status === 'active' ? 'ui-badge-valid' : 'ui-badge-missing'}>
-            Status: {formData.status.toUpperCase()}
-          </span>
-        </div>
+        {/* Right: Save, Discard, and Pager */}
+        <div className="flex items-center gap-2 self-end sm:self-auto">
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={!isDirty || isSaving}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer ${
+              isDirty
+                ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-not-allowed'
+            }`}
+          >
+            <Save className="w-3.5 h-3.5"/>
+            <span>{isSaving ? 'Saving...' : 'Save Changes'}</span>
+          </button>
 
-        {/* Right: Actions */}
-        <div className="flex items-center gap-2">
-          {isDirty && (
-            <button
-              type="button"
-              onClick={handleSaveUser}
-              className="h-[36px] px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>Save Changes</span>
-            </button>
+          <button
+            type="button"
+            onClick={handleDiscard}
+            disabled={!isDirty}
+            className="flex items-center gap-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition disabled:opacity-50 cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5"/>
+            <span>Discard</span>
+          </button>
+
+          {/* Record Pager (1 of N < >) */}
+          {!isCreateMode && totalUsers > 0 && currentIndex >= 0 && (
+            <div className="flex items-center gap-1 pl-2 border-l border-slate-200 dark:border-slate-800 text-xs font-mono text-slate-500">
+              <span className="mr-1">{currentIndex + 1} of {totalUsers}</span>
+              <button
+                type="button"
+                onClick={handlePrevious}
+                disabled={!hasPrevious}
+                className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30 cursor-pointer"
+                title="Previous User"
+              >
+                <ChevronLeft className="w-3.5 h-3.5"/>
+              </button>
+              <button
+                type="button"
+                onClick={handleNext}
+                disabled={!hasNext}
+                className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30 cursor-pointer"
+                title="Next User"
+              >
+                <ChevronRight className="w-3.5 h-3.5"/>
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -298,6 +468,22 @@ export function UserFormView({ user, onBackToList }) {
             type="button"
             onClick={() => setNotification('')}
             className="text-emerald-700 dark:text-emerald-400 hover:text-emerald-900 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {validationError && (
+        <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs font-semibold flex items-center justify-between animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+            <span>{validationError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setValidationError('')}
+            className="text-rose-700 dark:text-rose-400 hover:text-rose-900 cursor-pointer"
           >
             ✕
           </button>
@@ -336,7 +522,7 @@ export function UserFormView({ user, onBackToList }) {
                   type="text"
                   value={formData.full_name}
                   onChange={(e) => handleFieldChange('full_name', e.target.value)}
-                  className="w-full h-[42px] text-[15px] font-normal px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-850 placeholder:text-slate-400 transition"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:bg-white dark:focus:bg-slate-800 dark:focus:text-white transition-colors"
                 />
               </div>
 
@@ -349,9 +535,51 @@ export function UserFormView({ user, onBackToList }) {
                   type="email"
                   value={formData.email}
                   onChange={(e) => handleFieldChange('email', e.target.value)}
-                  className="w-full h-[42px] text-[15px] font-normal px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-850 font-mono placeholder:text-slate-400 transition"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:bg-white dark:focus:bg-slate-800 dark:focus:text-white transition-colors font-mono"
                 />
               </div>
+
+              {/* Initial Password (Create Mode only) */}
+              {isCreateMode && (
+                <div className="md:col-span-2">
+                  <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block mb-1.5">
+                    Initial Password <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      value={formData.initial_password}
+                      onChange={(e) => handleFieldChange('initial_password', e.target.value)}
+                      placeholder="Min 10 chars, uppercase, digit, special symbol"
+                      className="w-full px-3 py-2 pr-10 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-2 text-[11px]">
+                    {formData.initial_password && validatePasswordComplexity(formData.initial_password) ? (
+                      <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1 font-medium">
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        {validatePasswordComplexity(formData.initial_password)}
+                      </span>
+                    ) : formData.initial_password ? (
+                      <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1 font-medium">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Password meets enterprise complexity criteria
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">
+                        Must contain at least 10 chars, 1 uppercase, 1 digit, and 1 symbol (!@#$%^&*...)
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Assigned Role */}
               <div>
@@ -361,10 +589,10 @@ export function UserFormView({ user, onBackToList }) {
                 <select
                   value={formData.role}
                   onChange={(e) => handleFieldChange('role', e.target.value)}
-                  className="w-full h-[42px] text-[13px] font-medium px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 cursor-pointer transition"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:bg-white dark:focus:bg-slate-800 dark:focus:text-white transition-colors cursor-pointer"
                 >
                   {(roles || DEFAULT_ROLES).map((r) => (
-                    <option key={r.id} value={r.name}>
+                    <option key={r.id} value={r.name} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">
                       {r.name} - {r.code} {r.is_system ? '(System)' : '(Custom)'}
                     </option>
                   ))}
@@ -379,13 +607,13 @@ export function UserFormView({ user, onBackToList }) {
                 <select
                   value={formData.department}
                   onChange={(e) => handleFieldChange('department', e.target.value)}
-                  className="w-full h-[42px] text-[13px] font-medium px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 cursor-pointer transition"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:bg-white dark:focus:bg-slate-800 dark:focus:text-white transition-colors cursor-pointer"
                 >
-                  <option value="Operations">Operations</option>
-                  <option value="Human Resources">Human Resources</option>
-                  <option value="Engineering">Engineering</option>
-                  <option value="Finance">Finance</option>
-                  <option value="IT Infrastructure">IT Infrastructure</option>
+                  <option value="Operations" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Operations</option>
+                  <option value="Human Resources" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Human Resources</option>
+                  <option value="Engineering" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Engineering</option>
+                  <option value="Finance" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Finance</option>
+                  <option value="IT Infrastructure" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">IT Infrastructure</option>
                 </select>
               </div>
 
@@ -399,7 +627,7 @@ export function UserFormView({ user, onBackToList }) {
                   value={formData.allowed_cidrs}
                   onChange={(e) => handleFieldChange('allowed_cidrs', e.target.value)}
                   placeholder="e.g. 192.168.10.0/24, 10.0.4.0/24"
-                  className="w-full h-10 text-[14px] font-normal px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-850 font-mono placeholder:text-slate-400 transition"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:bg-white dark:focus:bg-slate-800 dark:focus:text-white transition-colors font-mono"
                 />
                 <span className="text-[12px] text-slate-500 dark:text-slate-400 block mt-1">
                   Restricts account access to designated networks or IP ranges.
@@ -424,7 +652,7 @@ export function UserFormView({ user, onBackToList }) {
                   type="date"
                   value={formData.date_of_birth}
                   onChange={(e) => handleFieldChange('date_of_birth', e.target.value)}
-                  className="w-full h-[42px] text-[15px] font-normal px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-850 transition"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:bg-white dark:focus:bg-slate-800 dark:focus:text-white transition-colors"
                 />
               </div>
 
@@ -446,7 +674,7 @@ export function UserFormView({ user, onBackToList }) {
                         value={formData.guardian_name}
                         onChange={(e) => handleFieldChange('guardian_name', e.target.value)}
                         placeholder="e.g. Robert Smith"
-                        className="w-full h-[42px] text-[15px] font-normal px-3.5 rounded-xl border border-amber-200 dark:border-amber-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-slate-400"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:bg-white dark:focus:bg-slate-800 dark:focus:text-white transition-colors"
                       />
                     </div>
                     <div>
@@ -459,7 +687,7 @@ export function UserFormView({ user, onBackToList }) {
                         value={formData.guardian_email}
                         onChange={(e) => handleFieldChange('guardian_email', e.target.value)}
                         placeholder="guardian@example.com"
-                        className="w-full h-[42px] text-[15px] font-normal px-3.5 rounded-xl border border-amber-200 dark:border-amber-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono placeholder:text-slate-400"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:bg-white dark:focus:bg-slate-800 dark:focus:text-white transition-colors font-mono"
                       />
                     </div>
                   </div>
@@ -555,105 +783,107 @@ export function UserFormView({ user, onBackToList }) {
             </div>
           </div>
 
-          {/* 2. Active Sessions Panel */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs p-5 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
-              <div>
-                <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white">
-                  Active Sessions ({sessions.length})
-                </h3>
-                <p className="text-[12px] text-slate-500 dark:text-slate-400 mt-0.5">
-                  Logged in devices & browsers
-                </p>
+          {/* 2. Active Sessions Panel - Only show when editing an existing user */}
+          {!isCreateMode && Boolean(user?.id) && (
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs p-5 space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+                <div>
+                  <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white">
+                    Active Sessions ({sessions.length})
+                  </h3>
+                  <p className="text-[12px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    Logged in devices & browsers
+                  </p>
+                </div>
+
+                {sessions.length > 1 && (
+                  <button
+                    type="button"
+                    disabled={isRevokingOthers}
+                    onClick={handleRevokeAllOtherSessions}
+                    className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                    title="Revoke all sessions except the current device"
+                  >
+                    {isRevokingOthers && <Loader2 className="w-3 h-3 animate-spin" />}
+                    <span>{isRevokingOthers ? 'Revoking...' : 'Revoke Others'}</span>
+                  </button>
+                )}
               </div>
 
-              {sessions.length > 1 && (
-                <button
-                  type="button"
-                  disabled={isRevokingOthers}
-                  onClick={handleRevokeAllOtherSessions}
-                  className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-                  title="Revoke all sessions except the current device"
-                >
-                  {isRevokingOthers && <Loader2 className="w-3 h-3 animate-spin" />}
-                  <span>{isRevokingOthers ? 'Revoking...' : 'Revoke Others'}</span>
-                </button>
-              )}
-            </div>
-
-            {/* Sessions List */}
-            <div className="space-y-3">
-              {isLoadingSessions ? (
-                <div className="py-8 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
-                  <span>Loading active sessions...</span>
-                </div>
-              ) : sessions.length === 0 ? (
-                <div className="py-8 text-center text-slate-400 text-xs">
-                  No active sessions found.
-                </div>
-              ) : (
-                sessions.map((sess) => (
-                  <div
-                    key={sess.id}
-                    className={`p-3.5 rounded-xl border transition space-y-2.5 ${sess.is_current
-                        ? 'border-blue-300 dark:border-blue-900/60 bg-blue-50/40 dark:bg-blue-950/20'
-                        : 'border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40'
-                      }`}
-                  >
-                    {/* Top Row: Device & Current indicator */}
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        {sess.device.includes('iPhone') || sess.device.includes('Mobile') ? (
-                          <Smartphone className="w-4 h-4 text-slate-500 dark:text-slate-400 shrink-0" />
-                        ) : (
-                          <Laptop className="w-4 h-4 text-slate-500 dark:text-slate-400 shrink-0" />
-                        )}
-                        <span className="font-bold text-xs text-slate-900 dark:text-slate-100 leading-tight">
-                          {sess.device}
-                        </span>
-                      </div>
-
-                      {sess.is_current && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 shrink-0">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                          <span>Current</span>
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Metadata: IP & Activity */}
-                    <div className="space-y-0.5 text-[11px] font-mono text-slate-500 dark:text-slate-400">
-                      <div className="flex items-center justify-between">
-                        <span>IP Address:</span>
-                        <strong className="text-slate-700 dark:text-slate-300">{sess.ip_address}</strong>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span>Last Activity:</span>
-                        <span className="text-slate-600 dark:text-slate-300 font-sans">{sess.last_activity}</span>
-                      </div>
-                      <div className="flex items-center justify-between text-[10px]">
-                        <span>Location:</span>
-                        <span className="text-slate-400 font-sans">{sess.location}</span>
-                      </div>
-                    </div>
-
-                    {/* Action: Red Revoke Button */}
-                    <div className="pt-1 border-t border-slate-200/60 dark:border-slate-700/60 flex items-center justify-end">
-                      <button
-                        type="button"
-                        onClick={() => setSessionToRevoke(sess)}
-                        className="px-2.5 py-1 rounded-md bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/60 dark:hover:bg-rose-900/60 text-rose-600 dark:text-rose-300 text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition border border-rose-200 dark:border-rose-900/40"
-                      >
-                        <Trash2 className="w-3 h-3 text-rose-500" />
-                        <span>Revoke Session</span>
-                      </button>
-                    </div>
+              {/* Sessions List */}
+              <div className="space-y-3">
+                {isLoadingSessions ? (
+                  <div className="py-8 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                    <span>Loading active sessions...</span>
                   </div>
-                ))
-              )}
+                ) : sessions.length === 0 ? (
+                  <div className="py-8 text-center text-slate-400 text-xs">
+                    No active sessions found.
+                  </div>
+                ) : (
+                  sessions.map((sess) => (
+                    <div
+                      key={sess.id}
+                      className={`p-3.5 rounded-xl border transition space-y-2.5 ${sess.is_current
+                          ? 'border-blue-300 dark:border-blue-900/60 bg-blue-50/40 dark:bg-blue-950/20'
+                          : 'border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40'
+                        }`}
+                    >
+                      {/* Top Row: Device & Current indicator */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          {sess.device.includes('iPhone') || sess.device.includes('Mobile') ? (
+                            <Smartphone className="w-4 h-4 text-slate-500 dark:text-slate-400 shrink-0" />
+                          ) : (
+                            <Laptop className="w-4 h-4 text-slate-500 dark:text-slate-400 shrink-0" />
+                          )}
+                          <span className="font-bold text-xs text-slate-900 dark:text-slate-100 leading-tight">
+                            {sess.device}
+                          </span>
+                        </div>
+
+                        {sess.is_current && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 shrink-0">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                            <span>Current</span>
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Metadata: IP & Activity */}
+                      <div className="space-y-0.5 text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                        <div className="flex items-center justify-between">
+                          <span>IP Address:</span>
+                          <strong className="text-slate-700 dark:text-slate-300">{sess.ip_address}</strong>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span>Last Activity:</span>
+                          <span className="text-slate-600 dark:text-slate-300 font-sans">{sess.last_activity}</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span>Location:</span>
+                          <span className="text-slate-400 font-sans">{sess.location}</span>
+                        </div>
+                      </div>
+
+                      {/* Action: Red Revoke Button */}
+                      <div className="pt-1 border-t border-slate-200/60 dark:border-slate-700/60 flex items-center justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setSessionToRevoke(sess)}
+                          className="px-2.5 py-1 rounded-md bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/60 dark:hover:bg-rose-900/60 text-rose-600 dark:text-rose-300 text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition border border-rose-200 dark:border-rose-900/40"
+                        >
+                          <Trash2 className="w-3 h-3 text-rose-500" />
+                          <span>Revoke Session</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
 

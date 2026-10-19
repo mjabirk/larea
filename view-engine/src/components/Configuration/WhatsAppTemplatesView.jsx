@@ -23,9 +23,12 @@ import {
   Globe,
   Sliders,
   HelpCircle,
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  Save,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { useModalEscape } from '../../hooks/useModalEscape';
 
 // Predefined ERP Field Suggestions per Model Scope
 const FIELD_SUGGESTIONS = {
@@ -62,6 +65,20 @@ const FIELD_SUGGESTIONS = {
   ],
 };
 
+const DEFAULT_NEW_FORM = {
+  config_id: '',
+  template_name: '',
+  category: 'UTILITY',
+  language: 'en_US',
+  model_scope: 'general',
+  header_type: 'NONE',
+  header_text: '',
+  body_text: '',
+  footer_text: '',
+  buttons_json: '[]',
+  variable_mapping_json: '{}',
+};
+
 export function WhatsAppTemplatesView() {
   const auth = useAuth();
   const sessionToken =
@@ -81,25 +98,14 @@ export function WhatsAppTemplatesView() {
   const [filterStatus, setFilterStatus] = useState('all');
   const [actionMessage, setActionMessage] = useState(null);
 
-  // Template Builder Modal
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingTemplate, setEditingTemplate] = useState(null);
+  // Standard in-place view mode
+  const [viewMode, setViewMode] = useState('list'); // 'list' | 'form'
+  const [selectedRecord, setSelectedRecord] = useState(null);
+  const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   // Builder Form State
-  const [formData, setFormData] = useState({
-    config_id: '',
-    template_name: '',
-    category: 'UTILITY',
-    language: 'en_US',
-    model_scope: 'general',
-    header_type: 'NONE',
-    header_text: '',
-    body_text: '',
-    footer_text: '',
-    buttons_json: '[]',
-    variable_mapping_json: '{}',
-  });
+  const [formData, setFormData] = useState(DEFAULT_NEW_FORM);
 
   // Buttons Editor State
   const [buttonType, setButtonType] = useState('NONE'); // NONE, QUICK_REPLY, CTA_URL
@@ -114,8 +120,6 @@ export function WhatsAppTemplatesView() {
     if (!formData.template_name) return true;
     return /^[a-z0-9_]+$/.test(formData.template_name);
   }, [formData.template_name]);
-
-  useModalEscape(isModalOpen, () => setIsModalOpen(false));
 
   const getHeaders = useCallback(() => {
     const headers = { 'Content-Type': 'application/json' };
@@ -149,139 +153,159 @@ export function WhatsAppTemplatesView() {
     fetchTemplates();
   }, [fetchTemplates]);
 
-  // Extract {{1}}, {{2}} from body_text
-  const detectedVariables = useMemo(() => {
-    const matches = formData.body_text.match(/\{\{(\d+)\}\}/g) || [];
-    const unique = Array.from(new Set(matches.map((m) => m.replace(/[\{\}]/g, ''))));
-    return unique.sort((a, b) => parseInt(a) - parseInt(b));
-  }, [formData.body_text]);
-
-  // Keep variableMap updated when detected variables change
-  useEffect(() => {
-    setVariableMap((prev) => {
-      const next = { ...prev };
-      detectedVariables.forEach((num) => {
-        if (!next[num]) {
-          const suggestions = FIELD_SUGGESTIONS[formData.model_scope] || FIELD_SUGGESTIONS['general'];
-          const defaultField = suggestions[parseInt(num) - 1]?.field || 'custom_param';
-          next[num] = defaultField;
-        }
-      });
-      return next;
+  const filtered = useMemo(() => {
+    return templates.filter((t) => {
+      if (filterScope !== 'all' && t.model_scope !== filterScope) return false;
+      if (filterStatus !== 'all' && t.approval_status !== filterStatus) return false;
+      if (search) {
+        const q = search.toLowerCase();
+        return (
+          t.template_name?.toLowerCase().includes(q) ||
+          t.body_text?.toLowerCase().includes(q)
+        );
+      }
+      return true;
     });
-  }, [detectedVariables, formData.model_scope]);
+  }, [templates, search, filterScope, filterStatus]);
+
+  // Record Pager resolution
+  const currentRecordIndex = useMemo(() => {
+    if (!selectedRecord) return -1;
+    return filtered.findIndex((t) => t.id === selectedRecord.id);
+  }, [selectedRecord, filtered]);
+
+  const loadRecordIntoForm = useCallback((tmpl) => {
+    setSelectedRecord(tmpl);
+    setFormData({
+      config_id: tmpl.config_id || '',
+      template_name: tmpl.template_name || '',
+      category: tmpl.category || 'UTILITY',
+      language: tmpl.language || 'en_US',
+      model_scope: tmpl.model_scope || 'general',
+      header_type: tmpl.header_type || 'NONE',
+      header_text: tmpl.header_text || '',
+      body_text: tmpl.body_text || '',
+      footer_text: tmpl.footer_text || '',
+      buttons_json: tmpl.buttons_json || '[]',
+      variable_mapping_json: tmpl.variable_mapping_json || '{}',
+    });
+
+    try {
+      const parsedButtons = JSON.parse(tmpl.buttons_json || '[]');
+      if (parsedButtons.length > 0) {
+        setButtonType(parsedButtons[0].type || 'QUICK_REPLY');
+        setButtonText(parsedButtons[0].text || 'View In Portal');
+        setButtonUrl(parsedButtons[0].url || 'https://erp.apexglobal.qa');
+      } else {
+        setButtonType('NONE');
+      }
+    } catch {
+      setButtonType('NONE');
+    }
+
+    try {
+      const parsedVars = JSON.parse(tmpl.variable_mapping_json || '{}');
+      setVariableMap(parsedVars);
+    } catch {
+      setVariableMap({});
+    }
+
+    setIsDirty(false);
+  }, []);
+
+  const handleStepRecord = (direction) => {
+    if (isDirty && !window.confirm('You have unsaved changes. Discard and proceed?')) {
+      return;
+    }
+    const nextIndex = currentRecordIndex + direction;
+    if (nextIndex >= 0 && nextIndex < filtered.length) {
+      loadRecordIntoForm(filtered[nextIndex]);
+    }
+  };
 
   const handleOpenCreate = () => {
-    setEditingTemplate(null);
+    setSelectedRecord(null);
     setFormData({
+      ...DEFAULT_NEW_FORM,
       config_id: configs[0]?.id || '',
-      template_name: '',
-      category: 'UTILITY',
-      language: 'en_US',
-      model_scope: 'payroll.payslip',
-      header_type: 'DOCUMENT',
-      header_text: '',
-      body_text: 'Dear {{1}},\n\nYour payslip for {{2}} is ready. Net payable salary: QAR {{3}}.\n\nPlease find the attached official payslip document.',
-      footer_text: 'Apex Global Enterprises • Finance & Payroll',
-      buttons_json: '[]',
-      variable_mapping_json: '{"1": "employee_name", "2": "salary_month", "3": "net_salary_qar"}',
     });
-    setButtonType('CTA_URL');
-    setButtonText('Access ESS Portal');
-    setButtonUrl('https://erp.apexglobal.qa');
-    setVariableMap({ '1': 'employee_name', '2': 'salary_month', '3': 'net_salary_qar' });
-    setIsModalOpen(true);
+    setButtonType('NONE');
+    setVariableMap({});
+    setIsDirty(false);
+    setViewMode('form');
   };
 
-  const handleOpenEdit = (t) => {
-    setEditingTemplate(t);
-    let parsedBtns = [];
-    try {
-      parsedBtns = JSON.parse(t.buttons_json || '[]');
-    } catch (e) {}
-
-    let bType = 'NONE';
-    let bText = 'View In Portal';
-    let bUrl = 'https://erp.apexglobal.qa';
-    if (parsedBtns.length > 0) {
-      const b = parsedBtns[0];
-      if (b.type === 'URL') {
-        bType = 'CTA_URL';
-        bText = b.text || 'Open Link';
-        bUrl = b.url || 'https://erp.apexglobal.qa';
-      } else if (b.type === 'QUICK_REPLY') {
-        bType = 'QUICK_REPLY';
-        bText = b.text || 'Confirm';
-      }
-    }
-
-    let parsedVars = {};
-    try {
-      parsedVars = JSON.parse(t.variable_mapping_json || '{}');
-    } catch (e) {}
-
-    setFormData({
-      config_id: t.config_id || '',
-      template_name: t.template_name || '',
-      category: t.category || 'UTILITY',
-      language: t.language || 'en_US',
-      model_scope: t.model_scope || 'general',
-      header_type: t.header_type || 'NONE',
-      header_text: t.header_text || '',
-      body_text: t.body_text || '',
-      footer_text: t.footer_text || '',
-      buttons_json: t.buttons_json || '[]',
-      variable_mapping_json: t.variable_mapping_json || '{}',
-    });
-    setButtonType(bType);
-    setButtonText(bText);
-    setButtonUrl(bUrl);
-    setVariableMap(parsedVars);
-    setIsModalOpen(true);
+  const handleOpenEdit = (tmpl) => {
+    loadRecordIntoForm(tmpl);
+    setViewMode('form');
   };
 
-  const handleInsertVariable = () => {
-    const nextNum = detectedVariables.length + 1;
+  const handleFieldChange = (field, value) => {
+    setFormData((prev) => ({ ...prev, [field]: value }));
+    setIsDirty(true);
+  };
+
+  // Detected body variable indices: ['1', '2', ...]
+  const detectedVariables = useMemo(() => {
+    const matches = formData.body_text.match(/\{\{(\d+)\}\}/g) || [];
+    const indices = matches.map((m) => m.replace(/[{}]/g, ''));
+    return [...new Set(indices)].sort((a, b) => parseInt(a) - parseInt(b));
+  }, [formData.body_text]);
+
+  // Insert sequential placeholder {{1}}, {{2}}...
+  const handleInsertNextVariable = (suggestedFieldName) => {
+    const nextIndex = detectedVariables.length + 1;
+    const tag = `{{${nextIndex}}}`;
     setFormData((prev) => ({
       ...prev,
-      body_text: prev.body_text + ` {{${nextNum}}}`,
+      body_text: prev.body_text + (prev.body_text.endsWith(' ') || !prev.body_text ? '' : ' ') + tag + ' ',
     }));
+    if (suggestedFieldName) {
+      setVariableMap((prev) => ({
+        ...prev,
+        [String(nextIndex)]: suggestedFieldName,
+      }));
+    }
+    setIsDirty(true);
   };
 
-  const handleSaveTemplate = async (submitAfterSave = false) => {
-    if (!formData.template_name.trim()) {
-      setActionMessage({ type: 'error', text: 'Template Name is required.' });
+  const handleSaveTemplate = async (autoSubmit = false) => {
+    if (!formData.template_name.trim() || !formData.body_text.trim()) {
+      setActionMessage({ type: 'error', text: 'Template name and body content are required.' });
       return;
     }
+
     if (!isNameSnakeCase) {
-      setActionMessage({ type: 'error', text: 'Template Name must be lowercase snake_case (e.g. payslip_notice_v1).' });
+      setActionMessage({
+        type: 'error',
+        text: 'Template name must be strictly lowercase snake_case (e.g. employee_leave_v1).',
+      });
       return;
     }
-    if (!formData.body_text.trim()) {
-      setActionMessage({ type: 'error', text: 'Body text is required.' });
-      return;
-    }
-
-    // Assemble buttons JSON
-    let assembledBtns = [];
-    if (buttonType === 'CTA_URL') {
-      assembledBtns = [{ type: 'URL', text: buttonText, url: buttonUrl }];
-    } else if (buttonType === 'QUICK_REPLY') {
-      assembledBtns = [{ type: 'QUICK_REPLY', text: buttonText }];
-    }
-
-    const payload = {
-      ...formData,
-      buttons_json: JSON.stringify(assembledBtns),
-      variable_mapping_json: JSON.stringify(variableMap),
-    };
 
     setIsSaving(true);
     try {
-      const url = editingTemplate
-        ? `/api/v1/communication/whatsapp-templates/${editingTemplate.id}`
+      const buttonsPayload =
+        buttonType === 'NONE'
+          ? []
+          : [
+              {
+                type: buttonType,
+                text: buttonText,
+                url: buttonType === 'CTA_URL' ? buttonUrl : undefined,
+              },
+            ];
+
+      const payload = {
+        ...formData,
+        buttons_json: JSON.stringify(buttonsPayload),
+        variable_mapping_json: JSON.stringify(variableMap),
+      };
+
+      const url = selectedRecord
+        ? `/api/v1/communication/whatsapp-templates/${selectedRecord.id}`
         : '/api/v1/communication/whatsapp-templates';
-      const method = editingTemplate ? 'PUT' : 'POST';
+      const method = selectedRecord ? 'PUT' : 'POST';
 
       const res = await fetch(url, {
         method,
@@ -290,42 +314,26 @@ export function WhatsAppTemplatesView() {
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Failed to save template.');
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to save template');
       }
 
       const resData = await res.json();
-      const targetId = editingTemplate ? editingTemplate.id : resData.id;
+      const updated = resData.template || { ...payload, id: selectedRecord?.id || Date.now() };
+      setSelectedRecord(updated);
+      setIsDirty(false);
 
-      if (submitAfterSave && targetId) {
-        const subRes = await fetch(`/api/v1/communication/whatsapp-templates/${targetId}/submit-to-meta`, {
-          method: 'POST',
-          headers: getHeaders(),
-        });
-        if (subRes.ok) {
-          const subData = await subRes.json();
-          setActionMessage({
-            type: 'success',
-            text: `Template saved and submitted to Meta (${subData.approval_status || 'PENDING'}).`,
-          });
-        } else {
-          const subErr = await subRes.json();
-          setActionMessage({
-            type: 'error',
-            text: `Template saved, but Meta submission failed: ${subErr.detail}`,
-          });
-        }
+      if (autoSubmit && updated.id) {
+        await handleSubmitToMeta(updated);
       } else {
         setActionMessage({
           type: 'success',
-          text: editingTemplate ? 'Template updated successfully.' : 'Draft template created.',
+          text: selectedRecord ? 'Template draft updated successfully.' : 'New template registered as DRAFT.',
         });
       }
-
-      setIsModalOpen(false);
       fetchTemplates();
-    } catch (e) {
-      setActionMessage({ type: 'error', text: e.message || 'Error saving template.' });
+    } catch (err) {
+      setActionMessage({ type: 'error', text: err.message });
     } finally {
       setIsSaving(false);
     }
@@ -333,117 +341,131 @@ export function WhatsAppTemplatesView() {
 
   const handleSubmitToMeta = async (tmpl) => {
     try {
-      const res = await fetch(`/api/v1/communication/whatsapp-templates/${tmpl.id}/submit-to-meta`, {
+      const res = await fetch(`/api/v1/communication/whatsapp-templates/${tmpl.id}/submit`, {
         method: 'POST',
         headers: getHeaders(),
       });
-      if (res.ok) {
-        const data = await res.json();
-        setActionMessage({
-          type: 'success',
-          text: `Template "${tmpl.template_name}" submitted to Meta: Status is now ${data.approval_status || 'PENDING'}.`,
-        });
-        fetchTemplates();
-      } else {
-        const err = await res.json();
-        setActionMessage({ type: 'error', text: err.detail || 'Meta submission failed.' });
-      }
-    } catch (e) {
-      setActionMessage({ type: 'error', text: 'Network error submitting to Meta.' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Meta submission failed');
+      setActionMessage({
+        type: 'success',
+        text: `Template "${tmpl.template_name}" successfully submitted to Meta Graph API. Status: PENDING.`,
+      });
+      fetchTemplates();
+    } catch (err) {
+      setActionMessage({ type: 'error', text: err.message });
     }
   };
 
-  const handleSyncFromMeta = async () => {
+  const handleSyncMetaStatus = async () => {
     setIsSyncing(true);
     try {
       const res = await fetch('/api/v1/communication/whatsapp-templates/sync', {
         method: 'POST',
         headers: getHeaders(),
       });
-      if (res.ok) {
-        const data = await res.json();
-        setActionMessage({ type: 'success', text: data.message || 'Templates synchronized with Meta.' });
-        fetchTemplates();
-      } else {
-        const err = await res.json();
-        setActionMessage({ type: 'error', text: err.detail || 'Failed to sync with Meta.' });
-      }
-    } catch (e) {
-      setActionMessage({ type: 'error', text: 'Network error during Meta template sync.' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Sync failed');
+      setActionMessage({
+        type: 'success',
+        text: `Synced with Meta Cloud API. Updated ${data.updated_count || 0} templates.`,
+      });
+      fetchTemplates();
+    } catch (err) {
+      setActionMessage({ type: 'error', text: err.message });
     } finally {
       setIsSyncing(false);
     }
   };
 
   const handleDelete = async (tmpl) => {
-    if (!window.confirm(`Are you sure you want to delete template "${tmpl.template_name}"?`)) return;
+    if (!window.confirm(`Delete WhatsApp template "${tmpl.template_name}"?`)) return;
     try {
       const res = await fetch(`/api/v1/communication/whatsapp-templates/${tmpl.id}`, {
         method: 'DELETE',
         headers: getHeaders(),
       });
-      if (res.ok) {
-        setActionMessage({ type: 'success', text: `Template "${tmpl.template_name}" deleted.` });
-        fetchTemplates();
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to delete template');
       }
-    } catch (e) {
-      setActionMessage({ type: 'error', text: 'Failed to delete template.' });
+      setActionMessage({ type: 'success', text: `Template "${tmpl.template_name}" deleted.` });
+      fetchTemplates();
+      if (selectedRecord?.id === tmpl.id) {
+        setViewMode('list');
+      }
+    } catch (err) {
+      setActionMessage({ type: 'error', text: err.message });
     }
   };
 
-  // Preview formatted text with sample values
-  const previewBody = useMemo(() => {
-    let text = formData.body_text || '';
-    detectedVariables.forEach((num) => {
-      const boundField = variableMap[num] || `var_${num}`;
-      text = text.replace(new RegExp(`\\{\\{${num}\\}\\}`, 'g'), `[${boundField}]`);
-    });
-    return text;
-  }, [formData.body_text, detectedVariables, variableMap]);
+  const handleDiscard = () => {
+    if (isDirty && !window.confirm('Discard unsaved changes?')) {
+      return;
+    }
+    setViewMode('list');
+  };
 
-  // Filtered Templates List
-  const filteredTemplates = useMemo(() => {
-    return templates.filter((t) => {
-      if (filterScope !== 'all' && t.model_scope !== filterScope) return false;
-      if (filterStatus !== 'all' && t.approval_status !== filterStatus) return false;
-      if (search.trim()) {
-        const q = search.toLowerCase();
-        return (
-          t.template_name?.toLowerCase().includes(q) ||
-          t.body_text?.toLowerCase().includes(q) ||
-          t.category?.toLowerCase().includes(q)
-        );
-      }
-      return true;
+  // Preview body interpolation
+  const previewBody = useMemo(() => {
+    let result = formData.body_text || '';
+    const sampleValues = {
+      employee_name: 'Tariq Al-Mansoor',
+      salary_month: 'October 2026',
+      net_salary_qar: '28,500.00',
+      basic_salary_qar: '22,000.00',
+      bank_name: 'Qatar National Bank (QNB)',
+      bank_iban: 'QA55QNBA••••••••••••',
+      company_name: 'Apex Global Enterprises Q.P.S.C.',
+      leave_type: 'Annual Vacation',
+      start_date: '2026-11-01',
+      end_date: '2026-11-15',
+      duration_days: '14',
+      status: 'APPROVED',
+      approver_name: 'Hamad Al-Thani (HR Director)',
+      contract_title: 'Lead Operations Engineer',
+      contract_expiry: '2027-12-31',
+      notice_period: '30 Days',
+      recipient_name: 'Valued Colleague',
+      date: '18-Oct-2026',
+      reference_number: 'REF-2026-0988',
+    };
+
+    detectedVariables.forEach((idx) => {
+      const mappedField = variableMap[idx];
+      const replacement = (mappedField && sampleValues[mappedField]) || `[${mappedField || `Var ${idx}`}]`;
+      result = result.split(`{{${idx}}}`).join(replacement);
     });
-  }, [templates, filterScope, filterStatus, search]);
+
+    return result;
+  }, [formData.body_text, detectedVariables, variableMap]);
 
   const renderStatusBadge = (status) => {
     switch (status) {
       case 'APPROVED':
         return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-sans font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
             <CheckCircle2 className="w-3 h-3" />
             Approved
           </span>
         );
       case 'PENDING':
         return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-sans font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
-            <Clock className="w-3 h-3 animate-spin" />
-            Pending Review
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+            <Clock className="w-3 h-3" />
+            Meta Review
           </span>
         );
       case 'REJECTED':
         return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-sans font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20">
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">
             <AlertCircle className="w-3 h-3" />
             Rejected
           </span>
         );
       default:
         return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-sans font-medium bg-slate-800 text-slate-400 border border-slate-700">
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700">
             Draft
           </span>
         );
@@ -451,562 +473,624 @@ export function WhatsAppTemplatesView() {
   };
 
   return (
-    <div className="space-y-4">
-      {/* Toast */}
+    <div className="space-y-4 animate-fadeIn">
+      {/* Toast Feedback */}
       {actionMessage && (
         <div
-          className={`flex items-center justify-between p-3 rounded-lg text-xs font-medium border ${
+          className={`flex items-center justify-between p-3.5 rounded-xl border text-xs font-semibold shadow-xs ${
             actionMessage.type === 'success'
-              ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300'
-              : 'bg-rose-950/40 border-rose-800/60 text-rose-300'
+              ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300'
+              : 'bg-rose-950/40 border-rose-800 text-rose-300'
           }`}
         >
           <div className="flex items-center gap-2">
             {actionMessage.type === 'success' ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
             ) : (
-              <AlertCircle className="w-4 h-4 text-rose-400" />
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
             )}
             <span>{actionMessage.text}</span>
           </div>
           <button
             onClick={() => setActionMessage(null)}
-            className="text-slate-400 hover:text-white transition cursor-pointer"
+            className="text-slate-400 hover:text-white cursor-pointer ml-3"
           >
-            <X className="w-3.5 h-3.5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
       )}
 
-      {/* Control Strip */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 sm:p-4 backdrop-blur-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-              <FileText className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold text-white tracking-wide flex items-center gap-2">
-                Meta WhatsApp Message Templates
-                <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">
-                  Cloud Approval Workflow
-                </span>
-              </h2>
-              <p className="text-[11px] text-slate-400">
-                Create, test, and synchronize pre-approved WhatsApp Business templates with Meta Cloud API.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center flex-wrap gap-2">
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Search templates..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-40 sm:w-48 bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition"
-              />
-            </div>
-
-            <select
-              value={filterScope}
-              onChange={(e) => setFilterScope(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-emerald-500 cursor-pointer"
-            >
-              <option value="all">All Scopes</option>
-              <option value="payroll.payslip">Payroll Payslips</option>
-              <option value="hr.leave">HR Leaves</option>
-              <option value="hr.contract">HR Contracts</option>
-              <option value="general">General</option>
-            </select>
-
-            <select
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-emerald-500 cursor-pointer"
-            >
-              <option value="all">All Statuses</option>
-              <option value="APPROVED">Approved</option>
-              <option value="PENDING">Pending Review</option>
-              <option value="DRAFT">Draft</option>
-              <option value="REJECTED">Rejected</option>
-            </select>
-
-            <button
-              onClick={handleSyncFromMeta}
-              disabled={isSyncing}
-              title="Sync template approval statuses from Meta"
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 text-xs font-medium transition cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">Sync from Meta</span>
-            </button>
-
-            <button
-              onClick={handleOpenCreate}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium shadow-xs transition cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>New Template</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Odoo-Style High Density Table */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xs">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-slate-950/70 border-b border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-semibold h-8">
-                <th className="px-3.5 py-1.5">Template Identifier</th>
-                <th className="px-3.5 py-1.5">Category</th>
-                <th className="px-3.5 py-1.5">Model Scope</th>
-                <th className="px-3.5 py-1.5">Language</th>
-                <th className="px-3.5 py-1.5">Header Type</th>
-                <th className="px-3.5 py-1.5">Meta Status</th>
-                <th className="px-3.5 py-1.5 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
-              {filteredTemplates.length === 0 ? (
-                <tr>
-                  <td colSpan="7" className="px-4 py-8 text-center text-slate-500 font-sans">
-                    {isLoading ? 'Loading templates...' : 'No WhatsApp message templates match your filter.'}
-                  </td>
-                </tr>
-              ) : (
-                filteredTemplates.map((t) => (
-                  <tr
-                    key={t.id}
-                    className="hover:bg-slate-800/40 transition-colors h-[32px] text-slate-300"
-                  >
-                    <td className="px-3.5 py-1 font-sans text-xs font-medium text-white flex items-center gap-2">
-                      <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                      <span className="font-mono text-emerald-300">{t.template_name}</span>
-                    </td>
-                    <td className="px-3.5 py-1 font-sans text-[11px] text-slate-300">
-                      <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px]">
-                        {t.category}
-                      </span>
-                    </td>
-                    <td className="px-3.5 py-1 font-sans text-[11px] text-slate-400">
-                      {t.model_scope}
-                    </td>
-                    <td className="px-3.5 py-1 text-slate-300 font-sans">{t.language}</td>
-                    <td className="px-3.5 py-1 font-sans">
-                      <span className="text-[10px] text-slate-400 uppercase">
-                        {t.header_type || 'NONE'}
-                      </span>
-                    </td>
-                    <td className="px-3.5 py-1">{renderStatusBadge(t.approval_status)}</td>
-                    <td className="px-3.5 py-1 text-right font-sans">
-                      <div className="flex items-center justify-end gap-1">
-                        {['DRAFT', 'REJECTED'].includes(t.approval_status) && (
-                          <button
-                            onClick={() => handleSubmitToMeta(t)}
-                            title="Submit for Meta Approval"
-                            className="px-2 py-0.5 rounded bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-800/60 transition cursor-pointer text-[10px] flex items-center gap-1"
-                          >
-                            <Send className="w-2.5 h-2.5" />
-                            <span>Submit</span>
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleOpenEdit(t)}
-                          title="Edit Template"
-                          className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer"
-                        >
-                          <Edit2 className="w-3 h-3" />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(t)}
-                          title="Delete Template"
-                          className="p-1 rounded bg-slate-800 hover:bg-rose-950/40 text-rose-400 border border-slate-700 hover:border-rose-800 transition cursor-pointer"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Template Builder Modal with Live WhatsApp Bubble Preview */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-5xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-slate-950/60">
-              <div className="flex items-center gap-2">
-                <FileText className="w-4 h-4 text-emerald-400" />
-                <h3 className="text-sm font-semibold text-white">
-                  {editingTemplate ? `Edit Template: ${editingTemplate.template_name}` : 'WhatsApp Template Builder'}
-                </h3>
-              </div>
+      {viewMode === 'form' ? (
+        /* =========================================================================
+           IN-PLACE FULL-CANVAS TEMPLATE BUILDER VIEW
+           ========================================================================= */
+        <div className="space-y-4">
+          {/* Top Sticky Breadcrumbs & Actions Header */}
+          <div className="sticky top-14 z-10 bg-slate-900/95 backdrop-blur-md px-4 py-3 rounded-xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+            {/* Left: Back Button & Breadcrumbs */}
+            <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={() => setIsModalOpen(false)}
-                className="text-slate-400 hover:text-white transition cursor-pointer"
+                onClick={handleDiscard}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 transition cursor-pointer text-xs font-semibold"
+                title="Back to WhatsApp Templates list"
               >
-                <X className="w-4 h-4" />
+                <ArrowLeft className="w-4 h-4" />
+                <span className="hidden sm:inline">Templates</span>
               </button>
+
+              <div className="flex items-center gap-1.5 text-xs">
+                <span className="text-slate-400">System Configuration</span>
+                <span className="text-slate-700">/</span>
+                <span className="text-slate-400">WhatsApp Templates</span>
+                <span className="text-slate-700">/</span>
+                <span className="font-bold text-white truncate max-w-[200px]">
+                  {formData.template_name || 'New Template'}
+                </span>
+              </div>
             </div>
 
-            {/* Modal Two-Column Grid */}
-            <div className="flex-1 overflow-y-auto grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-slate-800">
-              {/* Left Column: Form Builder Controls (7 cols) */}
-              <div className="lg:col-span-7 p-4 sm:p-5 space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="space-y-1 sm:col-span-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[11px] font-medium text-slate-300">
-                        Template Identifier (snake_case) <span className="text-rose-400">*</span>
-                      </label>
-                      <span
-                        className={`text-[10px] font-mono ${
-                          isNameSnakeCase ? 'text-emerald-400' : 'text-rose-400'
-                        }`}
-                      >
-                        {isNameSnakeCase ? '✓ Valid Meta format' : '✗ Lowercase, numbers, underscores only'}
-                      </span>
-                    </div>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. payslip_notice_v1"
-                      value={formData.template_name}
-                      onChange={(e) =>
-                        setFormData({ ...formData, template_name: e.target.value.toLowerCase().replace(/\s+/g, '_') })
-                      }
-                      className={`w-full bg-slate-950 border rounded-lg px-3 py-1.5 text-xs text-white font-mono placeholder-slate-500 focus:outline-none transition ${
-                        isNameSnakeCase ? 'border-slate-800 focus:border-emerald-500' : 'border-rose-500'
-                      }`}
-                    />
-                  </div>
+            {/* Center: Record Pager */}
+            {selectedRecord && filtered.length > 1 && currentRecordIndex !== -1 && (
+              <div className="flex items-center gap-1 bg-slate-800 px-2 py-1 rounded-lg text-xs font-mono text-slate-300 mx-auto sm:mx-0">
+                <button
+                  type="button"
+                  disabled={currentRecordIndex === 0}
+                  onClick={() => handleStepRecord(-1)}
+                  className="p-0.5 rounded hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  title="Previous record"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <span className="px-1 text-[11px] font-semibold">
+                  {currentRecordIndex + 1} of {filtered.length}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentRecordIndex === filtered.length - 1}
+                  onClick={() => handleStepRecord(1)}
+                  className="p-0.5 rounded hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  title="Next record"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
 
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium text-slate-300">Category</label>
-                    <select
-                      value={formData.category}
-                      onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
-                    >
-                      <option value="UTILITY">Utility (Account, alerts, billing)</option>
-                      <option value="MARKETING">Marketing (Promotional)</option>
-                      <option value="AUTHENTICATION">Authentication (OTP codes)</option>
-                    </select>
-                  </div>
+            {/* Right: Discard, Save Draft, and Save & Submit */}
+            <div className="flex items-center gap-2 self-end sm:self-auto">
+              <button
+                type="button"
+                onClick={handleDiscard}
+                className="px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 font-semibold text-xs transition cursor-pointer"
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                disabled={isSaving || !isNameSnakeCase}
+                onClick={() => handleSaveTemplate(false)}
+                className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50 border border-slate-700"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>Save Draft</span>
+              </button>
+              <button
+                type="button"
+                disabled={isSaving || !isNameSnakeCase}
+                onClick={() => handleSaveTemplate(true)}
+                className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-xs transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>Save &amp; Submit to Meta</span>
+              </button>
+            </div>
+          </div>
 
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium text-slate-300">Language</label>
-                    <select
-                      value={formData.language}
-                      onChange={(e) => setFormData({ ...formData, language: e.target.value })}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
-                    >
-                      <option value="en_US">English (US) - en_US</option>
-                      <option value="ar">Arabic - ar</option>
-                      <option value="fr">French - fr</option>
-                      <option value="es">Spanish - es</option>
-                      <option value="ur">Urdu - ur</option>
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium text-slate-300">ERP Model Scope</label>
-                    <select
-                      value={formData.model_scope}
-                      onChange={(e) => setFormData({ ...formData, model_scope: e.target.value })}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
-                    >
-                      <option value="payroll.payslip">Payroll Payslips (payroll.payslip)</option>
-                      <option value="hr.leave">HR Leaves (hr.leave)</option>
-                      <option value="hr.contract">HR Contracts (hr.contract)</option>
-                      <option value="general">General Broadcast</option>
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium text-slate-300">Header Type</label>
-                    <select
-                      value={formData.header_type}
-                      onChange={(e) => setFormData({ ...formData, header_type: e.target.value })}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
-                    >
-                      <option value="NONE">None</option>
-                      <option value="DOCUMENT">Document (PDF attachment)</option>
-                      <option value="TEXT">Text Heading</option>
-                      <option value="IMAGE">Image Header</option>
-                    </select>
-                  </div>
-
-                  {formData.header_type === 'TEXT' && (
-                    <div className="space-y-1 sm:col-span-2">
-                      <label className="text-[11px] font-medium text-slate-300">
-                        Header Text (Max 60 chars)
-                      </label>
-                      <input
-                        type="text"
-                        maxLength={60}
-                        placeholder="e.g. Official Payslip Delivery Notice"
-                        value={formData.header_text}
-                        onChange={(e) => setFormData({ ...formData, header_text: e.target.value })}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {/* Body Text & Variable Builder */}
-                <div className="space-y-1.5 pt-2 border-t border-slate-800/80">
+          {/* Builder Canvas (Two-Column Layout) */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xs grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-slate-800">
+            {/* Left Column: Form Builder Controls (7 cols) */}
+            <div className="lg:col-span-7 p-5 sm:p-6 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div className="space-y-1 sm:col-span-2">
                   <div className="flex items-center justify-between">
                     <label className="text-[11px] font-medium text-slate-300">
-                      Message Body <span className="text-rose-400">*</span>
+                      Template Identifier (snake_case) <span className="text-rose-400">*</span>
                     </label>
-                    <button
-                      type="button"
-                      onClick={handleInsertVariable}
-                      className="text-[10px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 font-mono cursor-pointer"
+                    <span
+                      className={`text-[10px] font-mono ${
+                        isNameSnakeCase ? 'text-emerald-400' : 'text-rose-400'
+                      }`}
                     >
-                      <Plus className="w-3 h-3" />
-                      <span>Insert Variable Chip ({`{{${detectedVariables.length + 1}}}`})</span>
-                    </button>
+                      {isNameSnakeCase ? '✓ Valid Meta format' : '✗ Lowercase, numbers, underscores only'}
+                    </span>
                   </div>
-                  <textarea
-                    rows={4}
+                  <input
+                    type="text"
                     required
-                    value={formData.body_text}
-                    onChange={(e) => setFormData({ ...formData, body_text: e.target.value })}
-                    placeholder="Enter message body. Use {{1}}, {{2}} for dynamic record variables..."
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    placeholder="e.g. payslip_notice_v1"
+                    value={formData.template_name}
+                    onChange={(e) =>
+                      handleFieldChange('template_name', e.target.value.toLowerCase().replace(/\s+/g, '_'))
+                    }
+                    className={`w-full bg-slate-950 border rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none transition ${
+                      isNameSnakeCase ? 'border-slate-800 focus:border-emerald-500' : 'border-rose-500'
+                    }`}
                   />
                 </div>
 
-                {/* ERP Variable Field Mappings */}
-                {detectedVariables.length > 0 && (
-                  <div className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
-                        <Sliders className="w-3.5 h-3.5 text-emerald-400" />
-                        ERP Field Bindings for Meta Placeholders
-                      </span>
-                      <span className="text-[10px] text-slate-500 font-mono">
-                        {detectedVariables.length} variable(s) found
-                      </span>
-                    </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-medium text-slate-300">Category</label>
+                  <select
+                    value={formData.category}
+                    onChange={(e) => handleFieldChange('category', e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="UTILITY">Utility (Account, alerts, billing)</option>
+                    <option value="MARKETING">Marketing (Promotional)</option>
+                    <option value="AUTHENTICATION">Authentication (OTP codes)</option>
+                  </select>
+                </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                      {detectedVariables.map((num) => (
-                        <div key={num} className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded px-2.5 py-1">
-                          <span className="text-[10px] font-mono font-bold text-emerald-400 shrink-0">
-                            {`{{${num}}}`}
-                          </span>
-                          <span className="text-slate-500 text-[10px]">=</span>
-                          <select
-                            value={variableMap[num] || ''}
-                            onChange={(e) =>
-                              setVariableMap({ ...variableMap, [num]: e.target.value })
-                            }
-                            className="w-full bg-transparent text-[11px] text-white focus:outline-none cursor-pointer"
-                          >
-                            {(FIELD_SUGGESTIONS[formData.model_scope] || FIELD_SUGGESTIONS['general']).map((s) => (
-                              <option key={s.field} value={s.field} className="bg-slate-900 text-white">
-                                {s.label} ({s.field})
-                              </option>
-                            ))}
-                            <option value="custom_value" className="bg-slate-900 text-white">
-                              Custom Parameter
-                            </option>
-                          </select>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-medium text-slate-300">Language</label>
+                  <select
+                    value={formData.language}
+                    onChange={(e) => handleFieldChange('language', e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="en_US">English (US) - en_US</option>
+                    <option value="ar">Arabic - ar</option>
+                    <option value="fr">French - fr</option>
+                    <option value="es">Spanish - es</option>
+                    <option value="ur">Urdu - ur</option>
+                  </select>
+                </div>
 
-                {/* Footer and Buttons */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/80">
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium text-slate-300">
-                      Footer Text (Optional, max 60 chars)
-                    </label>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-medium text-slate-300">ERP Model Scope</label>
+                  <select
+                    value={formData.model_scope}
+                    onChange={(e) => handleFieldChange('model_scope', e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="payroll.payslip">Payroll Payslips (payroll.payslip)</option>
+                    <option value="hr.leave">HR Leaves (hr.leave)</option>
+                    <option value="hr.contract">HR Contracts (hr.contract)</option>
+                    <option value="general">General Broadcast</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-medium text-slate-300">Header Type</label>
+                  <select
+                    value={formData.header_type}
+                    onChange={(e) => handleFieldChange('header_type', e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="NONE">None</option>
+                    <option value="DOCUMENT">Document (PDF attachment)</option>
+                    <option value="TEXT">Text Heading</option>
+                    <option value="IMAGE">Image Header</option>
+                  </select>
+                </div>
+
+                {formData.header_type === 'TEXT' && (
+                  <div className="space-y-1 sm:col-span-2">
+                    <label className="text-[11px] font-medium text-slate-300">Header Text</label>
                     <input
                       type="text"
-                      maxLength={60}
-                      placeholder="e.g. Apex Global Enterprises"
-                      value={formData.footer_text}
-                      onChange={(e) => setFormData({ ...formData, footer_text: e.target.value })}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                      placeholder="e.g. Apex Global Official Notice"
+                      value={formData.header_text}
+                      onChange={(e) => handleFieldChange('header_text', e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
                     />
                   </div>
+                )}
+              </div>
 
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium text-slate-300">CTA Button</label>
-                    <select
-                      value={buttonType}
-                      onChange={(e) => setButtonType(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
+              {/* Variable Quick-Insert Toolbar */}
+              <div className="p-3.5 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                    ERP Fields for {formData.model_scope}:
+                  </span>
+                  <span className="text-[10px] text-slate-500">Click to append placeholder</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {(FIELD_SUGGESTIONS[formData.model_scope] || FIELD_SUGGESTIONS.general).map((sug) => (
+                    <button
+                      key={sug.field}
+                      type="button"
+                      onClick={() => handleInsertNextVariable(sug.field)}
+                      className="px-2 py-1 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-emerald-400 border border-slate-800 rounded-lg text-[10px] transition cursor-pointer flex items-center gap-1"
                     >
-                      <option value="NONE">No Button</option>
-                      <option value="CTA_URL">Call-to-Action (URL Button)</option>
-                      <option value="QUICK_REPLY">Quick Reply Button</option>
-                    </select>
-                  </div>
+                      <Plus className="w-2.5 h-2.5" />
+                      <span>{sug.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-                  {buttonType !== 'NONE' && (
-                    <div className="space-y-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-950/50 p-2.5 rounded-lg border border-slate-800/60">
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-slate-400">Button Label</label>
+              {/* Message Body Editor */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-medium text-slate-300">
+                    Message Body Text <span className="text-rose-400">*</span>
+                  </label>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    {formData.body_text.length}/1024 chars
+                  </span>
+                </div>
+                <textarea
+                  rows={6}
+                  required
+                  placeholder="Dear {{1}}, your official statement for {{2}} is ready..."
+                  value={formData.body_text}
+                  onChange={(e) => handleFieldChange('body_text', e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white placeholder-slate-500 font-sans focus:outline-none focus:border-emerald-500 leading-relaxed"
+                />
+              </div>
+
+              {/* Variable Mapping Matrix */}
+              {detectedVariables.length > 0 && (
+                <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                  <div className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+                    <Tag className="w-3 h-3 text-emerald-400" />
+                    <span>Dynamic Variable Parameter Binding ({detectedVariables.length}):</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                    {detectedVariables.map((idx) => (
+                      <div key={idx} className="flex items-center gap-2 bg-slate-900 p-2 rounded-lg border border-slate-800/80">
+                        <span className="w-6 h-6 rounded bg-emerald-500/10 text-emerald-400 font-mono text-[11px] flex items-center justify-center font-bold">
+                          {`{{${idx}}}`}
+                        </span>
                         <input
                           type="text"
+                          placeholder="e.g. employee_name"
+                          value={variableMap[idx] || ''}
+                          onChange={(e) => {
+                            setVariableMap({ ...variableMap, [idx]: e.target.value });
+                            setIsDirty(true);
+                          }}
+                          className="flex-1 bg-slate-950 border border-slate-800 rounded px-2 py-1 text-[11px] text-white font-mono placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Footer Text */}
+              <div className="space-y-1">
+                <label className="text-[11px] font-medium text-slate-300">Footer Text (Optional)</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Apex Global Automated Enterprise System"
+                  value={formData.footer_text}
+                  onChange={(e) => handleFieldChange('footer_text', e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              {/* Action Buttons Config */}
+              <div className="p-3.5 bg-slate-950 rounded-xl border border-slate-800 space-y-2.5">
+                <div className="text-[11px] font-semibold text-slate-300">
+                  Interactive Action Buttons (Optional)
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div>
+                    <select
+                      value={buttonType}
+                      onChange={(e) => {
+                        setButtonType(e.target.value);
+                        setIsDirty(true);
+                      }}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white"
+                    >
+                      <option value="NONE">No Buttons</option>
+                      <option value="QUICK_REPLY">Quick Reply Button</option>
+                      <option value="CTA_URL">Call To Action (URL)</option>
+                    </select>
+                  </div>
+                  {buttonType !== 'NONE' && (
+                    <>
+                      <div>
+                        <input
+                          type="text"
+                          placeholder="Button Label"
                           value={buttonText}
-                          onChange={(e) => setButtonText(e.target.value)}
-                          className="w-full bg-slate-900 border border-slate-800 rounded px-2.5 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
+                          onChange={(e) => {
+                            setButtonText(e.target.value);
+                            setIsDirty(true);
+                          }}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white"
                         />
                       </div>
                       {buttonType === 'CTA_URL' && (
-                        <div className="space-y-1">
-                          <label className="text-[10px] text-slate-400">Destination URL</label>
+                        <div>
                           <input
                             type="text"
+                            placeholder="https://..."
                             value={buttonUrl}
-                            onChange={(e) => setButtonUrl(e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-800 rounded px-2.5 py-1 text-xs text-white font-mono focus:outline-none focus:border-emerald-500"
+                            onChange={(e) => {
+                              setButtonUrl(e.target.value);
+                              setIsDirty(true);
+                            }}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono"
                           />
                         </div>
                       )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Right Column: Live WhatsApp Bubble Preview (5 cols) */}
+            <div className="lg:col-span-5 p-5 sm:p-6 bg-slate-950/40 flex flex-col justify-start">
+              <div className="text-xs font-bold text-slate-300 mb-3 flex items-center justify-between">
+                <span>Live Simulated Message View</span>
+                <span className="text-[10px] font-mono text-emerald-400">Meta Preview</span>
+              </div>
+
+              <div className="rounded-2xl border border-slate-800 overflow-hidden shadow-2xl bg-[#0B141A] max-w-sm mx-auto w-full">
+                {/* Chat Header */}
+                <div className="bg-[#202C33] px-3.5 py-2.5 flex items-center justify-between border-b border-[#2A3942]">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-full bg-emerald-700 text-white flex items-center justify-center text-xs font-bold">
+                      A
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold text-white leading-tight">
+                        Apex Global Official
+                      </div>
+                      <div className="text-[10px] text-emerald-400 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                        Official Business Account
+                      </div>
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-slate-400">WhatsApp</span>
+                </div>
+
+                {/* Chat Wallpaper Canvas */}
+                <div className="p-3 bg-[#0B141A] min-h-[300px] flex flex-col justify-end space-y-2">
+                  {/* Message Bubble */}
+                  <div className="self-start max-w-[92%] bg-[#005C4B] text-white rounded-lg rounded-tl-none p-3 shadow-md space-y-1.5 relative text-xs">
+                    {/* Document / Media Header Preview */}
+                    {formData.header_type === 'DOCUMENT' && (
+                      <div className="bg-[#025142] rounded p-2 flex items-center gap-2 border border-[#006e5a] mb-1">
+                        <FileDown className="w-4 h-4 text-emerald-300" />
+                        <div className="overflow-hidden">
+                          <div className="font-semibold text-[11px] truncate text-emerald-100">
+                            Official_Document.pdf
+                          </div>
+                          <div className="text-[9px] text-emerald-300">PDF • Dynamic ERP Report</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {formData.header_type === 'TEXT' && formData.header_text && (
+                      <div className="font-bold text-sm text-emerald-200 border-b border-[#006e5a] pb-1">
+                        {formData.header_text}
+                      </div>
+                    )}
+
+                    {/* Body Content */}
+                    <div className="whitespace-pre-wrap leading-relaxed text-[11.5px] text-slate-100 font-sans">
+                      {previewBody || 'Your WhatsApp message body will appear here with live dynamic values.'}
+                    </div>
+
+                    {/* Footer */}
+                    {formData.footer_text && (
+                      <div className="text-[10px] text-slate-300 pt-1 border-t border-[#006e5a]/60">
+                        {formData.footer_text}
+                      </div>
+                    )}
+
+                    {/* Timestamp & Double Checkmarks */}
+                    <div className="flex items-center justify-end gap-1 text-[9px] text-emerald-200/80 pt-0.5">
+                      <span>12:45 PM</span>
+                      <span>✓✓</span>
+                    </div>
+                  </div>
+
+                  {/* CTA / Quick Reply Button Preview */}
+                  {buttonType !== 'NONE' && (
+                    <div className="self-start max-w-[92%] w-full bg-[#1F2C34] hover:bg-[#2A3942] transition rounded-lg text-center py-2 px-3 border border-[#2A3942] text-xs text-emerald-400 font-medium flex items-center justify-center gap-1.5 shadow-sm">
+                      {buttonType === 'CTA_URL' && <ExternalLink className="w-3 h-3" />}
+                      <span>{buttonText}</span>
                     </div>
                   )}
                 </div>
               </div>
-
-              {/* Right Column: Live WhatsApp Mobile Screen Mockup (5 cols) */}
-              <div className="lg:col-span-5 p-4 sm:p-5 bg-slate-950/50 flex flex-col items-center justify-center">
-                <div className="w-full max-w-sm rounded-2xl bg-slate-950 border-2 border-slate-800 shadow-2xl overflow-hidden flex flex-col">
-                  {/* Mock WhatsApp Top Bar */}
-                  <div className="bg-[#1F2C34] px-3.5 py-2.5 flex items-center justify-between border-b border-[#2A3942]">
-                    <div className="flex items-center gap-2">
-                      <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold">
-                        A
-                      </div>
-                      <div>
-                        <div className="text-xs font-semibold text-white leading-tight">
-                          Apex Global Official
-                        </div>
-                        <div className="text-[10px] text-emerald-400 flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                          Official Business Account
-                        </div>
-                      </div>
-                    </div>
-                    <span className="text-[10px] text-slate-400">WhatsApp</span>
-                  </div>
-
-                  {/* Chat Wallpaper Canvas */}
-                  <div className="p-3 bg-[#0B141A] min-h-[300px] flex flex-col justify-end space-y-2">
-                    {/* Message Bubble */}
-                    <div className="self-start max-w-[90%] bg-[#005C4B] text-white rounded-lg rounded-tl-none p-3 shadow-md space-y-1.5 relative text-xs">
-                      {/* Document / Media Header Preview */}
-                      {formData.header_type === 'DOCUMENT' && (
-                        <div className="bg-[#025142] rounded p-2 flex items-center gap-2 border border-[#006e5a] mb-1">
-                          <FileDown className="w-4 h-4 text-emerald-300" />
-                          <div className="overflow-hidden">
-                            <div className="font-semibold text-[11px] truncate text-emerald-100">
-                              Official_Document.pdf
-                            </div>
-                            <div className="text-[9px] text-emerald-300">PDF • Dynamic ERP Report</div>
-                          </div>
-                        </div>
-                      )}
-
-                      {formData.header_type === 'TEXT' && formData.header_text && (
-                        <div className="font-bold text-sm text-emerald-200 border-b border-[#006e5a] pb-1">
-                          {formData.header_text}
-                        </div>
-                      )}
-
-                      {/* Body Content */}
-                      <div className="whitespace-pre-wrap leading-relaxed text-[11.5px] text-slate-100 font-sans">
-                        {previewBody || 'Your WhatsApp message body will appear here with live dynamic values.'}
-                      </div>
-
-                      {/* Footer */}
-                      {formData.footer_text && (
-                        <div className="text-[10px] text-slate-300 pt-1 border-t border-[#006e5a]/60">
-                          {formData.footer_text}
-                        </div>
-                      )}
-
-                      {/* Timestamp & Double Checkmarks */}
-                      <div className="flex items-center justify-end gap-1 text-[9px] text-emerald-200/80 pt-0.5">
-                        <span>12:45 PM</span>
-                        <span>✓✓</span>
-                      </div>
-                    </div>
-
-                    {/* CTA / Quick Reply Button Preview */}
-                    {buttonType !== 'NONE' && (
-                      <div className="self-start max-w-[90%] w-full bg-[#1F2C34] hover:bg-[#2A3942] transition rounded-lg text-center py-2 px-3 border border-[#2A3942] text-xs text-emerald-400 font-medium flex items-center justify-center gap-1.5 shadow-sm">
-                        {buttonType === 'CTA_URL' && <ExternalLink className="w-3 h-3" />}
-                        <span>{buttonText}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="mt-3 text-center">
-                  <p className="text-[11px] text-slate-400 font-mono">
-                    Live Meta Cloud API message preview
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Modal Bottom Action Strip */}
-            <div className="px-5 py-3 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between">
-              <span className="text-[11px] text-slate-400">
-                {isNameSnakeCase ? 'Ready to save' : 'Please resolve naming warnings'}
-              </span>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium transition cursor-pointer"
-                >
-                  Cancel
-                </button>
-
-                <button
-                  type="button"
-                  disabled={isSaving || !isNameSnakeCase}
-                  onClick={() => handleSaveTemplate(false)}
-                  className="px-3.5 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-medium transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  {isSaving ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-                  <span>Save Draft</span>
-                </button>
-
-                <button
-                  type="button"
-                  disabled={isSaving || !isNameSnakeCase}
-                  onClick={() => handleSaveTemplate(true)}
-                  className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium shadow-xs transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  {isSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                  <span>Save &amp; Submit to Meta</span>
-                </button>
-              </div>
             </div>
           </div>
         </div>
+      ) : (
+        /* =========================================================================
+           LIST VIEW
+           ========================================================================= */
+        <>
+          {/* Header Bar */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 flex items-center justify-between shadow-2xs gap-3">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleOpenCreate}
+                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>New WhatsApp Template</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSyncMetaStatus}
+                disabled={isSyncing}
+                className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer border border-slate-700"
+                title="Sync Approval Statuses with Meta Graph API"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-emerald-400' : ''}`} />
+                <span className="hidden sm:inline">Sync Meta</span>
+              </button>
+
+              <div className="h-4 w-[1px] bg-slate-800 hidden sm:block" />
+
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold text-slate-100 text-xs">
+                  WhatsApp Templates
+                </span>
+                <span className="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-400">
+                  {filtered.length}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-1 max-w-md">
+              <div className="relative flex-1">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search templates..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="w-full pl-8 pr-2.5 py-1 rounded-lg border border-slate-800 bg-slate-950 text-slate-200 text-xs focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <select
+                value={filterScope}
+                onChange={(e) => setFilterScope(e.target.value)}
+                className="px-2 py-1 rounded-lg border border-slate-800 bg-slate-950 text-slate-300 text-xs focus:outline-none"
+              >
+                <option value="all">All Scopes</option>
+                <option value="payroll.payslip">payroll.payslip</option>
+                <option value="hr.leave">hr.leave</option>
+                <option value="hr.contract">hr.contract</option>
+                <option value="general">general</option>
+              </select>
+
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value)}
+                className="px-2 py-1 rounded-lg border border-slate-800 bg-slate-950 text-slate-300 text-xs focus:outline-none"
+              >
+                <option value="all">All Statuses</option>
+                <option value="APPROVED">Approved</option>
+                <option value="PENDING">Pending</option>
+                <option value="DRAFT">Draft</option>
+                <option value="REJECTED">Rejected</option>
+              </select>
+            </div>
+
+            <button
+              type="button"
+              onClick={fetchTemplates}
+              disabled={isLoading}
+              className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+              title="Refresh templates"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+
+          {/* Templates Table List */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xs">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-semibold">
+                    <th className="px-3.5 py-2">Template Identifier</th>
+                    <th className="px-3.5 py-2">Category</th>
+                    <th className="px-3.5 py-2">Scope</th>
+                    <th className="px-3.5 py-2">Language</th>
+                    <th className="px-3.5 py-2">Header</th>
+                    <th className="px-3.5 py-2">Meta Status</th>
+                    <th className="px-3.5 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 font-mono text-[11px]">
+                  {isLoading && templates.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="text-center py-8 text-slate-400 font-sans">
+                        <RefreshCw className="w-4 h-4 animate-spin mx-auto mb-1 text-emerald-500" />
+                        Loading WhatsApp Cloud API templates...
+                      </td>
+                    </tr>
+                  ) : filtered.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="text-center py-8 text-slate-400 font-sans">
+                        No WhatsApp templates found. Click "New WhatsApp Template" to create one.
+                      </td>
+                    </tr>
+                  ) : (
+                    filtered.map((t) => (
+                      <tr
+                        key={t.id}
+                        onClick={() => handleOpenEdit(t)}
+                        className="hover:bg-slate-800/40 transition group cursor-pointer"
+                      >
+                        <td className="px-3.5 py-2 text-white font-semibold flex items-center gap-1.5">
+                          <MessageSquare className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span className="group-hover:text-emerald-400 transition-colors">
+                            {t.template_name}
+                          </span>
+                        </td>
+                        <td className="px-3.5 py-2 text-slate-300">{t.category}</td>
+                        <td className="px-3.5 py-2">
+                          <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
+                            {t.model_scope}
+                          </span>
+                        </td>
+                        <td className="px-3.5 py-2 text-slate-400">{t.language}</td>
+                        <td className="px-3.5 py-2">
+                          <span className="text-[10px] text-slate-400 uppercase">
+                            {t.header_type || 'NONE'}
+                          </span>
+                        </td>
+                        <td className="px-3.5 py-2">{renderStatusBadge(t.approval_status)}</td>
+                        <td className="px-3.5 py-2 text-right font-sans">
+                          <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                            {['DRAFT', 'REJECTED'].includes(t.approval_status) && (
+                              <button
+                                type="button"
+                                onClick={() => handleSubmitToMeta(t)}
+                                title="Submit for Meta Approval"
+                                className="px-2 py-0.5 rounded bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-800/60 transition cursor-pointer text-[10px] flex items-center gap-1"
+                              >
+                                <Send className="w-2.5 h-2.5" />
+                                <span>Submit</span>
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEdit(t)}
+                              title="Edit Template"
+                              className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer"
+                            >
+                              <Edit2 className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(t)}
+                              title="Delete Template"
+                              className="p-1 rounded bg-slate-800 hover:bg-rose-950/40 text-rose-400 border border-slate-700 hover:border-rose-800 transition cursor-pointer"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

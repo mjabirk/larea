@@ -330,9 +330,22 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
       return true;
     },
     discard: handleDiscard,
+    resetDirty: (newRecord) => {
+      setIsDirty(false);
+      onDirtyChange?.(false);
+      if (newRecord) {
+        setFormData((prev) => ({
+          ...prev,
+          ...newRecord,
+          first_name: newRecord.first_name ?? prev.first_name,
+          last_name: newRecord.last_name ?? prev.last_name,
+          full_name: newRecord.full_name ?? prev.full_name,
+        }));
+      }
+    },
     isDirty,
     getFormData: () => formData,
-  }), [formData, employee, onSave, onBack, isDirty]);
+  }), [formData, employee, onSave, onBack, isDirty, onDirtyChange]);
 
   const handleSubmit = (e) => {
     if (e?.preventDefault) e.preventDefault();

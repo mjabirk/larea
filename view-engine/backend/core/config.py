@@ -1,13 +1,24 @@
 import os
 from typing import List
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import model_validator
+
+DEFAULT_INSECURE_FILE_KEY: str = "enterprise-master-sec-key-2026-aes256gcm"
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=True
+    )
+
     PROJECT_NAME: str = "Enterprise View Engine Core"
     API_V1_STR: str = "/api/v1"
+    APP_ENV: str = os.getenv("APP_ENV", "development")
     
     # DragonflyDB / Redis Configuration
-    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     
     # Session Policies
     SESSION_IDLE_TIMEOUT_SECONDS: int = 30 * 60  # 30 Minutes Rolling
@@ -37,9 +48,17 @@ class Settings(BaseSettings):
     DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5432/enterprise_db")
 
     # Master key for AES-256-GCM file encryption at rest
-    FILE_ENCRYPTION_KEY: str = os.getenv("FILE_ENCRYPTION_KEY", "enterprise-master-sec-key-2026-aes256gcm")
+    FILE_ENCRYPTION_KEY: str = os.getenv("FILE_ENCRYPTION_KEY", DEFAULT_INSECURE_FILE_KEY)
 
-    class Config:
-        case_sensitive = True
+    @model_validator(mode="after")
+    def validate_production_security(self) -> "Settings":
+        env = (self.APP_ENV or "").strip().lower()
+        if env != "development":
+            if not self.FILE_ENCRYPTION_KEY or self.FILE_ENCRYPTION_KEY == DEFAULT_INSECURE_FILE_KEY:
+                raise RuntimeError(
+                    f"CRITICAL SECURITY CONFIGURATION ERROR: Insecure FILE_ENCRYPTION_KEY detected in '{self.APP_ENV}' environment. "
+                    "Production and non-development environments must configure a strong, unique FILE_ENCRYPTION_KEY via environment variables or .env."
+                )
+        return self
 
 settings = Settings()

@@ -363,8 +363,10 @@ export const MENU_PERMISSIONS = {
   mail_logs: "org.manage",
   sms_gateways: "org.manage",
   whatsapp_configs: "org.manage",
+  whatsapp_accounts: "org.manage",
   whatsapp_templates: "org.manage",
   communication_logs: "org.manage",
+  sms_whatsapp_logs: "org.manage",
   automation_triggers: "org.manage",
 };
 

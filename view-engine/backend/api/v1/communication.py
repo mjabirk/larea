@@ -2,12 +2,13 @@ import os
 import uuid
 import json
 import datetime
+import asyncio
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query, Response
 from pydantic import BaseModel
 
 from backend.core.database import get_db_pool
-from backend.core.dependencies import get_current_user_session, get_client_ip
+from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission
 from backend.core.mail_engine import encrypt_mail_password, decrypt_mail_password, generate_payslip_pdf_report
 from backend.core.communication_engine import (
     sanitize_e164_phone,
@@ -123,6 +124,7 @@ async def list_sms_gateways(session: Dict[str, Any] = Depends(get_current_user_s
 @router.post("/sms-gateways")
 async def create_sms_gateway(payload: SMSGatewayPayload, session: Dict[str, Any] = Depends(get_current_user_session)):
     """Create a new SMS gateway."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     gw_id = uuid.uuid4()
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -143,6 +145,7 @@ async def create_sms_gateway(payload: SMSGatewayPayload, session: Dict[str, Any]
 @router.put("/sms-gateways/{gw_id}")
 async def update_sms_gateway(gw_id: str, payload: SMSGatewayPayload, session: Dict[str, Any] = Depends(get_current_user_session)):
     """Update an SMS gateway."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     now = datetime.datetime.now(datetime.timezone.utc)
     async with pool.acquire() as conn:
@@ -163,6 +166,7 @@ async def update_sms_gateway(gw_id: str, payload: SMSGatewayPayload, session: Di
 @router.delete("/sms-gateways/{gw_id}")
 async def delete_sms_gateway(gw_id: str, session: Dict[str, Any] = Depends(get_current_user_session)):
     """Delete an SMS gateway."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM sms_gateways WHERE id = $1::uuid;", gw_id)
@@ -184,7 +188,8 @@ async def test_sms_gateway(gw_id: str, payload: TestSMSPayload, session: Dict[st
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    success, prov_id, err = SMSDispatcher.send_sms(
+    success, prov_id, err = await asyncio.to_thread(
+        SMSDispatcher.send_sms,
         gateway=gw_dict,
         to_phone=clean_phone,
         message=payload.message or "Apex Global Test SMS: Subsystem operational.",
@@ -226,6 +231,7 @@ async def list_whatsapp_configs(session: Dict[str, Any] = Depends(get_current_us
 @router.post("/whatsapp-configs")
 async def create_whatsapp_config(payload: WhatsAppConfigPayload, session: Dict[str, Any] = Depends(get_current_user_session)):
     """Create WhatsApp Business configuration with AES-256 encrypted access token."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     cfg_id = uuid.uuid4()
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -249,6 +255,7 @@ async def create_whatsapp_config(payload: WhatsAppConfigPayload, session: Dict[s
 @router.put("/whatsapp-configs/{cfg_id}")
 async def update_whatsapp_config(cfg_id: str, payload: WhatsAppConfigPayload, session: Dict[str, Any] = Depends(get_current_user_session)):
     """Update WhatsApp Business configuration."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     now = datetime.datetime.now(datetime.timezone.utc)
     async with pool.acquire() as conn:
@@ -272,6 +279,7 @@ async def update_whatsapp_config(cfg_id: str, payload: WhatsAppConfigPayload, se
 @router.delete("/whatsapp-configs/{cfg_id}")
 async def delete_whatsapp_config(cfg_id: str, session: Dict[str, Any] = Depends(get_current_user_session)):
     """Delete WhatsApp configuration."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM whatsapp_configs WHERE id = $1::uuid;", cfg_id)
@@ -288,7 +296,7 @@ async def test_whatsapp_config(cfg_id: str, session: Dict[str, Any] = Depends(ge
             raise HTTPException(status_code=404, detail="WhatsApp Configuration not found.")
         cfg_dict = dict(row)
 
-    res = WhatsAppMetaService.test_connection(cfg_dict)
+    res = await asyncio.to_thread(WhatsAppMetaService.test_connection, cfg_dict)
     return res
 
 
@@ -411,7 +419,7 @@ async def submit_whatsapp_template_to_meta(tmpl_id: str, session: Dict[str, Any]
             "access_token_encrypted": tmpl_row["access_token_encrypted"],
         }
 
-        res = WhatsAppMetaService.submit_template_to_meta(config_dict, tmpl_dict)
+        res = await asyncio.to_thread(WhatsAppMetaService.submit_template_to_meta, config_dict, tmpl_dict)
         if res.get("success"):
             new_status = res.get("approval_status", "PENDING")
             meta_id = res.get("meta_template_id")
@@ -442,7 +450,7 @@ async def sync_whatsapp_templates_from_meta(session: Dict[str, Any] = Depends(ge
         if not cfg_row:
             return {"synced": 0, "message": "No active WhatsApp configuration found."}
 
-        meta_list = WhatsAppMetaService.sync_templates_from_meta(dict(cfg_row))
+        meta_list = await asyncio.to_thread(WhatsAppMetaService.sync_templates_from_meta, dict(cfg_row))
         for m in meta_list:
             m_name = m.get("name")
             m_status = m.get("status", "APPROVED").upper()
@@ -536,11 +544,12 @@ async def send_communication_message(
                     if p_db:
                         record_data = dict(p_db)
                 batch_mock = {"salary_year_month": record_data.get("month", "Monthly"), "name": "Standard Payroll Run"}
-                pdf_res = generate_payslip_pdf_report(record_data, batch_mock)
+                pdf_res = await asyncio.to_thread(generate_payslip_pdf_report, record_data, batch_mock)
                 with open(pdf_res["abs_path"], "rb") as f:
                     media_meta = save_whatsapp_media(pdf_res["filename"], f.read(), "application/pdf")
 
-            success, provider_msg_id, error_log = WhatsAppMetaService.send_template_message(
+            success, provider_msg_id, error_log = await asyncio.to_thread(
+                WhatsAppMetaService.send_template_message,
                 config=config_dict,
                 to_phone=clean_phone,
                 template=tmpl_dict,
@@ -558,7 +567,8 @@ async def send_communication_message(
                 raise HTTPException(status_code=400, detail="No active SMS gateway configured.")
 
             gw_dict = dict(gw_row)
-            success, provider_msg_id, error_log = SMSDispatcher.send_sms(
+            success, provider_msg_id, error_log = await asyncio.to_thread(
+                SMSDispatcher.send_sms,
                 gateway=gw_dict,
                 to_phone=clean_phone,
                 message=final_body,
@@ -733,6 +743,7 @@ async def list_automation_triggers(session: Dict[str, Any] = Depends(get_current
 @router.post("/automation-triggers")
 async def create_automation_trigger(payload: AutomationTriggerPayload, session: Dict[str, Any] = Depends(get_current_user_session)):
     """Create an automated notification trigger."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     tr_id = uuid.uuid4()
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -752,6 +763,7 @@ async def create_automation_trigger(payload: AutomationTriggerPayload, session: 
 @router.put("/automation-triggers/{tr_id}")
 async def update_automation_trigger(tr_id: str, payload: AutomationTriggerPayload, session: Dict[str, Any] = Depends(get_current_user_session)):
     """Update an automation trigger."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
@@ -770,6 +782,7 @@ async def update_automation_trigger(tr_id: str, payload: AutomationTriggerPayloa
 @router.delete("/automation-triggers/{tr_id}")
 async def delete_automation_trigger(tr_id: str, session: Dict[str, Any] = Depends(get_current_user_session)):
     """Delete an automation trigger."""
+    require_permission(session, "org.manage")
     pool = get_db_pool()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM automation_triggers WHERE id = $1::uuid;", tr_id)

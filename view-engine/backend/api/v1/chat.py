@@ -3,16 +3,25 @@ import uuid
 import json
 import datetime
 import logging
+import mimetypes
+import re
+from urllib.parse import unquote, quote
 from typing import Optional, Dict, Any, List
-from fastapi import APIRouter, HTTPException, status, Request, Depends, Query, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter, HTTPException, status, Request, Depends, Query,
+    UploadFile, File, WebSocket, WebSocketDisconnect, Header
+)
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.core.database import get_db_pool
-from backend.core.dependencies import get_current_user_session
+from backend.core.dependencies import get_current_user_session, get_client_ip
 from backend.core.session import SessionManager
 from backend.core.chat_engine import (
     VapidKeyManager,
     ws_manager,
+    chat_ws_manager,
+    ChatConnectionManager,
     save_chat_attachment,
     dispatch_web_push,
     slugify_name,
@@ -24,6 +33,38 @@ from backend.core.chat_engine import (
 )
 
 logger = logging.getLogger("enterprise.chat_api")
+
+
+def normalize_attachment_obj(att: Any) -> Dict[str, Any]:
+    """Ensure every chat attachment has uniform fields including file_url, url, disk_path, size, and mime_type."""
+    if not isinstance(att, dict):
+        return att
+    disk_path = att.get("disk_path") or att.get("path") or ""
+    disk_path_clean = str(disk_path).replace("\\", "/")
+    name = att.get("name") or att.get("filename") or att.get("file_name") or os.path.basename(disk_path_clean) or "Attachment"
+    
+    file_url = att.get("file_url") or att.get("url")
+    if not file_url and disk_path_clean:
+        file_url = f"/api/v1/chat/attachments/{disk_path_clean}"
+
+    size_val = att.get("size") or att.get("file_size_bytes") or 0
+    mime_val = att.get("mime_type")
+    if not mime_val:
+        guessed_mime, _ = mimetypes.guess_type(name)
+        mime_val = guessed_mime or "application/octet-stream"
+
+    return {
+        "id": att.get("id") or uuid.uuid4().hex[:12],
+        "name": name,
+        "filename": name,
+        "file_name": name,
+        "disk_path": disk_path_clean,
+        "file_url": file_url,
+        "url": file_url,
+        "size": size_val,
+        "file_size_bytes": size_val,
+        "mime_type": mime_val
+    }
 
 router = APIRouter(prefix="/api/v1/chat", tags=["Internal Real-Time Chat & Channels"])
 push_router = APIRouter(prefix="/api/v1/push", tags=["W3C Web Push Notifications (VAPID)"])
@@ -238,6 +279,67 @@ async def list_user_channels(
             ORDER BY c.created_at DESC;
         """, current_uid)
 
+        if not channel_rows:
+            return {"channels": []}
+
+        ch_ids = [ch["id"] for ch in channel_rows]
+        direct_ch_ids = [ch["id"] for ch in channel_rows if ch["channel_type"] == "direct"]
+
+        # Batch 1: Unread messages count per channel (1 grouped query)
+        unread_rows = await conn.fetch("""
+            SELECT m.channel_id, COUNT(m.id) as unread_count
+            FROM chat_channel_members mem
+            JOIN chat_messages m ON m.channel_id = mem.channel_id
+            WHERE mem.user_id = $2
+              AND m.channel_id = ANY($1::uuid[])
+              AND (m.sender_id IS NULL OR m.sender_id != $2)
+              AND (mem.last_read_at IS NULL OR m.created_at > mem.last_read_at)
+            GROUP BY m.channel_id;
+        """, ch_ids, current_uid)
+        unread_map = {r["channel_id"]: int(r["unread_count"]) for r in unread_rows}
+
+        # Batch 2: Latest message per channel (1 DISTINCT ON query)
+        last_msg_rows = await conn.fetch("""
+            SELECT DISTINCT ON (m.channel_id)
+                   m.channel_id, m.id, m.message_text, m.created_at, m.sender_id, m.is_system_event,
+                   u.full_name as sender_name
+            FROM chat_messages m
+            LEFT JOIN users u ON u.id = m.sender_id
+            WHERE m.channel_id = ANY($1::uuid[])
+            ORDER BY m.channel_id, m.created_at DESC;
+        """, ch_ids)
+        latest_msgs = {}
+        for r in last_msg_rows:
+            latest_msgs[r["channel_id"]] = {
+                "id": str(r["id"]),
+                "text": r["message_text"],
+                "sender_id": str(r["sender_id"]) if r["sender_id"] else None,
+                "sender_name": r["sender_name"] or ("System" if r["is_system_event"] else "Colleague"),
+                "created_at": r["created_at"].isoformat()
+            }
+
+        # Batch 3: Other member details for 1-on-1 direct channels (1 query)
+        direct_members = {}
+        if direct_ch_ids:
+            other_rows = await conn.fetch("""
+                SELECT mem.channel_id, u.id, split_part(u.email, '@', 1) as username, u.full_name, u.email
+                FROM chat_channel_members mem
+                JOIN users u ON u.id = mem.user_id
+                WHERE mem.channel_id = ANY($1::uuid[]) AND mem.user_id != $2;
+            """, direct_ch_ids, current_uid)
+            for r in other_rows:
+                ou_id_str = str(r["id"])
+                direct_members[r["channel_id"]] = {
+                    "other_user": {
+                        "id": ou_id_str,
+                        "username": r["username"],
+                        "full_name": r["full_name"],
+                        "email": r["email"],
+                        "is_online": ws_manager.is_user_online(ou_id_str)
+                    },
+                    "display_name": r["full_name"] or r["username"]
+                }
+
         channels = []
         for ch in channel_rows:
             ch_id = ch["id"]
@@ -250,58 +352,15 @@ async def list_user_channels(
             if is_announcement:
                 can_post = bool(has_manager_perm or user_role in ("admin", "moderator"))
 
-            # Unread messages count
-            unread_cnt = await conn.fetchval("""
-                SELECT COUNT(*)
-                FROM chat_messages
-                WHERE channel_id = $1
-                  AND (sender_id IS NULL OR sender_id != $2)
-                  AND created_at > $3;
-            """, ch_id, current_uid, last_read)
+            unread_cnt = unread_map.get(ch_id, 0)
+            last_msg = latest_msgs.get(ch_id)
 
-            # Latest message snippet
-            last_msg_row = await conn.fetchrow("""
-                SELECT m.id, m.message_text, m.created_at, m.sender_id, m.is_system_event, u.full_name as sender_name
-                FROM chat_messages m
-                LEFT JOIN users u ON u.id = m.sender_id
-                WHERE m.channel_id = $1
-                ORDER BY m.created_at DESC
-                LIMIT 1;
-            """, ch_id)
-
-            last_msg = None
-            if last_msg_row:
-                last_msg = {
-                    "id": str(last_msg_row["id"]),
-                    "text": last_msg_row["message_text"],
-                    "sender_id": str(last_msg_row["sender_id"]) if last_msg_row["sender_id"] else None,
-                    "sender_name": last_msg_row["sender_name"] or ("System" if last_msg_row["is_system_event"] else "Colleague"),
-                    "created_at": last_msg_row["created_at"].isoformat()
-                }
-
-            # Other member details (for 1-on-1 direct chats)
             other_user = None
             display_name = ch["name"]
 
-            if ch_type == "direct":
-                other_member = await conn.fetchrow("""
-                    SELECT u.id, split_part(u.email, '@', 1) as username, u.full_name, u.email
-                    FROM chat_channel_members mem
-                    JOIN users u ON u.id = mem.user_id
-                    WHERE mem.channel_id = $1 AND mem.user_id != $2
-                    LIMIT 1;
-                """, ch_id, current_uid)
-
-                if other_member:
-                    ou_id_str = str(other_member["id"])
-                    other_user = {
-                        "id": ou_id_str,
-                        "username": other_member["username"],
-                        "full_name": other_member["full_name"],
-                        "email": other_member["email"],
-                        "is_online": ws_manager.is_user_online(ou_id_str)
-                    }
-                    display_name = other_member["full_name"] or other_member["username"]
+            if ch_type == "direct" and ch_id in direct_members:
+                other_user = direct_members[ch_id]["other_user"]
+                display_name = direct_members[ch_id]["display_name"]
 
             channels.append({
                 "id": str(ch["id"]),
@@ -319,7 +378,7 @@ async def list_user_channels(
                 "created_at": ch["created_at"].isoformat(),
                 "last_read_at": last_read.isoformat() if last_read else None,
                 "is_muted": ch["is_muted"],
-                "unread_count": unread_cnt or 0,
+                "unread_count": unread_cnt,
                 "last_message": last_msg,
                 "other_user": other_user
             })
@@ -394,6 +453,9 @@ async def create_or_get_channel(
             await ws_manager.subscribe_user_to_channel(str(current_uid), str(new_id))
             await ws_manager.subscribe_user_to_channel(str(target_uid), str(new_id))
 
+            for member_uid in (current_uid, target_uid):
+                await ws_manager.send_to_user(str(member_uid), {"type": "CHANNEL_CREATED", "channel_id": str(new_id)})
+
             target_user = await conn.fetchrow("SELECT id, split_part(email, '@', 1) as username, full_name, email FROM users WHERE id = $1;", target_uid)
 
             return {
@@ -447,6 +509,7 @@ async def create_or_get_channel(
 
             # Add invited members
             member_count = 1
+            all_members = [current_uid]
             if payload.member_user_ids:
                 for m_id in payload.member_user_ids:
                     try:
@@ -458,9 +521,13 @@ async def create_or_get_channel(
                                 ON CONFLICT (channel_id, user_id) DO NOTHING;
                             """, uuid.uuid4(), new_id, parsed_m)
                             await ws_manager.subscribe_user_to_channel(str(parsed_m), str(new_id))
+                            all_members.append(parsed_m)
                             member_count += 1
                     except ValueError:
                         pass
+
+            for member_uid in all_members:
+                await ws_manager.send_to_user(str(member_uid), {"type": "CHANNEL_CREATED", "channel_id": str(new_id)})
 
             # Initial welcome post
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -543,10 +610,11 @@ async def list_available_departments(
 async def get_channel_messages(
     channel_id: str,
     limit: int = Query(50, ge=1, le=200),
+    before_id: Optional[str] = Query(None),
     offset: int = Query(0, ge=0),
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
-    """Retrieve message history for a channel."""
+    """Retrieve message history for a channel with infinite scroll and pagination support."""
     pool = get_db_pool()
     current_uid = uuid.UUID(str(session.get("id") or session.get("user_id")))
     ch_uuid = uuid.UUID(str(channel_id))
@@ -560,39 +628,90 @@ async def get_channel_messages(
         if not is_member:
             raise HTTPException(status_code=403, detail="You are not a member of this channel.")
 
-        rows = await conn.fetch("""
-            SELECT m.id, m.channel_id, m.sender_id, m.message_text, m.attachments_json,
-                   m.is_system_event, m.created_at,
-                   split_part(u.email, '@', 1) as sender_username, u.full_name as sender_name, u.email as sender_email
-            FROM chat_messages m
-            LEFT JOIN users u ON u.id = m.sender_id
-            WHERE m.channel_id = $1
-            ORDER BY m.created_at ASC
-            LIMIT $2 OFFSET $3;
-        """, ch_uuid, limit, offset)
+        if before_id:
+            before_uuid = uuid.UUID(str(before_id))
+            rows = await conn.fetch("""
+                SELECT * FROM (
+                    SELECT m.id, m.channel_id, m.sender_id, m.message_text, m.attachments_json,
+                           m.is_system_event, m.created_at,
+                           split_part(u.email, '@', 1) as sender_username, u.full_name as sender_name, u.email as sender_email
+                    FROM chat_messages m
+                    LEFT JOIN users u ON u.id = m.sender_id
+                    WHERE m.channel_id = $1
+                      AND m.created_at < (SELECT created_at FROM chat_messages WHERE id = $2)
+                    ORDER BY m.created_at DESC
+                    LIMIT $3
+                ) sub
+                ORDER BY sub.created_at ASC;
+            """, ch_uuid, before_uuid, limit)
+        else:
+            rows = await conn.fetch("""
+                SELECT * FROM (
+                    SELECT m.id, m.channel_id, m.sender_id, m.message_text, m.attachments_json,
+                           m.is_system_event, m.created_at,
+                           split_part(u.email, '@', 1) as sender_username, u.full_name as sender_name, u.email as sender_email
+                    FROM chat_messages m
+                    LEFT JOIN users u ON u.id = m.sender_id
+                    WHERE m.channel_id = $1
+                    ORDER BY m.created_at DESC
+                    LIMIT $2 OFFSET $3
+                ) sub
+                ORDER BY sub.created_at ASC;
+            """, ch_uuid, limit, offset)
+
+        current_user_id = str(session.get("id") or session.get("user_id") or "").lower()
+        current_user_email = str(session.get("email") or session.get("username") or "").lower()
 
         messages = []
         for r in rows:
             attachments = []
             if r["attachments_json"]:
                 try:
-                    attachments = json.loads(r["attachments_json"])
+                    raw_atts = json.loads(r["attachments_json"])
+                    if isinstance(raw_atts, list):
+                        attachments = [normalize_attachment_obj(a) for a in raw_atts if isinstance(a, dict)]
                 except Exception:
                     attachments = []
 
+            msg_sender_id = str(r["sender_id"] or "").lower()
+            msg_sender_email = str(r["sender_email"] or "").lower() if r["sender_email"] else ""
+            is_me = (msg_sender_id == str(current_uid).lower()) or (bool(current_user_email and msg_sender_email == current_user_email))
+
+            raw_text = r["message_text"] or ""
             messages.append({
                 "id": str(r["id"]),
                 "channel_id": str(r["channel_id"]),
+                "channelId": str(r["channel_id"]),
                 "sender_id": str(r["sender_id"]) if r["sender_id"] else None,
+                "senderId": str(r["sender_id"]) if r["sender_id"] else None,
                 "sender_name": r["sender_name"] or r["sender_username"] or "System",
+                "senderName": r["sender_name"] or r["sender_username"] or "System",
                 "sender_email": r["sender_email"],
-                "message_text": r["message_text"],
+                "content": raw_text,
+                "text": raw_text,
+                "message": raw_text,
+                "message_text": raw_text,
                 "attachments": attachments,
                 "is_system_event": r["is_system_event"],
-                "created_at": r["created_at"].isoformat()
+                "is_me": is_me,
+                "created_at": r["created_at"].isoformat(),
+                "createdAt": r["created_at"].isoformat()
             })
 
-    return {"messages": messages}
+        has_more = False
+        if rows:
+            earliest_time = rows[0]["created_at"]
+            older_count = await conn.fetchval("""
+                SELECT COUNT(*) FROM chat_messages
+                WHERE channel_id = $1 AND created_at < $2;
+            """, ch_uuid, earliest_time)
+            has_more = bool(older_count and older_count > 0)
+
+    return {
+        "messages": messages,
+        "has_more": has_more,
+        "hasMore": has_more
+    }
 
 
 @router.post("/channels/{channel_id}/messages")
@@ -676,12 +795,22 @@ async def send_channel_message(
 
         mentions_json = json.dumps(mentions) if mentions else payload.mentions_json
 
+        att_list = []
+        if payload.attachments_json:
+            try:
+                raw_atts = json.loads(payload.attachments_json)
+                if isinstance(raw_atts, list):
+                    att_list = [normalize_attachment_obj(a) for a in raw_atts if isinstance(a, dict)]
+            except Exception:
+                att_list = []
+        norm_att_json = json.dumps(att_list) if att_list else None
+
         await conn.execute("""
             INSERT INTO chat_messages (
                 id, channel_id, sender_id, message_text, mentions_json, attachments_json,
                 is_system_event, reply_to_message_id, created_at
             ) VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8);
-        """, msg_id, ch_uuid, current_uid, payload.message_text.strip(), mentions_json, payload.attachments_json, reply_uuid, now)
+        """, msg_id, ch_uuid, current_uid, payload.message_text.strip(), mentions_json, norm_att_json, reply_uuid, now)
 
         # Mark read for sender
         await conn.execute("""
@@ -690,13 +819,7 @@ async def send_channel_message(
             WHERE channel_id = $3 AND user_id = $4;
         """, now, msg_id, ch_uuid, current_uid)
 
-    att_list = []
-    if payload.attachments_json:
-        try:
-            att_list = json.loads(payload.attachments_json)
-        except Exception:
-            pass
-
+    content_str = payload.message_text.strip()
     msg_obj = {
         "id": str(msg_id),
         "channelId": str(ch_uuid),
@@ -705,22 +828,35 @@ async def send_channel_message(
         "sender_id": str(current_uid),
         "senderName": sender_name,
         "sender_name": sender_name,
+        "sender_email": session.get("email"),
         "avatarUrl": None,
-        "text": payload.message_text.strip(),
-        "message_text": payload.message_text.strip(),
+        "content": content_str,
+        "text": content_str,
+        "message": content_str,
+        "message_text": content_str,
         "mentions": mentions,
         "attachments": att_list,
         "is_system_event": False,
+        "is_me": True,
         "reply_to_message_id": str(reply_uuid) if reply_uuid else None,
         "createdAt": now.isoformat(),
         "created_at": now.isoformat()
     }
+
+    # Central WebSocket Connection Manager broadcast
+    ws_payload = {
+        "type": "new_message",
+        "message": msg_obj
+    }
+    await chat_ws_manager.broadcast_to_channel(str(ch_uuid), ws_payload)
 
     # Broadcast to channel room subscribers & dispatch Web Push
     broadcast_data = {
         "type": "CHANNEL_MESSAGE",
         "channelId": str(ch_uuid),
         "channelType": channel["channel_type"],
+        "channelName": channel["name"],
+        "senderName": sender_name,
         "message": msg_obj
     }
 
@@ -734,13 +870,6 @@ async def send_channel_message(
         force_push_all=force_push_all,
         channel_name=channel["name"],
         channel_type=channel["channel_type"]
-    )
-
-    # Legacy NEW_MESSAGE emit for components expecting type === 'NEW_MESSAGE'
-    await ws_manager.broadcast_to_channel(
-        channel_id=str(ch_uuid),
-        payload={"type": "NEW_MESSAGE", "message": msg_obj},
-        sender_id=str(current_uid)
     )
 
     return {"status": "sent", "message": msg_obj}
@@ -795,20 +924,233 @@ async def upload_chat_file(
         raise HTTPException(status_code=400, detail="File size exceeds maximum 25MB limit.")
 
     meta = save_chat_attachment(file.filename, content_bytes, file.content_type)
+    att_obj = normalize_attachment_obj({
+        "name": meta["filename"],
+        "disk_path": meta["disk_path"],
+        "size": meta["file_size_bytes"],
+        "mime_type": meta["mime_type"]
+    })
     return {
         "status": "uploaded",
-        "attachment": {
-            "name": meta["filename"],
-            "disk_path": meta["disk_path"],
-            "size": meta["file_size_bytes"],
-            "mime_type": meta["mime_type"]
-        }
+        "attachment": att_obj
     }
 
 
+async def _serve_chat_attachment(
+    request: Request,
+    raw_path: str,
+    download: bool = False,
+    token: Optional[str] = None,
+    authorization: Optional[str] = None
+):
+    """Stream or download chat attachment with Zero-Trust authentication and path traversal protection."""
+    raw_token = token
+    if not raw_token and authorization and authorization.startswith("Bearer "):
+        raw_token = authorization.replace("Bearer ", "").strip()
+    if not raw_token:
+        raw_token = request.cookies.get("enterprise_auth_token") or request.cookies.get("enterprise_session_token")
+
+    if not raw_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication token required to view or download chat attachments."
+        )
+
+    client_ip = get_client_ip(request)
+    session = await SessionManager.validate_session(raw_token, client_ip)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session expired or invalid. Please log in again."
+        )
+
+    chat_root = os.path.abspath(os.path.join(os.getcwd(), "storage", "chat_attachments"))
+    os.makedirs(chat_root, exist_ok=True)
+
+    clean_req = unquote(raw_path or "").strip().replace("\\", "/").lstrip("/")
+    if clean_req.startswith("storage/chat_attachments/"):
+        clean_req = clean_req[len("storage/chat_attachments/"):].lstrip("/")
+
+    target_abs = os.path.abspath(os.path.join(chat_root, clean_req))
+    if not target_abs.startswith(chat_root):
+        raise HTTPException(status_code=403, detail="Access denied: invalid file path.")
+
+    if not os.path.isfile(target_abs):
+        base_name = os.path.basename(clean_req)
+        found_file = None
+        for root, _, files in os.walk(chat_root):
+            if base_name in files:
+                cand = os.path.join(root, base_name)
+                if os.path.isfile(cand):
+                    found_file = cand
+                    break
+        if found_file:
+            target_abs = found_file
+        else:
+            raise HTTPException(status_code=404, detail="Physical attachment file missing from storage disk.")
+
+    raw_filename = os.path.basename(target_abs)
+    if re.match(r"^[0-9a-fA-F]{12}_", raw_filename):
+        download_name = raw_filename[13:]
+    else:
+        download_name = raw_filename
+
+    mime_type, _ = mimetypes.guess_type(target_abs)
+    if not mime_type:
+        mime_type = "application/octet-stream"
+
+    disposition_type = "attachment" if download else "inline"
+
+    return FileResponse(
+        path=target_abs,
+        filename=download_name,
+        media_type=mime_type,
+        content_disposition_type=disposition_type
+    )
+
+
+@router.get("/attachments/download")
+async def download_chat_attachment_query(
+    request: Request,
+    path: str = Query(...),
+    download: bool = Query(True),
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None)
+):
+    """Explicit download query route for chat attachments."""
+    return await _serve_chat_attachment(
+        request=request,
+        raw_path=path,
+        download=download,
+        token=token,
+        authorization=authorization
+    )
+
+
+@router.get("/attachments/{file_path:path}")
+async def get_chat_attachment_path(
+    request: Request,
+    file_path: str,
+    download: bool = Query(False),
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None)
+):
+    """Serve or stream chat attachment directly with inline preview or attachment download."""
+    return await _serve_chat_attachment(
+        request=request,
+        raw_path=file_path,
+        download=download,
+        token=token,
+        authorization=authorization
+    )
+
+
 # ==============================================================================
-# 3. WEBSOCKET REAL-TIME MULTI-ROOM BROADCAST ENDPOINT (/ws/chat)
+# 3. WEBSOCKET REAL-TIME CHANNEL & MULTI-ROOM BROADCAST ENDPOINTS
 # ==============================================================================
+
+@router.websocket("/ws/{channel_id}")
+async def websocket_channel_endpoint(
+    websocket: WebSocket,
+    channel_id: str,
+    token: Optional[str] = Query(None)
+):
+    """
+    Dedicated channel WebSocket endpoint with automatic reconnection and instant channel broadcast.
+    """
+    if not token:
+        await websocket.close(code=4001)
+        return
+
+    client_ip = websocket.client.host if websocket.client else "127.0.0.1"
+    session = await SessionManager.validate_session(token, client_ip)
+    if not session:
+        await websocket.close(code=4001)
+        return
+
+    user_id = str(session.get("id") or session.get("user_id"))
+    user_name = session.get("full_name") or session.get("username") or "User"
+    user_email = session.get("email")
+
+    await chat_ws_manager.connect(websocket, channel_id, user_id)
+    # Also register with global multi-room ws_manager for cross-app presence
+    await ws_manager.connect(user_id, websocket, channel_ids=[channel_id])
+
+    try:
+        while True:
+            raw_data = await websocket.receive_text()
+            try:
+                data = json.loads(raw_data)
+            except Exception:
+                data = {"content": raw_data}
+
+            if isinstance(data, dict) and data.get("type") == "PING":
+                await websocket.send_json({"type": "PONG"})
+                continue
+
+            content = (data.get("content") or data.get("text") or data.get("message") or data.get("message_text") or "").strip()
+            raw_atts = data.get("attachments") or []
+            attachments = [normalize_attachment_obj(a) for a in raw_atts if isinstance(a, dict)]
+            if not content and not attachments:
+                continue
+
+            now = datetime.datetime.now(datetime.timezone.utc)
+            msg_id = uuid.uuid4()
+            ch_uuid = uuid.UUID(str(channel_id))
+            att_json = json.dumps(attachments) if attachments else None
+
+            pool = get_db_pool()
+            if pool:
+                async with pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO chat_messages (
+                            id, channel_id, sender_id, message_text, attachments_json,
+                            is_system_event, created_at
+                        ) VALUES ($1, $2, $3, $4, $5, false, $6);
+                    """, msg_id, ch_uuid, uuid.UUID(user_id), content, att_json, now)
+
+                    await conn.execute("""
+                        UPDATE chat_channel_members
+                        SET last_read_at = $1, last_read_message_id = $2
+                        WHERE channel_id = $3 AND user_id = $4;
+                    """, now, msg_id, ch_uuid, uuid.UUID(user_id))
+
+            payload = {
+                "type": "new_message",
+                "message": {
+                    "id": str(msg_id),
+                    "channel_id": str(channel_id),
+                    "channelId": str(channel_id),
+                    "sender_id": str(user_id),
+                    "senderId": str(user_id),
+                    "sender_name": user_name,
+                    "senderName": user_name,
+                    "sender_email": user_email,
+                    "content": content,
+                    "text": content,
+                    "message": content,
+                    "message_text": content,
+                    "attachments": attachments,
+                    "is_system_event": False,
+                    "created_at": now.isoformat(),
+                    "createdAt": now.isoformat()
+                }
+            }
+            await chat_ws_manager.broadcast_to_channel(channel_id, payload)
+            # Emit to global multi-room ws_manager
+            await ws_manager.broadcast_to_channel(
+                channel_id=channel_id,
+                payload={"type": "CHANNEL_MESSAGE", "channelId": channel_id, "message": payload["message"]},
+                sender_id=user_id
+            )
+    except WebSocketDisconnect:
+        chat_ws_manager.disconnect(websocket, channel_id, user_id)
+        await ws_manager.disconnect(user_id, websocket)
+    except Exception as e:
+        logger.warning(f"WebSocket channel connection error: {e}")
+        chat_ws_manager.disconnect(websocket, channel_id, user_id)
+        await ws_manager.disconnect(user_id, websocket)
+
 
 @router.websocket("/ws")
 async def websocket_chat_endpoint(
@@ -878,7 +1220,8 @@ async def websocket_chat_endpoint(
             elif msg_type == "SEND_MESSAGE":
                 ch_id = data.get("channelId")
                 text = (data.get("text") or "").strip()
-                attachments = data.get("attachments") or []
+                raw_atts = data.get("attachments") or []
+                attachments = [normalize_attachment_obj(a) for a in raw_atts if isinstance(a, dict)]
 
                 if not ch_id or (not text and not attachments):
                     continue
@@ -960,6 +1303,8 @@ async def websocket_chat_endpoint(
                             "type": "CHANNEL_MESSAGE",
                             "channelId": str(ch_id),
                             "channelType": channel["channel_type"],
+                            "channelName": channel["name"],
+                            "senderName": user_name,
                             "message": msg_obj
                         },
                         sender_id=user_id,
@@ -968,13 +1313,6 @@ async def websocket_chat_endpoint(
                         force_push_all=force_push_all,
                         channel_name=channel["name"],
                         channel_type=channel["channel_type"]
-                    )
-
-                    # Also broadcast legacy NEW_MESSAGE for compatibility
-                    await ws_manager.broadcast_to_channel(
-                        channel_id=str(ch_id),
-                        payload={"type": "NEW_MESSAGE", "message": msg_obj},
-                        sender_id=user_id
                     )
 
             elif msg_type == "TYPING":

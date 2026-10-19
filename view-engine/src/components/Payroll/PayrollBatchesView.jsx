@@ -112,6 +112,7 @@ export function PayrollBatchesView() {
     notes: '',
   });
   const [isSavingPayslip, setIsSavingPayslip] = useState(false);
+  const [isPayslipDirty, setIsPayslipDirty] = useState(false);
 
   // Print Payslips Modal
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
@@ -507,6 +508,7 @@ export function PayrollBatchesView() {
   // Open Edit Payslip Modal
   const openEditPayslip = (p) => {
     setEditingPayslip(p);
+    setIsPayslipDirty(false);
     setEditFormData({
       working_days: p.working_days ?? 30,
       overtime_hours: p.overtime_hours ?? 0,
@@ -541,7 +543,7 @@ export function PayrollBatchesView() {
           type: 'success',
           text: `Payslip for ${editingPayslip.employee_name} updated successfully.`,
         });
-        setEditingPayslip(null);
+        setIsPayslipDirty(false);
         // Refresh details & batches
         fetchBatchDetails(selectedBatchId);
         fetchBatches();
@@ -1496,7 +1498,10 @@ export function PayrollBatchesView() {
                     min="1"
                     max="31"
                     value={editFormData.working_days}
-                    onChange={(e) => setEditFormData({ ...editFormData, working_days: e.target.value })}
+                    onChange={(e) => {
+                      setEditFormData({ ...editFormData, working_days: e.target.value });
+                      setIsPayslipDirty(true);
+                    }}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
                   />
                 </div>
@@ -1510,7 +1515,10 @@ export function PayrollBatchesView() {
                     step="0.5"
                     min="0"
                     value={editFormData.overtime_hours}
-                    onChange={(e) => setEditFormData({ ...editFormData, overtime_hours: e.target.value })}
+                    onChange={(e) => {
+                      setEditFormData({ ...editFormData, overtime_hours: e.target.value });
+                      setIsPayslipDirty(true);
+                    }}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
                   />
                 </div>
@@ -1524,7 +1532,10 @@ export function PayrollBatchesView() {
                     step="0.01"
                     min="0"
                     value={editFormData.overtime_pay}
-                    onChange={(e) => setEditFormData({ ...editFormData, overtime_pay: e.target.value })}
+                    onChange={(e) => {
+                      setEditFormData({ ...editFormData, overtime_pay: e.target.value });
+                      setIsPayslipDirty(true);
+                    }}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
                   />
                 </div>
@@ -1538,7 +1549,10 @@ export function PayrollBatchesView() {
                     step="0.01"
                     min="0"
                     value={editFormData.other_allowances}
-                    onChange={(e) => setEditFormData({ ...editFormData, other_allowances: e.target.value })}
+                    onChange={(e) => {
+                      setEditFormData({ ...editFormData, other_allowances: e.target.value });
+                      setIsPayslipDirty(true);
+                    }}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
                   />
                 </div>
@@ -1552,7 +1566,10 @@ export function PayrollBatchesView() {
                     step="0.01"
                     min="0"
                     value={editFormData.deductions}
-                    onChange={(e) => setEditFormData({ ...editFormData, deductions: e.target.value })}
+                    onChange={(e) => {
+                      setEditFormData({ ...editFormData, deductions: e.target.value });
+                      setIsPayslipDirty(true);
+                    }}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
                   />
                 </div>
@@ -1583,7 +1600,10 @@ export function PayrollBatchesView() {
                   rows={2}
                   placeholder="Notes explaining manual adjustment..."
                   value={editFormData.notes}
-                  onChange={(e) => setEditFormData({ ...editFormData, notes: e.target.value })}
+                  onChange={(e) => {
+                    setEditFormData({ ...editFormData, notes: e.target.value });
+                    setIsPayslipDirty(true);
+                  }}
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
                 />
               </div>
@@ -1591,15 +1611,22 @@ export function PayrollBatchesView() {
               <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setEditingPayslip(null)}
+                  onClick={() => {
+                    setEditingPayslip(null);
+                    setIsPayslipDirty(false);
+                  }}
                   className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold hover:bg-slate-200 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={isSavingPayslip}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold shadow-xs cursor-pointer disabled:opacity-50"
+                  disabled={isSavingPayslip || !isPayslipDirty}
+                  className={`flex items-center gap-1.5 px-4 py-2 rounded-xl font-bold transition shadow-xs ${
+                    !isPayslipDirty || isSavingPayslip
+                      ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-slate-200 dark:border-slate-700 cursor-not-allowed opacity-60'
+                      : 'bg-amber-600 hover:bg-amber-700 text-white cursor-pointer'
+                  }`}
                 >
                   {isSavingPayslip && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
                   <span>Save Adjustments</span>

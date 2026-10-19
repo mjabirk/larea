@@ -155,6 +155,7 @@ function parseNavigationState() {
 }
 
 function MainAppShell() {
+  const { currentUser: authUser, session, logout } = useAuth();
   const {
     currentUser,
     currentOrganization,
@@ -166,9 +167,17 @@ function MainAppShell() {
     switchOrganization,
     attendanceRecords,
     users,
+    switchActiveUser,
   } = useTenancy();
 
-  const { logout } = useAuth();
+  // Source of truth MUST be the authenticated user session from AuthContext
+  const activeUser = authUser || session?.user || currentUser;
+
+  React.useEffect(() => {
+    if (activeUser?.id && switchActiveUser) {
+      switchActiveUser(activeUser.id);
+    }
+  }, [activeUser?.id, switchActiveUser]);
 
   const { t, language } = useLocale();
   const { themeMode, effectiveTheme, setThemeMode, currentAccent } = useTheme();
@@ -344,13 +353,10 @@ function MainAppShell() {
 
   const branchMenuRef = useRef(null);
   const userMenuRef = useRef(null);
-  const moduleMenuRef = useRef(null);
-  const [showModuleMenu, setShowModuleMenu] = useState(false);
 
-  // Click-outside dismissal for Organization / Branch switcher, User menu, and Module switcher
+  // Click-outside dismissal for Organization / Branch switcher and User menu
   useClickOutside(branchMenuRef, () => setShowBranchMenu(false), showBranchMenu);
   useClickOutside(userMenuRef, () => setShowUserMenu(false), showUserMenu);
-  useClickOutside(moduleMenuRef, () => setShowModuleMenu(false), showModuleMenu);
 
   const activeModule = getModuleById(activeModuleId);
   const activeMenu = getMenuById(activeModuleId, activeMenuId);
@@ -489,128 +495,52 @@ function MainAppShell() {
 
       {/* 4. TIER 1: GLOBAL CONSOLIDATED TOP BAR (56px) - Always Mounted Across All Views */}
       <header className="h-14 bg-[#0f172a] text-white flex items-center justify-between px-3 sm:px-4 sticky top-0 z-30 border-b border-slate-800/80 shadow-xs select-none gap-2">
-        {/* ========================================================================= */}
-        {/* LEFT SIDE: Brand Logo + Module Switcher + Main Module Links (Tier 1)      */}
-        {/* ========================================================================= */}
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 mr-2">
-          {/* Static 9-Dots App Launcher Icon */}
+        {/* LEFT SIDE: 9-Dots Launcher Icon + Brand + Static Breadcrumb */}
+        <div className="flex items-center gap-3">
+          {/* Static 9-Dots App Launcher Icon (Single Entry Point to Switch Apps) */}
           <button
             type="button"
             onClick={() => handleToggleLauncher()}
             aria-label={isLauncherOpen ? "Close Workspace Launcher (Esc)" : "Open Application Launcher (9-dots)"}
-            aria-haspopup="dialog"
-            aria-expanded={isLauncherOpen}
-            className={`p-2 rounded-lg transition cursor-pointer shadow-2xs group shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${isLauncherOpen
-              ? 'bg-blue-600 text-white border border-blue-500 shadow-blue-500/30'
-              : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/60'
-              }`}
+            className={`p-2 rounded-lg transition cursor-pointer shadow-2xs group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+              isLauncherOpen
+                ? 'bg-blue-600 text-white border border-blue-500 shadow-blue-500/30'
+                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/60'
+            }`}
             title={isLauncherOpen ? "Close Workspace Launcher (Esc)" : "Open Application Launcher (9-dots)"}
           >
-            <LayoutGrid className="w-4 h-4 group-hover:scale-105 transition-transform" aria-hidden="true" />
+            <LayoutGrid className="w-4 h-4 group-hover:scale-105 transition-transform"/>
           </button>
 
-          {/* Brand Logo */}
-          <div className="flex items-center gap-2 shrink-0">
-            <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-white text-xs shadow-xs tracking-wider">
+          {/* Logo / Brand */}
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-xs text-white shadow-xs">
               L
             </div>
-            <span className="font-bold text-slate-100 text-sm hidden lg:inline tracking-tight">
+            <span className="font-bold text-sm text-white tracking-tight">
               Larea ERP
             </span>
           </div>
 
-          {isLauncherOpen ? (
-            <div className="flex items-center gap-2 shrink-0">
-              <div className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
+          <div className="h-4 w-[1px] bg-slate-800 hidden sm:block" />
+
+          {/* Static Location Breadcrumb (No dropdown, no menu switching) */}
+          {!isLauncherOpen && (
+            <div className="hidden sm:flex items-center gap-2">
+              <div
+                className="w-2 h-2 rounded-full"
+                style={{ backgroundColor: activeModule?.color }}
+              />
               <div className="flex items-center gap-1.5 text-xs">
-                <span className="font-bold text-slate-100 tracking-tight text-sm">
-                  Apps
+                <span className="font-semibold text-slate-200">
+                  {activeModule?.name}
                 </span>
                 <span className="text-slate-500 font-light">/</span>
-                <span className="font-medium text-blue-400 text-xs">
-                  Workspace Launcher
+                <span className="text-slate-400">
+                  {activeMenu?.label}
                 </span>
               </div>
             </div>
-          ) : (
-            <>
-              {/* Module Switcher Dropdown */}
-              <div className="relative shrink-0" ref={moduleMenuRef}>
-                <button
-                  type="button"
-                  onClick={() => setShowModuleMenu(!showModuleMenu)}
-                  aria-label={`Current module: ${activeModule?.name}. Click to switch module.`}
-                  aria-expanded={showModuleMenu}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800/70 hover:bg-slate-800 border border-slate-700/60 text-xs text-slate-200 hover:text-white transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                >
-                  <div
-                    className="w-2.5 h-2.5 rounded-full shrink-0"
-                    style={{ backgroundColor: activeModule?.color || '#2563eb' }}
-                  />
-                  <span className="font-semibold text-slate-100 text-xs truncate max-w-[110px] sm:max-w-none">
-                    {activeModule?.name}
-                  </span>
-                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                </button>
-
-                {showModuleMenu && (
-                  <div className="absolute left-0 mt-1.5 w-60 bg-slate-900 border border-slate-700 rounded-xl shadow-xl py-1.5 z-40 text-xs animate-fadeIn">
-                    <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                      Application Modules
-                    </div>
-                    {permittedModules.map((m) => {
-                      const isCurrent = m.id === activeModuleId;
-                      return (
-                        <button
-                          key={m.id}
-                          type="button"
-                          onClick={() => {
-                            handleSelectModule(m.id);
-                            setShowModuleMenu(false);
-                          }}
-                          className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between hover:bg-slate-800 transition cursor-pointer ${
-                            isCurrent ? 'text-blue-400 font-semibold bg-slate-800/60' : 'text-slate-300'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2 truncate">
-                            <div
-                              className="w-2.5 h-2.5 rounded-full shrink-0"
-                              style={{ backgroundColor: m.color }}
-                            />
-                            <span className="truncate">{m.name}</span>
-                          </div>
-                          {isCurrent && <Check className="w-3.5 h-3.5 text-blue-400 shrink-0 ml-2" />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              <div className="h-4 w-[1px] bg-slate-800 hidden sm:block shrink-0" />
-
-              {/* Main Module Links (Employees, Contracts, Attendance, etc.) directly in Tier 1 */}
-              <nav aria-label="Main Module Links" className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 min-w-0">
-                {permittedMenus.map((menu) => {
-                  const isActive = activeMenuId === menu.id;
-                  return (
-                    <button
-                      key={menu.id}
-                      type="button"
-                      onClick={() => handleSelectMenu(menu.id)}
-                      aria-current={isActive ? 'page' : undefined}
-                      className={`px-3 py-1.5 rounded-lg text-xs transition cursor-pointer shrink-0 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
-                        isActive
-                          ? 'bg-blue-600 text-white font-semibold shadow-xs'
-                          : 'text-slate-300 hover:text-white hover:bg-slate-800/80 font-medium'
-                      }`}
-                    >
-                      {menu.label}
-                    </button>
-                  );
-                })}
-              </nav>
-            </>
           )}
         </div>
 
@@ -769,7 +699,7 @@ function MainAppShell() {
                 setShowUserMenu(!showUserMenu);
                 setShowBranchMenu(false);
               }}
-              aria-label={`User account menu for ${currentUser?.full_name || 'User'}`}
+              aria-label={`User account menu for ${activeUser?.full_name || 'User'}`}
               aria-haspopup="menu"
               aria-expanded={showUserMenu}
               className="flex items-center gap-2 p-1 rounded-lg hover:bg-slate-800/70 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
@@ -778,16 +708,18 @@ function MainAppShell() {
                 className="w-7 h-7 rounded-full text-white flex items-center justify-center font-bold text-xs ring-2 ring-slate-800"
                 style={{ backgroundColor: currentAccent.primary }}
                 role="img"
-                aria-label={`Avatar for ${currentUser?.full_name || 'User'}`}
+                aria-label={`Avatar for ${activeUser?.full_name || 'User'}`}
               >
-                {currentUser?.full_name ? currentUser.full_name.slice(0, 2).toUpperCase() : 'SJ'}
+                {activeUser?.full_name
+                  ? activeUser.full_name.split(' ').filter(Boolean).map((n) => n[0]).join('').slice(0, 2).toUpperCase()
+                  : (activeUser?.email?.slice(0, 2).toUpperCase() || activeUser?.username?.slice(0, 2).toUpperCase() || 'AU')}
               </div>
               <div className="text-left rtl:text-right hidden sm:block">
                 <div className="text-xs font-semibold text-slate-200 leading-none">
-                  {currentUser?.full_name || 'Sarah Jenkins'}
+                  {activeUser?.full_name || activeUser?.email || 'Authenticated User'}
                 </div>
                 <div className="text-[10px] text-slate-400 leading-none mt-0.5 truncate max-w-[120px]">
-                  {currentUser?.is_superadmin ? 'Root Superadmin' : userMemberships[0]?.role || 'Staff'}
+                  {activeUser?.is_superadmin ? 'Root Superadmin' : (activeUser?.role || userMemberships[0]?.role || 'Standard User')}
                 </div>
               </div>
               <ChevronDown className="w-3.5 h-3.5 text-slate-400 hidden sm:block shrink-0" aria-hidden="true" />
@@ -797,10 +729,10 @@ function MainAppShell() {
             {showUserMenu && (
               <div className="absolute right-0 rtl:left-0 rtl:right-auto mt-1.5 w-64 bg-slate-900 border border-slate-700 rounded-xl shadow-xl py-1.5 z-40 text-xs animate-fadeIn text-slate-300">
                 <div className="px-3 py-2 border-b border-slate-800">
-                  <div className="font-semibold text-white">{currentUser?.full_name}</div>
-                  <div className="text-[11px] text-slate-400 font-mono truncate">{currentUser?.email}</div>
+                  <div className="font-semibold text-white">{activeUser?.full_name || 'Authenticated User'}</div>
+                  <div className="text-[11px] text-slate-400 font-mono truncate">{activeUser?.email}</div>
                   <div className="mt-1 inline-block px-1.5 py-0.5 bg-blue-900/60 text-blue-300 border border-blue-700 rounded text-[10px] font-medium">
-                    {currentUser?.is_superadmin ? 'Root Superadmin' : userMemberships[0]?.role || 'Member'}
+                    {activeUser?.is_superadmin ? 'Root Superadmin' : (activeUser?.role || userMemberships[0]?.role || 'Member')}
                   </div>
                 </div>
 
@@ -858,7 +790,15 @@ function MainAppShell() {
         </div>
       </header>
 
-
+      {/* 5. SECONDARY SUB-BAR: Context-Aware Top Sub-Navigation (Hidden in Launcher View) */}
+      {!isLauncherOpen && (
+        <SubNavBar
+          activeModuleId={activeModuleId}
+          activeMenuId={activeMenuId}
+          onSelectMenu={handleSelectMenu}
+          onOpenLauncher={() => handleToggleLauncher(true)}
+        />
+      )}
 
       {/* 6. WORKSPACE RENDERER ACCORDING TO 2-TIER MODULE & SUB-MENU */}
       <ErrorBoundary title="Workspace Viewport Error">
@@ -894,7 +834,7 @@ function MainAppShell() {
           ) : (
             <>
               {/* Unified Configuration & Settings Screens */}
-              {['hr_config', 'salary_rules', 'wps_config', 'api_keys', 'orgs', 'compliance_alerts', 'mail_servers', 'mail_templates', 'mail_logs', 'sms_gateways', 'whatsapp_configs', 'whatsapp_templates', 'communication_logs', 'automation_triggers'].includes(activeMenuId) && (
+              {['hr_config', 'salary_rules', 'wps_config', 'api_keys', 'orgs', 'compliance_alerts', 'mail_servers', 'mail_templates', 'mail_logs', 'sms_gateways', 'whatsapp_configs', 'whatsapp_accounts', 'whatsapp_templates', 'communication_logs', 'sms_whatsapp_logs', 'automation_triggers'].includes(activeMenuId) && (
                 <div className="p-4 sm:p-6">
                   <ConfigurationView activeMenuId={activeMenuId} />
                 </div>
@@ -974,12 +914,21 @@ function MainAppShell() {
                         setSelectedUserForForm(u);
                         setUserViewMode('form');
                       }}
+                      onCreateNewUser={() => {
+                        setSelectedUserForForm(null);
+                        setUserViewMode('form');
+                      }}
                     />
                   ) : (
                     <UserFormView
-                      key={selectedUserForForm?.id || 'default'}
+                      key={selectedUserForForm?.id || 'new'}
                       user={selectedUserForForm}
-                      onBackToList={() => setUserViewMode('list')}
+                      usersList={users || []}
+                      onSelectUser={(u) => setSelectedUserForForm(u)}
+                      onBackToList={() => {
+                        setUserViewMode('list');
+                        setSelectedUserForForm(null);
+                      }}
                     />
                   )}
                 </div>
@@ -1025,7 +974,7 @@ function MainAppShell() {
       </ErrorBoundary>
 
       {/* 7. ENTERPRISE STATUTORY COMPLIANCE & LEGAL FOOTER */}
-      {!isOperationalForm && (
+      {isLauncherOpen && !isOperationalForm && (
         <LegalFooter
           onOpenPolicy={handleOpenPolicy}
           onOpenBusinessModal={handleOpenBusinessModal}

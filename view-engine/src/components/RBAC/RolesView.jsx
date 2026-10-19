@@ -15,6 +15,7 @@ import {
   Info,
   CheckCircle2,
   ChevronRight,
+  ChevronLeft,
   Plus,
   Trash2,
   Edit2,
@@ -77,8 +78,9 @@ export function RolesView() {
   const [roleSearch, setRoleSearch] = useState('');
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Modals state
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  // View mode & state
+  const [viewMode, setViewMode] = useState('list'); // 'list' | 'form'
+  const [isDirty, setIsDirty] = useState(false);
   const [isSubmittingCreate, setIsSubmittingCreate] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [deleteModalState, setDeleteModalState] = useState({ isOpen: false, role: null, safeguardError: null });
@@ -169,8 +171,8 @@ export function RolesView() {
     setTimeout(() => setSaveSuccess(false), 2000);
   };
 
-  // Open Create Modal
-  const handleOpenCreateModal = () => {
+  // Open Create Form (In-Place Form View)
+  const handleOpenCreateForm = () => {
     setNewRoleData({
       name: '',
       code: '',
@@ -179,11 +181,12 @@ export function RolesView() {
       cloneFromId: 'role_standard',
     });
     setCreateError('');
-    setIsCreateModalOpen(true);
+    setIsDirty(false);
+    setViewMode('form');
   };
 
   const handleCreateSubmit = async (e) => {
-    e.preventDefault();
+    if (e && e.preventDefault) e.preventDefault();
     if (isSubmittingCreate) return;
 
     const trimmedName = newRoleData.name.trim();
@@ -219,8 +222,7 @@ export function RolesView() {
         return;
       }
 
-      // Explicitly close modal, clear form inputs, and select the newly created role in the sidebar
-      setIsCreateModalOpen(false);
+      // Clear form inputs, reset dirty state, and select the newly created role in the sidebar
       setNewRoleData({
         name: '',
         code: '',
@@ -229,6 +231,8 @@ export function RolesView() {
         cloneFromId: 'role_standard',
       });
       setCreateError('');
+      setIsDirty(false);
+      setViewMode('list');
 
       if (refreshRoles) {
         await refreshRoles();
@@ -357,6 +361,274 @@ export function RolesView() {
     }
   };
 
+  if (viewMode === 'form') {
+    const selectedSourceRole = roles.find((r) => r.id === newRoleData.cloneFromId);
+    const selectedBadgePreset = PRESET_COLORS.find((c) => c.id === newRoleData.badgeColor) || PRESET_COLORS[0];
+
+    return (
+      <div className="max-w-7xl mx-auto space-y-6 pb-16 animate-fadeIn">
+        {/* Top Control Bar Breadcrumb */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          {/* Left: Breadcrumbs & Back */}
+          <div className="flex items-center gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => {
+                if (isDirty && !window.confirm("You have unsaved changes. Discard and return to roles list?")) return;
+                setViewMode('list');
+              }}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+              <span>Roles</span>
+            </button>
+
+            <span className="text-slate-400">/</span>
+            <span className="font-bold text-slate-900 dark:text-white">
+              {newRoleData.name || 'New Custom Role'}
+            </span>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300 border border-blue-200">
+              New Role
+            </span>
+          </div>
+
+          {/* Right: Save Changes and Discard / Back */}
+          <div className="flex items-center gap-2 self-end sm:self-auto">
+            <button
+              type="button"
+              onClick={handleCreateSubmit}
+              disabled={!isDirty || isSubmittingCreate || !newRoleData.name.trim()}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer ${
+                isDirty && newRoleData.name.trim() && !isSubmittingCreate
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-not-allowed'
+              }`}
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>{isSubmittingCreate ? 'Saving...' : 'Save Changes'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (isDirty && !window.confirm("You have unsaved changes. Discard?")) return;
+                setNewRoleData({
+                  name: '',
+                  code: '',
+                  description: '',
+                  badgeColor: 'amber',
+                  cloneFromId: 'role_standard',
+                });
+                setIsDirty(false);
+                setViewMode('list');
+              }}
+              className="flex items-center gap-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Discard / Back</span>
+            </button>
+          </div>
+        </div>
+
+        {createError && (
+          <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs font-semibold flex items-center justify-between animate-fadeIn">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+              <span>{createError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCreateError('')}
+              className="text-rose-700 dark:text-rose-400 hover:text-rose-900 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* 12-Column Layout */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* Main Form (8 Cols) */}
+          <div className="lg:col-span-8 space-y-6">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-xs space-y-5">
+              <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
+                <div className="p-1.5 rounded-lg bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400">
+                  <Shield className="w-4 h-4" />
+                </div>
+                <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white">
+                  Role Configuration & Inheritance
+                </h3>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Role Name */}
+                <div className="space-y-1.5 md:col-span-2">
+                  <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block">
+                    Role Name <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={newRoleData.name}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      const autoCode = val.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+                      setNewRoleData((prev) => ({
+                        ...prev,
+                        name: val,
+                        code: prev.code ? prev.code : `ROLE_${autoCode}`,
+                      }));
+                      setIsDirty(true);
+                    }}
+                    placeholder="e.g. Shift Quality Auditor"
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                    required
+                  />
+                </div>
+
+                {/* Role Code / Slug */}
+                <div className="space-y-1.5">
+                  <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block">
+                    Role Code / Slug (Unique identifier)
+                  </label>
+                  <input
+                    type="text"
+                    value={newRoleData.code}
+                    onChange={(e) => {
+                      setNewRoleData((prev) => ({ ...prev, code: e.target.value.toUpperCase() }));
+                      setIsDirty(true);
+                    }}
+                    placeholder="e.g. ROLE_SHIFT_AUDITOR"
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                  />
+                </div>
+
+                {/* Clone From Template */}
+                <div className="space-y-1.5">
+                  <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block">
+                    Initial Permission Template (Clone from)
+                  </label>
+                  <select
+                    value={newRoleData.cloneFromId}
+                    onChange={(e) => {
+                      setNewRoleData((prev) => ({ ...prev, cloneFromId: e.target.value }));
+                      setIsDirty(true);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors cursor-pointer"
+                  >
+                    {roles.map((r) => (
+                      <option key={r.id} value={r.id} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">
+                        Clone from {r.name} ({r.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Description */}
+                <div className="space-y-1.5 md:col-span-2">
+                  <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block">
+                    Description & Operational Scope
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={newRoleData.description}
+                    onChange={(e) => {
+                      setNewRoleData((prev) => ({ ...prev, description: e.target.value }));
+                      setIsDirty(true);
+                    }}
+                    placeholder="Brief explanation of responsibilities and scope..."
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Template Inherited Permissions Summary Card */}
+            {selectedSourceRole && (
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs space-y-3">
+                <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-2.5">
+                  <Sparkles className="w-4 h-4 text-amber-500" />
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                    Template Permissions Inherited from: {selectedSourceRole.name}
+                  </h4>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  This custom role will be provisioned with the full baseline permissions and menu entitlements of <strong className="text-slate-700 dark:text-slate-200">{selectedSourceRole.name}</strong>. After saving, you can freely tune individual entity CRUD flags and navigation menus.
+                </p>
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {(selectedSourceRole.menu_access || []).map((mId) => (
+                    <span key={mId} className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-[11px] font-mono">
+                      {mId}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Right Rail (4 Cols) */}
+          <div className="lg:col-span-4 space-y-6">
+            {/* Visual Accent & Badge Preview */}
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs space-y-4">
+              <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
+                <SlidersHorizontal className="w-4 h-4 text-slate-400" />
+                <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white">
+                  Visual Badge Accent
+                </h3>
+              </div>
+
+              <div className="space-y-3">
+                <span className="text-xs text-slate-500 dark:text-slate-400 block">
+                  Select an accent color for user profile chips and identity badges:
+                </span>
+                <div className="flex items-center gap-2">
+                  {PRESET_COLORS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => {
+                        setNewRoleData((prev) => ({ ...prev, badgeColor: preset.id }));
+                        setIsDirty(true);
+                      }}
+                      className={`w-7 h-7 rounded-full ${preset.bg} cursor-pointer transition flex items-center justify-center ${
+                        newRoleData.badgeColor === preset.id ? `ring-2 ring-offset-2 ${preset.ring} scale-110` : 'opacity-80 hover:opacity-100'
+                      }`}
+                      title={preset.label}
+                    >
+                      {newRoleData.badgeColor === preset.id && <Check className="w-3.5 h-3.5 text-white" />}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+                  <span className="text-[11px] text-slate-400 block mb-1">Badge Preview:</span>
+                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${selectedBadgePreset.bg} text-white shadow-xs`}>
+                    <Shield className="w-3.5 h-3.5" />
+                    <span>{newRoleData.name || 'New Custom Role'}</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Governance Info Card */}
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs space-y-3">
+              <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
+                <Info className="w-4 h-4 text-blue-500" />
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                  Governance Policy
+                </h4>
+              </div>
+              <ul className="text-xs text-slate-500 dark:text-slate-400 space-y-2 list-disc list-inside">
+                <li>Custom roles are isolated per tenant and can be deleted when no active users are assigned.</li>
+                <li>Changes to role permissions take effect immediately for active user sessions.</li>
+                <li>System-defined root roles cannot be renamed or deleted.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-16 animate-fadeIn">
       {/* Top Header Banner */}
@@ -378,7 +650,7 @@ export function RolesView() {
         <div className="flex items-center gap-2.5 shrink-0">
           <button
             type="button"
-            onClick={handleOpenCreateModal}
+            onClick={handleOpenCreateForm}
             className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -767,140 +1039,7 @@ export function RolesView() {
         )}
       </div>
 
-      {/* ========================================================================= */}
-      {/* MODAL 1: CREATE CUSTOM ROLE */}
-      {/* ========================================================================= */}
-      {isCreateModalOpen && createPortal(
-        <div
-          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-fadeIn select-none"
-          role="dialog"
-          aria-modal="true"
-          onClick={() => setIsCreateModalOpen(false)}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg overflow-hidden flex flex-col my-auto max-h-[90vh]"
-          >
-            <div className="p-6 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-lg bg-blue-600/20 text-blue-400 border border-blue-500/30">
-                  <Shield className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-sm text-slate-100">Create Custom Security Role</h3>
-                  <p className="text-[11px] text-slate-400">Define a new user-defined role with customized permissions</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsCreateModalOpen(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
 
-            <form onSubmit={handleCreateSubmit} className="p-6 space-y-4 text-xs">
-              {createError && (
-                <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 shrink-0" />
-                  <span>{createError}</span>
-                </div>
-              )}
-
-              <div className="space-y-1.5">
-                <label className="font-semibold text-slate-700 dark:text-slate-300 block">
-                  Role Name <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={newRoleData.name}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    const autoCode = val.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-                    setNewRoleData((prev) => ({
-                      ...prev,
-                      name: val,
-                      code: prev.code ? prev.code : `ROLE_${autoCode}`,
-                    }));
-                  }}
-                  placeholder="e.g. Shift Quality Auditor"
-                  className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="font-semibold text-slate-700 dark:text-slate-300 block">
-                  Role Code / Slug (Unique identifier)
-                </label>
-                <input
-                  type="text"
-                  value={newRoleData.code}
-                  onChange={(e) => setNewRoleData((prev) => ({ ...prev, code: e.target.value.toUpperCase() }))}
-                  placeholder="e.g. ROLE_SHIFT_AUDITOR"
-                  className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-mono text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="font-semibold text-slate-700 dark:text-slate-300 block">
-                  Description
-                </label>
-                <textarea
-                  rows={2}
-                  value={newRoleData.description}
-                  onChange={(e) => setNewRoleData((prev) => ({ ...prev, description: e.target.value }))}
-                  placeholder="Brief explanation of responsibilities and scope..."
-                  className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="font-semibold text-slate-700 dark:text-slate-300 block">
-                  Initial Permission Template (Clone from)
-                </label>
-                <select
-                  value={newRoleData.cloneFromId}
-                  onChange={(e) => setNewRoleData((prev) => ({ ...prev, cloneFromId: e.target.value }))}
-                  className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
-                >
-                  {roles.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      Clone from {r.name} ({r.code})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-slate-100 dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setIsCreateModalOpen(false)}
-                  className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmittingCreate}
-                  className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold cursor-pointer shadow-xs flex items-center gap-1.5"
-                >
-                  {isSubmittingCreate ? (
-                    <>
-                      <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      <span>Creating Role...</span>
-                    </>
-                  ) : (
-                    <span>Create Custom Role</span>
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>,
-        document.body
-      )}
 
       {/* ========================================================================= */}
       {/* MODAL 2: EDIT ROLE DETAILS */}

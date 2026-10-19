@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Server,
   Plus,
@@ -16,36 +16,47 @@ import {
   X,
   Radio,
   Sliders,
-  Check
+  Check,
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  Save,
 } from 'lucide-react';
+
+const DEFAULT_NEW_FORM = {
+  name: '',
+  server_type: 'outgoing',
+  protocol: 'SMTP',
+  host: 'smtp.company.local',
+  port: 587,
+  encryption: 'STARTTLS',
+  username: 'notifications@company.local',
+  password: '',
+  from_email: 'notifications@company.local',
+  from_name: 'Apex Global Enterprises HR',
+  is_default: false,
+  active: true,
+  auto_purge_mode: 'days',
+  auto_purge_days: 60,
+};
 
 export function MailServersView() {
   const [servers, setServers] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingServer, setEditingServer] = useState(null);
+
+  // Standard in-place view mode
+  const [viewMode, setViewMode] = useState('list'); // 'list' | 'form'
+  const [selectedRecord, setSelectedRecord] = useState(null);
+  const [isDirty, setIsDirty] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
   const [testingId, setTestingId] = useState(null);
   const [testResult, setTestResult] = useState(null); // { id, success, message }
   const [banner, setBanner] = useState('');
 
   // Form state
-  const [formData, setFormData] = useState({
-    name: '',
-    server_type: 'outgoing',
-    protocol: 'SMTP',
-    host: '',
-    port: 587,
-    encryption: 'STARTTLS',
-    username: '',
-    password: '',
-    from_email: '',
-    from_name: 'Apex Global Enterprises HR',
-    is_default: false,
-    active: true,
-    auto_purge_mode: 'days',
-    auto_purge_days: 60,
-  });
+  const [formData, setFormData] = useState(DEFAULT_NEW_FORM);
 
   const getAuthHeaders = () => {
     const token = typeof window !== 'undefined'
@@ -73,56 +84,82 @@ export function MailServersView() {
     fetchServers();
   }, [fetchServers]);
 
-  const openCreateModal = () => {
-    setEditingServer(null);
-    setFormData({
-      name: '',
-      server_type: 'outgoing',
-      protocol: 'SMTP',
-      host: 'smtp.company.local',
-      port: 587,
-      encryption: 'STARTTLS',
-      username: 'notifications@company.local',
-      password: '',
-      from_email: 'notifications@company.local',
-      from_name: 'Apex Global Enterprises HR',
-      is_default: false,
-      active: true,
-      auto_purge_mode: 'days',
-      auto_purge_days: 60,
+  const filtered = useMemo(() => {
+    return servers.filter((s) => {
+      if (!searchQuery) return true;
+      const q = searchQuery.toLowerCase();
+      return (
+        s.name?.toLowerCase().includes(q) ||
+        s.host?.toLowerCase().includes(q) ||
+        s.from_email?.toLowerCase().includes(q) ||
+        s.username?.toLowerCase().includes(q)
+      );
     });
-    setTestResult(null);
-    setIsModalOpen(true);
-  };
+  }, [servers, searchQuery]);
 
-  const openEditModal = (srv) => {
-    setEditingServer(srv);
+  // Record Pager resolution
+  const currentRecordIndex = useMemo(() => {
+    if (!selectedRecord) return -1;
+    return filtered.findIndex((s) => s.id === selectedRecord.id);
+  }, [selectedRecord, filtered]);
+
+  const loadRecordIntoForm = useCallback((srv) => {
+    setSelectedRecord(srv);
     setFormData({
-      name: srv.name,
-      server_type: srv.server_type,
-      protocol: srv.protocol,
-      host: srv.host,
-      port: srv.port,
-      encryption: srv.encryption,
+      name: srv.name || '',
+      server_type: srv.server_type || 'outgoing',
+      protocol: srv.protocol || 'SMTP',
+      host: srv.host || '',
+      port: srv.port || 587,
+      encryption: srv.encryption || 'STARTTLS',
       username: srv.username || '',
       password: '', // Kept empty unless updating
       from_email: srv.from_email || '',
       from_name: srv.from_name || '',
-      is_default: srv.is_default,
-      active: srv.active,
+      is_default: Boolean(srv.is_default),
+      active: srv.active !== false,
       auto_purge_mode: srv.auto_purge_mode || 'days',
       auto_purge_days: srv.auto_purge_days || 60,
     });
+    setIsDirty(false);
     setTestResult(null);
-    setIsModalOpen(true);
+  }, []);
+
+  const handleStepRecord = (direction) => {
+    if (isDirty && !window.confirm('You have unsaved changes. Discard and proceed?')) {
+      return;
+    }
+    const nextIndex = currentRecordIndex + direction;
+    if (nextIndex >= 0 && nextIndex < filtered.length) {
+      loadRecordIntoForm(filtered[nextIndex]);
+    }
+  };
+
+  const openCreateForm = () => {
+    setSelectedRecord(null);
+    setFormData(DEFAULT_NEW_FORM);
+    setIsDirty(false);
+    setTestResult(null);
+    setViewMode('form');
+  };
+
+  const openEditForm = (srv) => {
+    loadRecordIntoForm(srv);
+    setViewMode('form');
+  };
+
+  const handleFieldChange = (field, value) => {
+    setFormData((prev) => ({ ...prev, [field]: value }));
+    setIsDirty(true);
   };
 
   const handleSave = async (e) => {
-    e.preventDefault();
-    const url = editingServer
-      ? `/api/v1/mail/servers/${editingServer.id}`
+    if (e) e.preventDefault();
+    setIsSaving(true);
+    const url = selectedRecord
+      ? `/api/v1/mail/servers/${selectedRecord.id}`
       : '/api/v1/mail/servers';
-    const method = editingServer ? 'PUT' : 'POST';
+    const method = selectedRecord ? 'PUT' : 'POST';
 
     try {
       const res = await fetch(url, {
@@ -134,13 +171,25 @@ export function MailServersView() {
         const err = await res.json();
         throw new Error(err.detail || 'Failed to save mail server.');
       }
-      setIsModalOpen(false);
-      setBanner(editingServer ? 'Mail server updated.' : 'Mail server created.');
+      const data = await res.json();
+      const updated = data.server || { ...formData, id: selectedRecord?.id || Date.now() };
+      setSelectedRecord(updated);
+      setIsDirty(false);
+      setBanner(selectedRecord ? 'Mail server updated successfully.' : 'Mail server created successfully.');
       setTimeout(() => setBanner(''), 3000);
       fetchServers();
     } catch (err) {
       alert(err.message);
+    } finally {
+      setIsSaving(false);
     }
+  };
+
+  const handleDiscard = () => {
+    if (isDirty && !window.confirm('Discard unsaved changes?')) {
+      return;
+    }
+    setViewMode('list');
   };
 
   const handleDelete = async (id, name) => {
@@ -153,6 +202,9 @@ export function MailServersView() {
       setBanner('Mail server deleted.');
       setTimeout(() => setBanner(''), 3000);
       fetchServers();
+      if (selectedRecord?.id === id) {
+        setViewMode('list');
+      }
     } catch (err) {
       alert('Delete failed: ' + err.message);
     }
@@ -184,239 +236,25 @@ export function MailServersView() {
     }
   };
 
-  // Keyboard shortcut: Esc closes modal
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape' && isModalOpen) {
-        setIsModalOpen(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isModalOpen]);
-
-  const filtered = servers.filter((s) => {
-    if (!searchQuery) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      s.name.toLowerCase().includes(q) ||
-      s.host.toLowerCase().includes(q) ||
-      s.protocol.toLowerCase().includes(q)
-    );
-  });
-
   return (
     <div className="space-y-3 animate-fadeIn">
-      {/* 1. Slim Odoo-Style Top Control Bar (44px) */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center justify-between shadow-2xs gap-3">
-        {/* Left: Action Buttons + Title */}
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={openCreateModal}
-            className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>New Server</span>
-          </button>
-
-          <div className="h-4 w-[1px] bg-slate-200 dark:bg-slate-800 hidden sm:block" />
-
-          <div className="flex items-center gap-1.5">
-            <span className="font-bold text-slate-800 dark:text-slate-100 text-xs">
-              Email Servers
-            </span>
-            <span className="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
-              {filtered.length}
-            </span>
-          </div>
-        </div>
-
-        {/* Center: Slim Search */}
-        <div className="relative flex-1 max-w-xs">
-          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            placeholder="Search host, protocol, server name..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-8 pr-2.5 py-1 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-        </div>
-
-        {/* Right: Refresh button */}
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={fetchServers}
-            disabled={isLoading}
-            className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
-            title="Refresh Server List"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-          </button>
-        </div>
-      </div>
-
+      {/* Toast Notification Banner */}
       {banner && (
-        <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 shrink-0" />
-          <span>{banner}</span>
+        <div className="p-3 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 rounded-xl text-xs flex items-center justify-between shadow-xs">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span className="font-semibold">{banner}</span>
+          </div>
+          <button onClick={() => setBanner('')} className="text-emerald-600 hover:text-emerald-800">
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 
-      {/* 2. Odoo-Style High Density Table (32px row height) */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-2xs">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-slate-50/80 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700/80 text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider h-8">
-                <th className="px-3 py-1 font-semibold">Server Name</th>
-                <th className="px-3 py-1 font-semibold">Type</th>
-                <th className="px-3 py-1 font-semibold">Protocol</th>
-                <th className="px-3 py-1 font-semibold">Host & Port</th>
-                <th className="px-3 py-1 font-semibold">Encryption</th>
-                <th className="px-3 py-1 font-semibold">Default</th>
-                <th className="px-3 py-1 font-semibold">Purge Rule</th>
-                <th className="px-3 py-1 font-semibold">Connection Status</th>
-                <th className="px-3 py-1 font-semibold text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
-              {filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="py-8 text-center text-slate-400 text-xs">
-                    No email servers configured yet. Click "+ New Server" to add an SMTP/IMAP gateway.
-                  </td>
-                </tr>
-              ) : (
-                filtered.map((srv) => {
-                  const isReady = srv.last_connection_status === 'ready';
-                  const isFailed = srv.last_connection_status === 'failed';
-                  const isTesting = testingId === srv.id;
-
-                  return (
-                    <tr
-                      key={srv.id}
-                      className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition h-8 text-[12px]"
-                    >
-                      <td className="px-3 py-1 font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
-                        <Server className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                        <span className="truncate max-w-[180px]">{srv.name}</span>
-                      </td>
-
-                      <td className="px-3 py-1">
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase ${
-                            srv.server_type === 'outgoing'
-                              ? 'bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400'
-                              : 'bg-purple-50 text-purple-600 dark:bg-purple-950/60 dark:text-purple-400'
-                          }`}
-                        >
-                          {srv.server_type}
-                        </span>
-                      </td>
-
-                      <td className="px-3 py-1 font-mono font-medium text-slate-700 dark:text-slate-300">
-                        {srv.protocol}
-                      </td>
-
-                      <td className="px-3 py-1 font-mono text-slate-600 dark:text-slate-400">
-                        {srv.host}:{srv.port}
-                      </td>
-
-                      <td className="px-3 py-1">
-                        <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 font-mono text-[10px] text-slate-600 dark:text-slate-300">
-                          {srv.encryption}
-                        </span>
-                      </td>
-
-                      <td className="px-3 py-1">
-                        {srv.is_default ? (
-                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold text-[10px]">
-                            <Check className="w-2.5 h-2.5" />
-                            <span>Default</span>
-                          </span>
-                        ) : (
-                          <span className="text-slate-400 text-[11px]">—</span>
-                        )}
-                      </td>
-
-                      <td className="px-3 py-1 text-slate-600 dark:text-slate-400">
-                        {srv.auto_purge_mode === 'never'
-                          ? 'Never'
-                          : srv.auto_purge_mode === 'immediate'
-                          ? 'Immediate'
-                          : `${srv.auto_purge_days} Days`}
-                      </td>
-
-                      <td className="px-3 py-1">
-                        {isReady ? (
-                          <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium text-[11px]">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                            <span>Ready</span>
-                          </span>
-                        ) : isFailed ? (
-                          <span
-                            className="inline-flex items-center gap-1 text-rose-500 font-medium text-[11px]"
-                            title={srv.last_connection_error || 'Connection handshake failed'}
-                          >
-                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                            <span>Failed</span>
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 text-slate-400 text-[11px]">
-                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                            <span>Untested</span>
-                          </span>
-                        )}
-                      </td>
-
-                      <td className="px-3 py-1 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            type="button"
-                            onClick={() => handleTestConnection(srv.id)}
-                            disabled={isTesting}
-                            className="px-2 py-0.5 rounded text-[11px] font-semibold text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/60 transition cursor-pointer flex items-center gap-1 border border-blue-200 dark:border-blue-900"
-                            title="Test connection credentials"
-                          >
-                            <Send className={`w-3 h-3 ${isTesting ? 'animate-spin' : ''}`} />
-                            <span>{isTesting ? 'Testing...' : 'Test'}</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => openEditModal(srv)}
-                            className="p-1 rounded text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
-                            title="Edit Server"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => handleDelete(srv.id, srv.name)}
-                            className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
-                            title="Delete Server"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Test Connection Banner Display */}
+      {/* Connection Test Result Banner */}
       {testResult && (
         <div
-          className={`p-3 rounded-xl border text-xs flex items-center justify-between ${
+          className={`p-3 rounded-xl border text-xs flex items-center justify-between shadow-xs ${
             testResult.success
               ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
               : 'bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-300'
@@ -428,7 +266,7 @@ export function MailServersView() {
             ) : (
               <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
             )}
-            <span className="font-medium">{testResult.message}</span>
+            <span className="font-semibold">{testResult.message}</span>
           </div>
           <button
             type="button"
@@ -440,37 +278,103 @@ export function MailServersView() {
         </div>
       )}
 
-      {/* 3. Create / Edit Mail Server Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4 animate-fadeIn">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            {/* Modal Header */}
-            <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50/60 dark:bg-slate-800/40">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 rounded-lg bg-blue-600 text-white shadow-2xs">
-                  <Server className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-slate-900 dark:text-white text-sm">
-                    {editingServer ? 'Edit Mail Server' : 'Configure New Mail Server'}
-                  </h3>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Enterprise SMTP Relay & IMAP Inbox Gateway (AES-256-GCM Encrypted)
-                  </p>
-                </div>
-              </div>
+      {viewMode === 'form' ? (
+        /* =========================================================================
+           IN-PLACE FULL-CANVAS FORM VIEW
+           ========================================================================= */
+        <div className="space-y-4">
+          {/* Top Sticky Breadcrumbs & Actions Header */}
+          <div className="sticky top-14 z-10 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+            {/* Left: Back Button & Breadcrumbs */}
+            <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={() => setIsModalOpen(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                onClick={handleDiscard}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer text-xs font-semibold"
+                title="Back to Mail Servers list"
               >
-                <X className="w-4 h-4" />
+                <ArrowLeft className="w-4 h-4" />
+                <span className="hidden sm:inline">Servers</span>
               </button>
+
+              <div className="flex items-center gap-1.5 text-xs">
+                <span className="text-slate-400">System Configuration</span>
+                <span className="text-slate-300 dark:text-slate-700">/</span>
+                <span className="text-slate-400">Email Servers</span>
+                <span className="text-slate-300 dark:text-slate-700">/</span>
+                <span className="font-bold text-slate-900 dark:text-white truncate max-w-[200px]">
+                  {formData.name || 'New Server'}
+                </span>
+              </div>
             </div>
 
-            {/* Modal Body */}
-            <form onSubmit={handleSave} className="p-5 overflow-y-auto space-y-4 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            {/* Center: Record Pager */}
+            {selectedRecord && filtered.length > 1 && currentRecordIndex !== -1 && (
+              <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-lg text-xs font-mono text-slate-600 dark:text-slate-300 mx-auto sm:mx-0">
+                <button
+                  type="button"
+                  disabled={currentRecordIndex === 0}
+                  onClick={() => handleStepRecord(-1)}
+                  className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  title="Previous record"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <span className="px-1 text-[11px] font-semibold">
+                  {currentRecordIndex + 1} of {filtered.length}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentRecordIndex === filtered.length - 1}
+                  onClick={() => handleStepRecord(1)}
+                  className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  title="Next record"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {/* Right: Test Connection, Discard & Save */}
+            <div className="flex items-center gap-2 self-end sm:self-auto">
+              {selectedRecord && (
+                <button
+                  type="button"
+                  onClick={() => handleTestConnection(selectedRecord.id)}
+                  disabled={testingId === selectedRecord.id}
+                  className="px-3 py-1.5 rounded-lg border border-blue-300 dark:border-blue-800 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/60 font-semibold text-xs flex items-center gap-1.5 transition cursor-pointer"
+                >
+                  <Send className={`w-3.5 h-3.5 ${testingId === selectedRecord.id ? 'animate-spin' : ''}`} />
+                  <span>{testingId === selectedRecord.id ? 'Testing...' : 'Test Connection'}</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleDiscard}
+                className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold text-xs transition cursor-pointer"
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={isSaving || (selectedRecord && !isDirty)}
+                className={`px-4 py-1.5 rounded-lg font-semibold text-xs transition cursor-pointer flex items-center gap-1.5 shadow-xs ${
+                  isSaving || (selectedRecord && !isDirty)
+                    ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-300 dark:border-slate-700'
+                    : 'bg-blue-600 hover:bg-blue-700 text-white'
+                }`}
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>{selectedRecord ? 'Save Changes' : 'Create Server'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Form Body Canvas */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-xs">
+            <form onSubmit={handleSave} className="space-y-5 text-xs max-w-4xl mx-auto">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="sm:col-span-2">
                   <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     Server Name *
@@ -478,168 +382,184 @@ export function MailServersView() {
                   <input
                     type="text"
                     required
-                    placeholder="e.g. Corporate SMTP Relay (Doha HQ)"
+                    placeholder="e.g. Primary Corporate SMTP Relay"
                     value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    onChange={(e) => handleFieldChange('name', e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
 
                 <div>
                   <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Direction / Role *
+                    Direction
                   </label>
                   <select
                     value={formData.server_type}
-                    onChange={(e) => setFormData({ ...formData, server_type: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    onChange={(e) => {
+                      const newType = e.target.value;
+                      handleFieldChange('server_type', newType);
+                      handleFieldChange('protocol', newType === 'incoming' ? 'IMAP' : 'SMTP');
+                      handleFieldChange('port', newType === 'incoming' ? 993 : 587);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
-                    <option value="outgoing">Outgoing (SMTP Dispatcher)</option>
-                    <option value="incoming">Incoming (IMAP / Inquiries)</option>
+                    <option value="outgoing">Outgoing (SMTP Relay)</option>
+                    <option value="incoming">Incoming (IMAP Inbox Gateway)</option>
                   </select>
                 </div>
 
                 <div>
                   <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Protocol *
-                  </label>
-                  <select
-                    value={formData.protocol}
-                    onChange={(e) => setFormData({ ...formData, protocol: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
-                  >
-                    <option value="SMTP">SMTP (Simple Mail Transfer)</option>
-                    <option value="IMAP">IMAP (Internet Message Access)</option>
-                    <option value="POP3">POP3</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Server Host *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="smtp.company.local or mail.example.com"
-                    value={formData.host}
-                    onChange={(e) => setFormData({ ...formData, host: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Port & Encryption *
+                    Protocol & Encryption
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     <input
-                      type="number"
-                      required
-                      placeholder="587"
-                      value={formData.port}
-                      onChange={(e) => setFormData({ ...formData, port: parseInt(e.target.value) || 587 })}
-                      className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      type="text"
+                      readOnly
+                      value={formData.protocol}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 font-mono"
                     />
                     <select
                       value={formData.encryption}
-                      onChange={(e) => setFormData({ ...formData, encryption: e.target.value })}
-                      className="w-full px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 text-[11px]"
+                      onChange={(e) => handleFieldChange('encryption', e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
                       <option value="STARTTLS">STARTTLS</option>
                       <option value="SSL_TLS">SSL / TLS</option>
-                      <option value="NONE">None</option>
+                      <option value="NONE">None (Plaintext)</option>
                     </select>
                   </div>
                 </div>
 
                 <div>
                   <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Username / Login Email
+                    Host Address (FQDN / IP) *
                   </label>
                   <input
                     type="text"
-                    placeholder="notifications@company.local"
-                    value={formData.username}
-                    onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                    placeholder="mail.domain.com"
+                    value={formData.host}
+                    onChange={(e) => handleFieldChange('host', e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
 
                 <div>
                   <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Password {editingServer ? '(Leave blank to keep current)' : '*'}
+                    Port *
                   </label>
                   <input
-                    type="password"
-                    placeholder={editingServer ? '••••••••' : 'Enter plain password'}
-                    value={formData.password}
-                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    From Address
-                  </label>
-                  <input
-                    type="email"
-                    placeholder="payroll@company.local"
-                    value={formData.from_email}
-                    onChange={(e) => setFormData({ ...formData, from_email: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    From Display Name
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Apex Global Enterprises HR"
-                    value={formData.from_name}
-                    onChange={(e) => setFormData({ ...formData, from_name: e.target.value })}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    type="number"
+                    required
+                    value={formData.port}
+                    onChange={(e) => handleFieldChange('port', parseInt(e.target.value) || 587)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
               </div>
 
-              {/* Auto-Purge & Retention Settings */}
-              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/80 space-y-2">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
-                  <Sliders className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Retention & Auto-Purge Maintenance Rules</span>
+              {/* Authentication Credentials */}
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/80 space-y-3">
+                <div className="flex items-center gap-1.5 text-slate-800 dark:text-slate-200 font-semibold text-xs">
+                  <Lock className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Authentication Credentials (AES-256 Protected)</span>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-slate-600 dark:text-slate-400 mb-1">
-                      Purge Mode
+                      Username / Email
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="notifications@domain.com"
+                      value={formData.username}
+                      onChange={(e) => handleFieldChange('username', e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-600 dark:text-slate-400 mb-1">
+                      Password / App Secret {selectedRecord ? '(Leave blank to retain)' : '*'}
+                    </label>
+                    <input
+                      type="password"
+                      placeholder="••••••••••••"
+                      value={formData.password}
+                      onChange={(e) => handleFieldChange('password', e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Sender Details (Only for outgoing) */}
+              {formData.server_type === 'outgoing' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      From Email Header
+                    </label>
+                    <input
+                      type="email"
+                      placeholder="noreply@domain.com"
+                      value={formData.from_email}
+                      onChange={(e) => handleFieldChange('from_email', e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      Sender Display Name
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Apex Global Enterprises HR"
+                      value={formData.from_name}
+                      onChange={(e) => handleFieldChange('from_name', e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Retention & Purge Configuration */}
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/80 space-y-3">
+                <div className="font-semibold text-slate-800 dark:text-slate-200 text-xs">
+                  Storage & Message Log Retention
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-600 dark:text-slate-400 mb-1">
+                      Auto-Purge Strategy
                     </label>
                     <select
                       value={formData.auto_purge_mode}
-                      onChange={(e) => setFormData({ ...formData, auto_purge_mode: e.target.value })}
-                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                      onChange={(e) => handleFieldChange('auto_purge_mode', e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                     >
-                      <option value="days">Purge after X days</option>
-                      <option value="immediate">Immediate (Purge upon delivery)</option>
-                      <option value="never">Never (Indefinite Archive)</option>
+                      <option value="days">Retain for Fixed Days</option>
+                      <option value="never">Retain Indefinitely</option>
+                      <option value="immediate">Immediate Purge (Zero Log Disk)</option>
                     </select>
                   </div>
 
                   {formData.auto_purge_mode === 'days' && (
                     <div>
                       <label className="block text-slate-600 dark:text-slate-400 mb-1">
-                        Retention Days
+                        Retention Window (Days)
                       </label>
                       <input
                         type="number"
                         min="1"
-                        max="3650"
+                        max="365"
                         value={formData.auto_purge_days}
-                        onChange={(e) => setFormData({ ...formData, auto_purge_days: parseInt(e.target.value) || 60 })}
-                        className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                        onChange={(e) => handleFieldChange('auto_purge_days', parseInt(e.target.value) || 60)}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
                       />
                     </div>
                   )}
@@ -652,7 +572,7 @@ export function MailServersView() {
                   <input
                     type="checkbox"
                     checked={formData.is_default}
-                    onChange={(e) => setFormData({ ...formData, is_default: e.target.checked })}
+                    onChange={(e) => handleFieldChange('is_default', e.target.checked)}
                     className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 dark:border-slate-700"
                   />
                   <span className="font-semibold text-slate-700 dark:text-slate-300 text-xs">
@@ -664,7 +584,7 @@ export function MailServersView() {
                   <input
                     type="checkbox"
                     checked={formData.active}
-                    onChange={(e) => setFormData({ ...formData, active: e.target.checked })}
+                    onChange={(e) => handleFieldChange('active', e.target.checked)}
                     className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 dark:border-slate-700"
                   />
                   <span className="font-semibold text-slate-700 dark:text-slate-300 text-xs">
@@ -672,40 +592,195 @@ export function MailServersView() {
                   </span>
                 </label>
               </div>
-
-              {/* Modal Actions */}
-              <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
-                {editingServer && (
-                  <button
-                    type="button"
-                    onClick={() => handleTestConnection(editingServer.id)}
-                    disabled={testingId === editingServer.id}
-                    className="px-3 py-1.5 rounded-lg border border-blue-300 dark:border-blue-800 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/60 font-semibold text-xs flex items-center gap-1.5 transition cursor-pointer"
-                  >
-                    <Send className={`w-3.5 h-3.5 ${testingId === editingServer.id ? 'animate-spin' : ''}`} />
-                    <span>{testingId === editingServer.id ? 'Verifying Handshake...' : 'Test Connection'}</span>
-                  </button>
-                )}
-
-                <div className="flex items-center gap-2 ml-auto">
-                  <button
-                    type="button"
-                    onClick={() => setIsModalOpen(false)}
-                    className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold text-xs transition cursor-pointer"
-                  >
-                    Cancel (Esc)
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs transition cursor-pointer shadow-xs"
-                  >
-                    {editingServer ? 'Save Changes' : 'Create Server'}
-                  </button>
-                </div>
-              </div>
             </form>
           </div>
         </div>
+      ) : (
+        /* =========================================================================
+           LIST VIEW
+           ========================================================================= */
+        <>
+          {/* Top 44px Control Bar */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center justify-between shadow-2xs gap-3">
+            {/* Left: Action Button + Title */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={openCreateForm}
+                className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>New Mail Server</span>
+              </button>
+
+              <div className="h-4 w-[1px] bg-slate-200 dark:bg-slate-800 hidden sm:block" />
+
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold text-slate-800 dark:text-slate-100 text-xs">
+                  Email Servers
+                </span>
+                <span className="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
+                  {filtered.length}
+                </span>
+              </div>
+            </div>
+
+            {/* Center: Search Filter */}
+            <div className="flex items-center gap-2 flex-1 max-w-sm">
+              <div className="relative flex-1">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search servers by host, name..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-8 pr-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            {/* Right: Refresh */}
+            <button
+              type="button"
+              onClick={fetchServers}
+              disabled={isLoading}
+              className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+              title="Refresh servers"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+
+          {/* Servers Table */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-2xs">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/40 text-slate-500 font-semibold">
+                    <th className="px-3 py-2">Server Name</th>
+                    <th className="px-3 py-2">Direction</th>
+                    <th className="px-3 py-2">Host & Port</th>
+                    <th className="px-3 py-2">Security</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {isLoading && servers.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="text-center py-8 text-slate-400">
+                        <RefreshCw className="w-4 h-4 animate-spin mx-auto mb-1 text-blue-500" />
+                        Loading mail servers...
+                      </td>
+                    </tr>
+                  ) : filtered.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="text-center py-8 text-slate-400">
+                        No mail servers configured. Click "New Mail Server" to set up SMTP/IMAP.
+                      </td>
+                    </tr>
+                  ) : (
+                    filtered.map((srv) => {
+                      const isTesting = testingId === srv.id;
+
+                      return (
+                        <tr
+                          key={srv.id}
+                          onClick={() => openEditForm(srv)}
+                          className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors group cursor-pointer"
+                        >
+                          <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">
+                            <div className="flex items-center gap-1.5">
+                              <Server className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                              <span className="group-hover:text-blue-600 transition-colors">
+                                {srv.name}
+                              </span>
+                              {srv.is_default && (
+                                <span className="px-1.5 py-0.2 rounded text-[10px] bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 font-semibold">
+                                  Default
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          <td className="px-3 py-2">
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase ${
+                                srv.server_type === 'outgoing'
+                                  ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900'
+                                  : 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-900'
+                              }`}
+                            >
+                              {srv.server_type}
+                            </span>
+                          </td>
+
+                          <td className="px-3 py-2 font-mono text-[11px] text-slate-600 dark:text-slate-300">
+                            {srv.host}:{srv.port}
+                          </td>
+
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-1 font-mono text-[11px] text-slate-500">
+                              <Shield className="w-3 h-3 text-emerald-500" />
+                              <span>{srv.encryption}</span>
+                            </div>
+                          </td>
+
+                          <td className="px-3 py-2">
+                            {srv.active ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                Active
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400">
+                                <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                                Inactive
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="px-3 py-2 text-right">
+                            <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                onClick={() => handleTestConnection(srv.id)}
+                                disabled={isTesting}
+                                className="px-2 py-0.5 rounded text-[11px] font-semibold text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/60 transition cursor-pointer flex items-center gap-1 border border-blue-200 dark:border-blue-900"
+                                title="Test connection credentials"
+                              >
+                                <Send className={`w-3 h-3 ${isTesting ? 'animate-spin' : ''}`} />
+                                <span>{isTesting ? 'Testing...' : 'Test'}</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => openEditForm(srv)}
+                                className="p-1 rounded text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                                title="Edit Server"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(srv.id, srv.name)}
+                                className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
+                                title="Delete Server"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

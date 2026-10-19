@@ -16,9 +16,12 @@ import {
   Power,
   Play,
   Layers,
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  Save,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { useModalEscape } from '../../hooks/useModalEscape';
 
 const EVENT_TYPE_LABELS = {
   leave_approved: 'Leave Request Approved',
@@ -26,6 +29,16 @@ const EVENT_TYPE_LABELS = {
   payslip_confirmed: 'Payslip Confirmed (Individual)',
   payroll_batch_locked: 'Payroll Batch Finalized & Locked',
   document_expiry: 'QID / Visa / Passport Expiry Alert',
+};
+
+const DEFAULT_NEW_FORM = {
+  name: '',
+  event_type: 'leave_approved',
+  channel: 'whatsapp',
+  whatsapp_template_id: '',
+  sms_gateway_id: '',
+  sms_body_template: 'Apex Global: Dear {{employee_name}}, your request has been updated to {{status}}.',
+  active: true,
 };
 
 export function AutomationTriggersView() {
@@ -45,21 +58,12 @@ export function AutomationTriggersView() {
   const [search, setSearch] = useState('');
   const [actionMessage, setActionMessage] = useState(null);
 
-  // Edit / Create Modal State
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingTrigger, setEditingTrigger] = useState(null);
-  const [formData, setFormData] = useState({
-    name: '',
-    event_type: 'leave_approved',
-    channel: 'whatsapp',
-    whatsapp_template_id: '',
-    sms_gateway_id: '',
-    sms_body_template: '',
-    active: true,
-  });
+  // Standard in-place view mode
+  const [viewMode, setViewMode] = useState('list'); // 'list' | 'form'
+  const [selectedRecord, setSelectedRecord] = useState(null);
+  const [isDirty, setIsDirty] = useState(false);
+  const [formData, setFormData] = useState(DEFAULT_NEW_FORM);
   const [isSaving, setIsSaving] = useState(false);
-
-  useModalEscape(isModalOpen, () => setIsModalOpen(false));
 
   const getHeaders = useCallback(() => {
     const headers = { 'Content-Type': 'application/json' };
@@ -98,22 +102,26 @@ export function AutomationTriggersView() {
     fetchAllData();
   }, [fetchAllData]);
 
-  const handleOpenCreate = () => {
-    setEditingTrigger(null);
-    setFormData({
-      name: '',
-      event_type: 'leave_approved',
-      channel: 'whatsapp',
-      whatsapp_template_id: whatsappTemplates[0]?.id || '',
-      sms_gateway_id: smsGateways[0]?.id || '',
-      sms_body_template: 'Apex Global: Dear {{employee_name}}, your request has been updated to {{status}}.',
-      active: true,
+  const filtered = useMemo(() => {
+    return triggers.filter((t) => {
+      if (!search) return true;
+      const q = search.toLowerCase();
+      return (
+        t.name?.toLowerCase().includes(q) ||
+        t.event_type?.toLowerCase().includes(q) ||
+        t.channel?.toLowerCase().includes(q)
+      );
     });
-    setIsModalOpen(true);
-  };
+  }, [triggers, search]);
 
-  const handleOpenEdit = (t) => {
-    setEditingTrigger(t);
+  // Record Pager resolution
+  const currentRecordIndex = useMemo(() => {
+    if (!selectedRecord) return -1;
+    return filtered.findIndex((t) => t.id === selectedRecord.id);
+  }, [selectedRecord, filtered]);
+
+  const loadRecordIntoForm = useCallback((t) => {
+    setSelectedRecord(t);
     setFormData({
       name: t.name || '',
       event_type: t.event_type || 'leave_approved',
@@ -123,11 +131,42 @@ export function AutomationTriggersView() {
       sms_body_template: t.sms_body_template || '',
       active: t.active !== false,
     });
-    setIsModalOpen(true);
+    setIsDirty(false);
+  }, []);
+
+  const handleStepRecord = (direction) => {
+    if (isDirty && !window.confirm('You have unsaved changes. Discard and proceed?')) {
+      return;
+    }
+    const nextIndex = currentRecordIndex + direction;
+    if (nextIndex >= 0 && nextIndex < filtered.length) {
+      loadRecordIntoForm(filtered[nextIndex]);
+    }
+  };
+
+  const handleOpenCreate = () => {
+    setSelectedRecord(null);
+    setFormData({
+      ...DEFAULT_NEW_FORM,
+      whatsapp_template_id: whatsappTemplates[0]?.id || '',
+      sms_gateway_id: smsGateways[0]?.id || '',
+    });
+    setIsDirty(false);
+    setViewMode('form');
+  };
+
+  const handleOpenEdit = (t) => {
+    loadRecordIntoForm(t);
+    setViewMode('form');
+  };
+
+  const handleFieldChange = (field, value) => {
+    setFormData((prev) => ({ ...prev, [field]: value }));
+    setIsDirty(true);
   };
 
   const handleSaveTrigger = async (e) => {
-    e.preventDefault();
+    if (e) e.preventDefault();
     if (!formData.name.trim()) {
       setActionMessage({ type: 'error', text: 'Trigger Name is required.' });
       return;
@@ -139,10 +178,10 @@ export function AutomationTriggersView() {
 
     setIsSaving(true);
     try {
-      const url = editingTrigger
-        ? `/api/v1/communication/automation-triggers/${editingTrigger.id}`
+      const url = selectedRecord
+        ? `/api/v1/communication/automation-triggers/${selectedRecord.id}`
         : '/api/v1/communication/automation-triggers';
-      const method = editingTrigger ? 'PUT' : 'POST';
+      const method = selectedRecord ? 'PUT' : 'POST';
 
       const res = await fetch(url, {
         method,
@@ -150,250 +189,185 @@ export function AutomationTriggersView() {
         body: JSON.stringify(formData),
       });
 
-      if (res.ok) {
-        setActionMessage({
-          type: 'success',
-          text: editingTrigger ? 'Automation trigger updated.' : 'Automation trigger created.',
-        });
-        setIsModalOpen(false);
-        fetchAllData();
-      } else {
-        const err = await res.json();
-        setActionMessage({ type: 'error', text: err.detail || 'Failed to save trigger.' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to save automation trigger');
       }
-    } catch (e) {
-      setActionMessage({ type: 'error', text: 'Network error saving trigger.' });
+
+      const resData = await res.json();
+      const updated = resData.trigger || { ...formData, id: selectedRecord?.id || Date.now() };
+      setSelectedRecord(updated);
+      setIsDirty(false);
+      setActionMessage({
+        type: 'success',
+        text: selectedRecord ? 'Automation trigger updated.' : 'New automation trigger registered.',
+      });
+      fetchAllData();
+    } catch (err) {
+      setActionMessage({ type: 'error', text: err.message });
     } finally {
       setIsSaving(false);
     }
   };
 
-  const handleDelete = async (t) => {
-    if (!window.confirm(`Delete automation trigger "${t.name}"?`)) return;
+  const handleDiscard = () => {
+    if (isDirty && !window.confirm('Discard unsaved changes?')) {
+      return;
+    }
+    setViewMode('list');
+  };
+
+  const handleToggleActive = async (trigger) => {
     try {
-      const res = await fetch(`/api/v1/communication/automation-triggers/${t.id}`, {
-        method: 'DELETE',
+      const res = await fetch(`/api/v1/communication/automation-triggers/${trigger.id}`, {
+        method: 'PUT',
         headers: getHeaders(),
+        body: JSON.stringify({
+          active: !trigger.active,
+        }),
       });
-      if (res.ok) {
-        setActionMessage({ type: 'success', text: `Trigger "${t.name}" deleted.` });
-        fetchAllData();
-      }
-    } catch (e) {
-      setActionMessage({ type: 'error', text: 'Failed to delete trigger.' });
+      if (!res.ok) throw new Error('Toggle failed');
+      setActionMessage({
+        type: 'success',
+        text: `Trigger "${trigger.name}" ${!trigger.active ? 'activated' : 'deactivated'}.`,
+      });
+      fetchAllData();
+    } catch (err) {
+      setActionMessage({ type: 'error', text: err.message });
     }
   };
 
-  const filteredTriggers = useMemo(() => {
-    if (!search.trim()) return triggers;
-    const q = search.toLowerCase();
-    return triggers.filter(
-      (t) =>
-        t.name?.toLowerCase().includes(q) ||
-        t.event_type?.toLowerCase().includes(q) ||
-        t.whatsapp_template_name?.toLowerCase().includes(q)
-    );
-  }, [triggers, search]);
+  const handleDelete = async (trigger) => {
+    if (!window.confirm(`Delete trigger "${trigger.name}"?`)) return;
+    try {
+      const res = await fetch(`/api/v1/communication/automation-triggers/${trigger.id}`, {
+        method: 'DELETE',
+        headers: getHeaders(),
+      });
+      if (!res.ok) throw new Error('Delete failed');
+      setActionMessage({ type: 'success', text: `Trigger "${trigger.name}" deleted.` });
+      fetchAllData();
+      if (selectedRecord?.id === trigger.id) {
+        setViewMode('list');
+      }
+    } catch (err) {
+      setActionMessage({ type: 'error', text: err.message });
+    }
+  };
 
   return (
-    <div className="space-y-4">
-      {/* Toast Notification */}
+    <div className="space-y-4 animate-fadeIn">
+      {/* Toast Feedback */}
       {actionMessage && (
         <div
-          className={`flex items-center justify-between p-3 rounded-lg text-xs font-medium border ${
+          className={`flex items-center justify-between p-3.5 rounded-xl border text-xs font-semibold shadow-xs ${
             actionMessage.type === 'success'
-              ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300'
-              : 'bg-rose-950/40 border-rose-800/60 text-rose-300'
+              ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300'
+              : 'bg-rose-950/40 border-rose-800 text-rose-300'
           }`}
         >
           <div className="flex items-center gap-2">
             {actionMessage.type === 'success' ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
             ) : (
-              <AlertCircle className="w-4 h-4 text-rose-400" />
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
             )}
             <span>{actionMessage.text}</span>
           </div>
           <button
             onClick={() => setActionMessage(null)}
-            className="text-slate-400 hover:text-white transition cursor-pointer"
+            className="text-slate-400 hover:text-white cursor-pointer ml-3"
           >
-            <X className="w-3.5 h-3.5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
       )}
 
-      {/* Header & Control Bar */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 sm:p-4 backdrop-blur-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-              <Zap className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold text-white tracking-wide flex items-center gap-2">
-                Automated Event Notification Triggers
-                <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">
-                  ERP Lifecycle Hooks
-                </span>
-              </h2>
-              <p className="text-[11px] text-slate-400">
-                Automatically dispatch approved WhatsApp templates or SMS when payroll is locked or leaves are approved.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Search triggers..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-48 sm:w-60 bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition"
-              />
-            </div>
-
-            <button
-              onClick={fetchAllData}
-              disabled={isLoading}
-              title="Refresh"
-              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-            </button>
-
-            <button
-              onClick={handleOpenCreate}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium shadow-xs transition cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add Trigger Rule</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Odoo Compact High-Density Table */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xs">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-slate-950/70 border-b border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-semibold h-8">
-                <th className="px-3.5 py-1.5">Rule Name</th>
-                <th className="px-3.5 py-1.5">ERP Event Hook</th>
-                <th className="px-3.5 py-1.5">Dispatch Channel</th>
-                <th className="px-3.5 py-1.5">Bound Template / Gateway</th>
-                <th className="px-3.5 py-1.5">Status</th>
-                <th className="px-3.5 py-1.5 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
-              {filteredTriggers.length === 0 ? (
-                <tr>
-                  <td colSpan="6" className="px-4 py-8 text-center text-slate-500 font-sans">
-                    {isLoading ? 'Loading triggers...' : 'No automated notification triggers configured.'}
-                  </td>
-                </tr>
-              ) : (
-                filteredTriggers.map((t) => (
-                  <tr
-                    key={t.id}
-                    className="hover:bg-slate-800/40 transition-colors h-[32px] text-slate-300"
-                  >
-                    <td className="px-3.5 py-1 font-sans text-xs font-medium text-white flex items-center gap-2">
-                      <Zap className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                      <span>{t.name}</span>
-                    </td>
-                    <td className="px-3.5 py-1 font-sans">
-                      <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-200 text-[10px]">
-                        {EVENT_TYPE_LABELS[t.event_type] || t.event_type}
-                      </span>
-                    </td>
-                    <td className="px-3.5 py-1 font-sans">
-                      {t.channel === 'whatsapp' ? (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-semibold">
-                          <MessageCircle className="w-3 h-3" />
-                          WhatsApp
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 text-[10px] font-semibold">
-                          <Smartphone className="w-3 h-3" />
-                          SMS
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3.5 py-1 text-slate-300">
-                      {t.channel === 'whatsapp' ? (
-                        <span className="text-emerald-400 font-mono">
-                          {t.whatsapp_template_name || 'Template Bound'}
-                        </span>
-                      ) : (
-                        <span className="text-sky-400 font-sans">
-                          {t.sms_gateway_name || 'Default SMS Gateway'}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3.5 py-1 font-sans">
-                      {t.active ? (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                          Active
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] bg-slate-800 text-slate-400">
-                          Paused
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3.5 py-1 text-right font-sans">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          onClick={() => handleOpenEdit(t)}
-                          title="Edit Trigger"
-                          className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer"
-                        >
-                          <Edit2 className="w-3 h-3" />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(t)}
-                          title="Delete Trigger"
-                          className="p-1 rounded bg-slate-800 hover:bg-rose-950/40 text-rose-400 border border-slate-700 hover:border-rose-800 transition cursor-pointer"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Create / Edit Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800 bg-slate-950/60">
-              <div className="flex items-center gap-2">
-                <Zap className="w-4 h-4 text-emerald-400" />
-                <h3 className="text-sm font-semibold text-white">
-                  {editingTrigger ? 'Edit Notification Trigger' : 'New Automated Notification Trigger'}
-                </h3>
-              </div>
+      {viewMode === 'form' ? (
+        /* =========================================================================
+           IN-PLACE FULL-CANVAS FORM VIEW
+           ========================================================================= */
+        <div className="space-y-4">
+          {/* Top Sticky Breadcrumbs & Actions Header */}
+          <div className="sticky top-14 z-10 bg-slate-900/95 backdrop-blur-md px-4 py-3 rounded-xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+            {/* Left: Back Button & Breadcrumbs */}
+            <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={() => setIsModalOpen(false)}
-                className="text-slate-400 hover:text-white transition cursor-pointer"
+                onClick={handleDiscard}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 transition cursor-pointer text-xs font-semibold"
+                title="Back to Triggers list"
               >
-                <X className="w-4 h-4" />
+                <ArrowLeft className="w-4 h-4" />
+                <span className="hidden sm:inline">Triggers</span>
               </button>
+
+              <div className="flex items-center gap-1.5 text-xs">
+                <span className="text-slate-400">System Configuration</span>
+                <span className="text-slate-700">/</span>
+                <span className="text-slate-400">Automation Triggers</span>
+                <span className="text-slate-700">/</span>
+                <span className="font-bold text-white truncate max-w-[200px]">
+                  {formData.name || 'New Trigger'}
+                </span>
+              </div>
             </div>
 
-            <form onSubmit={handleSaveTrigger} className="p-5 space-y-4 overflow-y-auto max-h-[80vh]">
+            {/* Center: Record Pager */}
+            {selectedRecord && filtered.length > 1 && currentRecordIndex !== -1 && (
+              <div className="flex items-center gap-1 bg-slate-800 px-2 py-1 rounded-lg text-xs font-mono text-slate-300 mx-auto sm:mx-0">
+                <button
+                  type="button"
+                  disabled={currentRecordIndex === 0}
+                  onClick={() => handleStepRecord(-1)}
+                  className="p-0.5 rounded hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  title="Previous record"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <span className="px-1 text-[11px] font-semibold">
+                  {currentRecordIndex + 1} of {filtered.length}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentRecordIndex === filtered.length - 1}
+                  onClick={() => handleStepRecord(1)}
+                  className="p-0.5 rounded hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  title="Next record"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {/* Right: Discard & Save */}
+            <div className="flex items-center gap-2 self-end sm:self-auto">
+              <button
+                type="button"
+                onClick={handleDiscard}
+                className="px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 font-semibold text-xs transition cursor-pointer"
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveTrigger}
+                disabled={isSaving || (selectedRecord && !isDirty)}
+                className={`px-4 py-1.5 rounded-lg font-semibold text-xs transition cursor-pointer flex items-center gap-1.5 shadow-xs ${
+                  isSaving || (selectedRecord && !isDirty)
+                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                }`}
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>{selectedRecord ? 'Save Changes' : 'Create Trigger'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Form Body Canvas */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xs">
+            <form onSubmit={handleSaveTrigger} className="space-y-5 text-xs max-w-3xl mx-auto">
               <div className="space-y-1">
                 <label className="text-[11px] font-medium text-slate-300">
                   Trigger Name <span className="text-rose-400">*</span>
@@ -403,18 +377,18 @@ export function AutomationTriggersView() {
                   required
                   placeholder="e.g. Leave Approval WhatsApp Alert"
                   value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                  onChange={(e) => handleFieldChange('name', e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 font-medium"
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="text-[11px] font-medium text-slate-300">ERP Event Hook</label>
                   <select
                     value={formData.event_type}
-                    onChange={(e) => setFormData({ ...formData, event_type: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
+                    onChange={(e) => handleFieldChange('event_type', e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
                   >
                     <option value="leave_approved">Leave Request Approved</option>
                     <option value="leave_rejected">Leave Request Rejected</option>
@@ -428,8 +402,8 @@ export function AutomationTriggersView() {
                   <label className="text-[11px] font-medium text-slate-300">Dispatch Channel</label>
                   <select
                     value={formData.channel}
-                    onChange={(e) => setFormData({ ...formData, channel: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
+                    onChange={(e) => handleFieldChange('channel', e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
                   >
                     <option value="whatsapp">WhatsApp (Meta Cloud API)</option>
                     <option value="sms">SMS Gateway</option>
@@ -438,14 +412,14 @@ export function AutomationTriggersView() {
               </div>
 
               {formData.channel === 'whatsapp' ? (
-                <div className="space-y-1 bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                <div className="space-y-2 bg-slate-950 p-4 rounded-xl border border-slate-800">
                   <label className="text-[11px] font-medium text-slate-300">
                     Approved WhatsApp Template <span className="text-rose-400">*</span>
                   </label>
                   <select
                     value={formData.whatsapp_template_id}
-                    onChange={(e) => setFormData({ ...formData, whatsapp_template_id: e.target.value })}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
+                    onChange={(e) => handleFieldChange('whatsapp_template_id', e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
                   >
                     <option value="">-- Select Template --</option>
                     {whatsappTemplates.map((wt) => (
@@ -459,13 +433,13 @@ export function AutomationTriggersView() {
                   </p>
                 </div>
               ) : (
-                <div className="space-y-3 bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                <div className="space-y-4 bg-slate-950 p-4 rounded-xl border border-slate-800">
                   <div className="space-y-1">
                     <label className="text-[11px] font-medium text-slate-300">SMS Gateway</label>
                     <select
                       value={formData.sms_gateway_id}
-                      onChange={(e) => setFormData({ ...formData, sms_gateway_id: e.target.value })}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
+                      onChange={(e) => handleFieldChange('sms_gateway_id', e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
                     >
                       <option value="">-- Use Default SMS Gateway --</option>
                       {smsGateways.map((gw) => (
@@ -483,46 +457,191 @@ export function AutomationTriggersView() {
                     <textarea
                       rows={3}
                       value={formData.sms_body_template}
-                      onChange={(e) => setFormData({ ...formData, sms_body_template: e.target.value })}
+                      onChange={(e) => handleFieldChange('sms_body_template', e.target.value)}
                       placeholder="Use {{employee_name}}, {{status}}, {{month}}, {{net_salary}}..."
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl p-3 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500"
                     />
                   </div>
                 </div>
               )}
 
-              <div className="pt-2 border-t border-slate-800">
-                <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">
+              <div className="pt-3 border-t border-slate-800">
+                <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 select-none">
                   <input
                     type="checkbox"
                     checked={formData.active}
-                    onChange={(e) => setFormData({ ...formData, active: e.target.checked })}
-                    className="rounded bg-slate-950 border-slate-700 text-emerald-600 focus:ring-0 w-3.5 h-3.5"
+                    onChange={(e) => handleFieldChange('active', e.target.checked)}
+                    className="rounded bg-slate-950 border-slate-700 text-emerald-600 focus:ring-0 w-3.5 h-3.5 cursor-pointer"
                   />
                   <span>Active (Trigger fires automatically on lifecycle events)</span>
                 </label>
               </div>
-
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium transition cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSaving}
-                  className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium shadow-xs transition flex items-center gap-1.5 cursor-pointer"
-                >
-                  {isSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                  <span>Save Trigger</span>
-                </button>
-              </div>
             </form>
           </div>
         </div>
+      ) : (
+        /* =========================================================================
+           LIST VIEW
+           ========================================================================= */
+        <>
+          {/* Header Bar */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 flex items-center justify-between shadow-2xs gap-3">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleOpenCreate}
+                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>New Automation Trigger</span>
+              </button>
+
+              <div className="h-4 w-[1px] bg-slate-800 hidden sm:block" />
+
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold text-slate-100 text-xs">
+                  Automation Triggers
+                </span>
+                <span className="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-400">
+                  {filtered.length}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-1 max-w-sm">
+              <div className="relative flex-1">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search triggers..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="w-full pl-8 pr-2.5 py-1 rounded-lg border border-slate-800 bg-slate-950 text-slate-200 text-xs focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={fetchAllData}
+              disabled={isLoading}
+              className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+              title="Refresh triggers"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+
+          {/* Triggers Table List */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xs">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-semibold">
+                    <th className="px-3.5 py-2">Trigger Name</th>
+                    <th className="px-3.5 py-2">Lifecycle Event</th>
+                    <th className="px-3.5 py-2">Channel</th>
+                    <th className="px-3.5 py-2">Configured Payload</th>
+                    <th className="px-3.5 py-2">Status</th>
+                    <th className="px-3.5 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 font-mono text-[11px]">
+                  {isLoading && triggers.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="text-center py-8 text-slate-400 font-sans">
+                        <RefreshCw className="w-4 h-4 animate-spin mx-auto mb-1 text-emerald-500" />
+                        Loading automation triggers...
+                      </td>
+                    </tr>
+                  ) : filtered.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="text-center py-8 text-slate-400 font-sans">
+                        No automation triggers found. Click "New Automation Trigger" to register an alert rule.
+                      </td>
+                    </tr>
+                  ) : (
+                    filtered.map((t) => (
+                      <tr
+                        key={t.id}
+                        onClick={() => handleOpenEdit(t)}
+                        className="hover:bg-slate-800/40 transition group cursor-pointer"
+                      >
+                        <td className="px-3.5 py-2 text-white font-semibold flex items-center gap-1.5 font-sans">
+                          <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                          <span className="group-hover:text-amber-400 transition-colors">
+                            {t.name}
+                          </span>
+                        </td>
+                        <td className="px-3.5 py-2 text-slate-300 font-sans text-xs">
+                          {EVENT_TYPE_LABELS[t.event_type] || t.event_type}
+                        </td>
+                        <td className="px-3.5 py-2">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold ${
+                              t.channel === 'whatsapp'
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                            }`}
+                          >
+                            {t.channel === 'whatsapp' ? (
+                              <MessageCircle className="w-3 h-3" />
+                            ) : (
+                              <Smartphone className="w-3 h-3" />
+                            )}
+                            <span className="uppercase">{t.channel}</span>
+                          </span>
+                        </td>
+                        <td className="px-3.5 py-2 text-slate-400 truncate max-w-xs">
+                          {t.channel === 'whatsapp'
+                            ? `Template: ${t.whatsapp_template_name || t.whatsapp_template_id || '—'}`
+                            : `SMS Template: ${t.sms_body_template || '—'}`}
+                        </td>
+                        <td className="px-3.5 py-2 font-sans">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleActive(t);
+                            }}
+                            className={`px-2 py-0.5 rounded text-[10px] font-semibold transition cursor-pointer flex items-center gap-1 ${
+                              t.active
+                                ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                                : 'bg-slate-800 text-slate-500 hover:bg-slate-700'
+                            }`}
+                          >
+                            <Power className="w-2.5 h-2.5" />
+                            <span>{t.active ? 'Active' : 'Disabled'}</span>
+                          </button>
+                        </td>
+                        <td className="px-3.5 py-2 text-right font-sans">
+                          <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEdit(t)}
+                              title="Edit Trigger"
+                              className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer"
+                            >
+                              <Edit2 className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(t)}
+                              title="Delete Trigger"
+                              className="p-1 rounded bg-slate-800 hover:bg-rose-950/40 text-rose-400 border border-slate-700 hover:border-rose-800 transition cursor-pointer"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
