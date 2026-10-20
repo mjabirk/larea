@@ -5,7 +5,7 @@ import { playNotificationSound, subscribeWebPush, unsubscribeWebPush } from '../
 const ChatContext = createContext(null);
 
 export function ChatProvider({ children }) {
-  const { session, currentUser, token } = useAuth();
+  const { session, currentUser, token, isAuthenticated, isLoading } = useAuth();
   const [channels, setChannels] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [onlineUsers, setOnlineUsers] = useState(new Set());
@@ -17,6 +17,7 @@ export function ChatProvider({ children }) {
   const [wsConnected, setWsConnected] = useState(false);
 
   const wsRef = useRef(null);
+  const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef(null);
   const handleWsMessageRef = useRef(null);
   const currentUserId = String(currentUser?.id || session?.user?.id || session?.id || session?.user_id || '').toLowerCase();
@@ -28,9 +29,9 @@ export function ChatProvider({ children }) {
     }
   }, []);
 
-  // 2. Load channels and unread count from REST
+  // 2. Load channels and unread count from REST (only when fully authenticated)
   const refreshChannels = useCallback(async () => {
-    if (!token) return;
+    if (isLoading || !isAuthenticated || !token) return;
     try {
       const [chanRes, unreadRes] = await Promise.all([
         fetch('/api/v1/chat/channels', {
@@ -52,31 +53,48 @@ export function ChatProvider({ children }) {
     } catch (err) {
       console.error('Failed to load chat channels:', err);
     }
-  }, [token]);
+  }, [isLoading, isAuthenticated, token]);
 
   useEffect(() => {
-    if (token) {
-      refreshChannels();
+    if (isLoading || !isAuthenticated || !token) {
+      setChannels([]);
+      setUnreadCount(0);
+      return;
     }
-  }, [token, refreshChannels]);
+    refreshChannels();
+  }, [isLoading, isAuthenticated, token, refreshChannels]);
 
-  // 3. Connect WebSocket for Real-time chat & presence
+  // 3. Connect WebSocket for Real-time chat & presence (strictly authenticated)
   useEffect(() => {
-    if (!token) {
+    if (isLoading || !isAuthenticated || !token) {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
       if (wsRef.current) {
-        wsRef.current.close();
+        try {
+          wsRef.current.close();
+        } catch (e) {}
         wsRef.current = null;
       }
+      setWsConnected(false);
       return;
     }
 
     let isMounted = true;
 
     function connectWs() {
-      if (!isMounted || !token) return;
-      
+      if (!isMounted || !token || !isAuthenticated) return;
+
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch (e) {}
+        wsRef.current = null;
+      }
+
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws/chat?token=${token}`;
+      const wsUrl = `${protocol}//${window.location.host}/ws/chat?token=${encodeURIComponent(token)}`;
 
       try {
         const ws = new WebSocket(wsUrl);
@@ -85,6 +103,7 @@ export function ChatProvider({ children }) {
         ws.onopen = () => {
           if (!isMounted) return;
           setWsConnected(true);
+          reconnectAttemptsRef.current = 0;
         };
 
         ws.onmessage = (event) => {
@@ -97,20 +116,42 @@ export function ChatProvider({ children }) {
           }
         };
 
-        ws.onclose = () => {
+        ws.onclose = (ev) => {
           if (!isMounted) return;
           setWsConnected(false);
-          // Auto-reconnect with exponential backoff
-          reconnectTimeoutRef.current = setTimeout(connectWs, 3000);
+
+          // Stop reconnection attempts immediately if rejected for authentication or if logged out
+          const closeCode = ev?.code;
+          if (
+            closeCode === 1008 ||
+            closeCode === 4001 ||
+            closeCode === 4003 ||
+            closeCode === 403 ||
+            !token ||
+            !isAuthenticated
+          ) {
+            console.warn('[ChatWS] Connection closed with auth violation or close code:', closeCode, '- halting reconnect attempts.');
+            return;
+          }
+
+          // Exponential backoff for normal network disconnects (1.5s -> 3s -> 4.5s ... max 30s)
+          const delay = Math.min(30000, 1500 * Math.pow(1.5, reconnectAttemptsRef.current));
+          reconnectAttemptsRef.current += 1;
+          reconnectTimeoutRef.current = setTimeout(connectWs, delay);
         };
 
         ws.onerror = (err) => {
           console.warn('Chat WebSocket encounter:', err);
-          ws.close();
+          try {
+            ws.close();
+          } catch (e) {}
         };
       } catch (err) {
         console.error('Failed to create chat WebSocket:', err);
-        reconnectTimeoutRef.current = setTimeout(connectWs, 4000);
+        if (!token || !isAuthenticated) return;
+        const delay = Math.min(30000, 2000 * Math.pow(1.5, reconnectAttemptsRef.current));
+        reconnectAttemptsRef.current += 1;
+        reconnectTimeoutRef.current = setTimeout(connectWs, delay);
       }
     }
 
@@ -128,11 +169,13 @@ export function ChatProvider({ children }) {
       clearInterval(pingInterval);
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (wsRef.current) {
-        wsRef.current.close();
+        try {
+          wsRef.current.close();
+        } catch (e) {}
         wsRef.current = null;
       }
     };
-  }, [token]);
+  }, [isLoading, isAuthenticated, token]);
 
   // 4. Handle incoming WebSocket events
   const handleWsMessage = useCallback((data) => {

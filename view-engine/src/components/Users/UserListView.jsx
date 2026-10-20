@@ -18,12 +18,18 @@ import { useLocale } from '../../context/LocaleContext';
 import { NewUserModal } from './NewUserModal';
 
 export function UserListView({ onSelectUser, onCreateNewUser }) {
-  const { users, organizations, branches, organization_memberships } = useTenancy();
+  const { users, organizations, branches, organization_memberships, refreshTenancyData, isTenancyLoading } = useTenancy();
   const { formatDateTime } = useLocale();
 
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
   const [isNewUserModalOpen, setIsNewUserModalOpen] = useState(false);
+
+  React.useEffect(() => {
+    if (refreshTenancyData) {
+      refreshTenancyData();
+    }
+  }, [refreshTenancyData]);
 
   // Helper to lookup user role and branch dynamically
   const getUserMetadata = (userOrId) => {
@@ -100,7 +106,7 @@ export function UserListView({ onSelectUser, onCreateNewUser }) {
             </span>
           </div>
           <span className="font-mono text-[12px] font-semibold px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-            {filteredUsers.length} Users
+            {isTenancyLoading && users.length === 0 ? 'Loading...' : `${filteredUsers.length} Users`}
           </span>
         </div>
 
@@ -182,7 +188,16 @@ export function UserListView({ onSelectUser, onCreateNewUser }) {
             </thead>
 
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
-              {filteredUsers.length === 0 ? (
+              {isTenancyLoading && users.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-12 text-center text-[13px] text-slate-400">
+                    <div className="flex items-center justify-center gap-2.5">
+                      <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                      <span>Loading user identities...</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : filteredUsers.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-12 text-center text-[13px] text-slate-400">
                     No users matching criteria.

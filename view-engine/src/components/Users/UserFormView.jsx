@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   User,
+  Shield,
   ShieldCheck,
   ShieldAlert,
   Smartphone,
@@ -35,10 +36,16 @@ import { validatePasswordComplexity } from '../../schema/securityValidation';
 import { ResetPasswordModal } from './ResetPasswordModal';
 
 export function UserFormView({ user, usersList = [], onSelectUser, onBackToList }) {
-  const { users, currentUser, organizations, branches, organization_memberships, updateUser, createUser } = useTenancy();
+  const { users, currentUser, organizations, branches, organization_memberships, updateUser, createUser, refreshTenancyData } = useTenancy();
   const { session } = useAuth();
   const { roles } = useAccessControl();
   const { t } = useLocale();
+
+  useEffect(() => {
+    if (refreshTenancyData && (organizations.length === 0 || branches.length === 0 || users.length === 0)) {
+      refreshTenancyData();
+    }
+  }, [organizations.length, branches.length, users.length, refreshTenancyData]);
 
   const isCreateMode = !user?.id;
   const activeUser = isCreateMode ? null : user;
@@ -73,6 +80,10 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
         age_consent_verified: false,
         guardian_name: '',
         guardian_email: '',
+        windows_upn: '',
+        ad_sam_account: '',
+        auth_provider: 'local',
+        auto_sso_enabled: false,
       };
     }
     const mem = organization_memberships.find((m) => m.user_id === targetUser.id);
@@ -90,6 +101,10 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
       age_consent_verified: Boolean(targetUser.age_consent_verified),
       guardian_name: targetUser.guardian_name || '',
       guardian_email: targetUser.guardian_email || '',
+      windows_upn: targetUser.windows_upn || '',
+      ad_sam_account: targetUser.ad_sam_account || '',
+      auth_provider: targetUser.auth_provider || 'local',
+      auto_sso_enabled: Boolean(targetUser.auto_sso_enabled),
     };
   }, [organization_memberships]);
 
@@ -184,12 +199,17 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
           email: formData.email.trim(),
           role: formData.role,
           role_id: selectedRoleObj?.id,
+          department: formData.department,
           branch_id: branches[0]?.id,
           initial_password: formData.initial_password,
           date_of_birth: formData.date_of_birth || null,
           age: currentAge,
           guardian_name: isMinor ? formData.guardian_name.trim() : null,
           guardian_email: isMinor ? formData.guardian_email.trim() : null,
+          windows_upn: formData.windows_upn.trim() || null,
+          ad_sam_account: formData.ad_sam_account.trim() || null,
+          auth_provider: formData.auth_provider || 'local',
+          auto_sso_enabled: Boolean(formData.auto_sso_enabled),
         });
 
         setIsDirty(false);
@@ -220,6 +240,10 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
           age_consent_verified: formData.age_consent_verified,
           guardian_name: formData.guardian_name,
           guardian_email: formData.guardian_email,
+          windows_upn: formData.windows_upn.trim() || null,
+          ad_sam_account: formData.ad_sam_account.trim() || null,
+          auth_provider: formData.auth_provider || 'local',
+          auto_sso_enabled: Boolean(formData.auto_sso_enabled),
         });
         setIsDirty(false);
         setNotification('User profile successfully saved.');
@@ -632,6 +656,65 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
                 <span className="text-[12px] text-slate-500 dark:text-slate-400 block mt-1">
                   Restricts account access to designated networks or IP ranges.
                 </span>
+              </div>
+
+              {/* Windows SSO & Active Directory Binding */}
+              <div className="md:col-span-2 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[13px] font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <Shield className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                    <span>Windows Single Sign-On & Directory Binding</span>
+                  </span>
+                  <select
+                    value={formData.auth_provider || 'local'}
+                    onChange={(e) => handleFieldChange('auth_provider', e.target.value)}
+                    className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono text-slate-800 dark:text-slate-200 cursor-pointer"
+                  >
+                    <option value="local">Provider: Local / Hybrid</option>
+                    <option value="entra_oidc">Provider: Microsoft Entra ID (OIDC)</option>
+                    <option value="kerberos">Provider: Windows Kerberos (SPNEGO)</option>
+                    <option value="ldap">Provider: Active Directory (LDAP)</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[12px] font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                      Windows User Principal Name (UPN / Entra ID)
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.windows_upn || ''}
+                      onChange={(e) => handleFieldChange('windows_upn', e.target.value)}
+                      placeholder="e.g. user@company.com"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[12px] font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                      Active Directory Domain Account (sAMAccountName)
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.ad_sam_account || ''}
+                      onChange={(e) => handleFieldChange('ad_sam_account', e.target.value)}
+                      placeholder="e.g. CORP\jdoe or jdoe"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors font-mono text-xs"
+                    />
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-2.5 cursor-pointer pt-0.5">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(formData.auto_sso_enabled)}
+                    onChange={(e) => handleFieldChange('auto_sso_enabled', e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                  />
+                  <span className="text-[12px] text-slate-600 dark:text-slate-300">
+                    Allow automatic silent Windows SSO sign-in for this user on trusted domain workstations
+                  </span>
+                </label>
               </div>
 
               {/* Date of Birth & Age Compliance */}

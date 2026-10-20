@@ -1,9 +1,11 @@
+import asyncio
 import json
 import uuid
 import datetime
 import hashlib
 import logging
 import re
+import secrets
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, Depends, HTTPException, Header, Request, status, Response
@@ -27,11 +29,14 @@ from backend.core.database import (
     close_db_pool,
     get_db_pool,
     hash_password,
-    verify_password
+    hash_password_async,
+    verify_password,
+    verify_password_async
 )
 from backend.core.auth_suite import (
     APIKeyEngine,
     LDAPAuthenticator,
+    WindowsSSOEngine,
     TwoFactorAuthService,
     DatabaseRLSHelper
 )
@@ -59,7 +64,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition", "X-Vault-Decrypted"],
+    expose_headers=["Content-Disposition", "X-Vault-Decrypted", "WWW-Authenticate"],
 )
 
 # Browser Security Headers Middleware (OWASP standard baseline)
@@ -115,6 +120,28 @@ class Verify2FARequest(BaseModel):
     pending_token: Optional[str] = None
     totp_code: str
 
+class EntraCallbackRequest(BaseModel):
+    code: str
+    state: str
+    redirect_uri: Optional[str] = None
+
+class SSOSettingsPayload(BaseModel):
+    entra_enabled: Optional[bool] = None
+    entra_tenant_id: Optional[str] = None
+    entra_client_id: Optional[str] = None
+    entra_client_secret: Optional[str] = None
+    entra_redirect_uri: Optional[str] = None
+    kerberos_enabled: Optional[bool] = None
+    kerberos_service_principal: Optional[str] = None
+    trust_remote_user_header: Optional[bool] = None
+    ldap_enabled: Optional[bool] = None
+    ldap_server: Optional[str] = None
+    ldap_base_dn: Optional[str] = None
+    ldap_domain: Optional[str] = None
+    auto_provision: Optional[bool] = None
+    default_role_id: Optional[str] = None
+    auto_login_default: Optional[bool] = None
+
 def validate_password_complexity(password: str) -> Optional[str]:
     if not password or len(password) < 10:
         return "Password must be at least 10 characters long."
@@ -152,6 +179,10 @@ class CreateUserRequest(BaseModel):
     guardian_email: Optional[str] = None
     status: Optional[str] = "active"
     department: Optional[str] = "Operations"
+    windows_upn: Optional[str] = None
+    ad_sam_account: Optional[str] = None
+    auth_provider: Optional[str] = "local"
+    auto_sso_enabled: Optional[bool] = False
 
 class UpdateUserRequest(BaseModel):
     full_name: Optional[str] = None
@@ -167,6 +198,10 @@ class UpdateUserRequest(BaseModel):
     guardian_name: Optional[str] = None
     guardian_email: Optional[str] = None
     idle_timeout_minutes: Optional[int] = None
+    windows_upn: Optional[str] = None
+    ad_sam_account: Optional[str] = None
+    auth_provider: Optional[str] = None
+    auto_sso_enabled: Optional[bool] = None
 
 class SecurityPolicyPayload(BaseModel):
     global_max_idle_timeout_minutes: int
@@ -196,6 +231,7 @@ class CreateAPIKeyRequest(BaseModel):
     role: Optional[str] = "service_daemon"
     allowed_cidrs: Optional[List[str]] = None
     scopes: Optional[List[str]] = None
+
 
 
 from backend.core.dependencies import (
@@ -319,64 +355,65 @@ async def setup_init(req: SetupInitRequest, request: Request):
     user_agent = request.headers.get("User-Agent", "Unknown")
     pool = get_db_pool()
     
+    await enforce_setup_boot_limit(max_calls=3)
+    admin_email = req.admin_data.get("email", "").strip().lower()
+    admin_name = req.admin_data.get("full_name") or "Root Superadmin"
+    admin_dob = req.admin_data.get("date_of_birth") or "1990-01-01"
+    admin_pwd = (req.admin_data.get("password") or "").strip()
+    if not admin_pwd or len(admin_pwd) < 8:
+        raise HTTPException(status_code=400, detail="Administrator password must be at least 8 characters long.")
+    if len(admin_pwd.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Administrator password exceeds 72 bytes maximum limit.")
+    hashed_pwd = await hash_password_async(admin_pwd)
+
     async with pool.acquire() as conn:
-        init_val = await conn.fetchval(
-            "SELECT value FROM system_metadata WHERE key = 'is_initialized'"
-        )
-        if init_val == "true":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="System is already initialized."
+        async with conn.transaction():
+            init_val = await conn.fetchval(
+                "SELECT value FROM system_metadata WHERE key = 'is_initialized'"
             )
+            if init_val == "true":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="System is already initialized."
+                )
+                
+            org_id = uuid.uuid4()
+            branch_id = uuid.uuid4()
+            user_id = uuid.uuid4()
             
-        org_id = uuid.uuid4()
-        branch_id = uuid.uuid4()
-        user_id = uuid.uuid4()
-        
-        org_name = req.org_data.get("legal_name") or "Apex Global Enterprises"
-        tax_id = req.org_data.get("tax_id") or "CR-001"
-        currency = req.org_data.get("base_currency") or "USD"
-        tz = req.org_data.get("default_timezone") or "UTC"
-        locale = (req.pref_data or {}).get("language") or "en"
-        
-        await conn.execute("""
-            INSERT INTO organizations (id, legal_name, tax_id, base_currency, default_timezone, default_locale)
-            VALUES ($1, $2, $3, $4, $5, $6)
-        """, org_id, org_name, tax_id, currency, tz, locale)
-        
-        br_name = req.org_data.get("primary_branch_name") or "Headquarters"
-        br_code = req.org_data.get("branch_code") or "HQ-01"
-        br_city = req.org_data.get("branch_city") or "Doha"
-        await conn.execute("""
-            INSERT INTO branches (id, organization_id, name, code, city, ip_allowlist)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-        """, branch_id, org_id, br_name, br_code, br_city, json.dumps(["127.0.0.1/32"]))
-        
-        await enforce_setup_boot_limit(max_calls=3)
-        admin_email = req.admin_data.get("email", "").strip().lower()
-        admin_name = req.admin_data.get("full_name") or "Root Superadmin"
-        admin_dob = req.admin_data.get("date_of_birth") or "1990-01-01"
-        admin_pwd = (req.admin_data.get("password") or "").strip()
-        if not admin_pwd or len(admin_pwd) < 8:
-            raise HTTPException(status_code=400, detail="Administrator password must be at least 8 characters long.")
-        if len(admin_pwd.encode("utf-8")) > 72:
-            raise HTTPException(status_code=400, detail="Administrator password exceeds 72 bytes maximum limit.")
-        hashed_pwd = hash_password(admin_pwd)
-        
-        await conn.execute("""
-            INSERT INTO users (
-                id, email, full_name, password_hash, status, is_superadmin,
-                organization_id, branch_id, role_id, department, allowed_cidrs, date_of_birth
-            )
-            VALUES ($1, $2, $3, $4, 'active', true, $5, $6, 'role_superadmin', 'Executive Administration', '0.0.0.0/0', $7)
-        """, user_id, admin_email, admin_name, hashed_pwd, org_id, branch_id, admin_dob)
-        
-        # Mark initialized in system_metadata
-        await conn.execute("""
-            INSERT INTO system_metadata (key, value, updated_at)
-            VALUES ('is_initialized', 'true', CURRENT_TIMESTAMP)
-            ON CONFLICT (key) DO UPDATE SET value = 'true', updated_at = CURRENT_TIMESTAMP
-        """)
+            org_name = req.org_data.get("legal_name") or "Apex Global Enterprises"
+            tax_id = req.org_data.get("tax_id") or "CR-001"
+            currency = req.org_data.get("base_currency") or "USD"
+            tz = req.org_data.get("default_timezone") or "UTC"
+            locale = (req.pref_data or {}).get("language") or "en"
+            
+            await conn.execute("""
+                INSERT INTO organizations (id, legal_name, tax_id, base_currency, default_timezone, default_locale)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            """, org_id, org_name, tax_id, currency, tz, locale)
+            
+            br_name = req.org_data.get("primary_branch_name") or "Headquarters"
+            br_code = req.org_data.get("branch_code") or "HQ-01"
+            br_city = req.org_data.get("branch_city") or "Doha"
+            await conn.execute("""
+                INSERT INTO branches (id, organization_id, name, code, city, ip_allowlist)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            """, branch_id, org_id, br_name, br_code, br_city, json.dumps(["127.0.0.1/32"]))
+            
+            await conn.execute("""
+                INSERT INTO users (
+                    id, email, full_name, password_hash, status, is_superadmin,
+                    organization_id, branch_id, role_id, department, allowed_cidrs, date_of_birth
+                )
+                VALUES ($1, $2, $3, $4, 'active', true, $5, $6, 'role_superadmin', 'Executive Administration', '0.0.0.0/0', $7)
+            """, user_id, admin_email, admin_name, hashed_pwd, org_id, branch_id, admin_dob)
+            
+            # Mark initialized in system_metadata
+            await conn.execute("""
+                INSERT INTO system_metadata (key, value, updated_at)
+                VALUES ('is_initialized', 'true', CURRENT_TIMESTAMP)
+                ON CONFLICT (key) DO UPDATE SET value = 'true', updated_at = CURRENT_TIMESTAMP
+            """)
         
     user_data = {
         "id": str(user_id),
@@ -393,7 +430,12 @@ async def setup_init(req: SetupInitRequest, request: Request):
         "branch_name": br_name,
         "branch_code": br_code,
         "security_groups": ["*"],
-        "menu_access": ["attendances", "rosters", "users", "roles", "orgs", "terminals", "batches"]
+        "menu_access": ["attendances", "rosters", "users", "roles", "orgs", "terminals", "batches"],
+        "auth_provider": "local",
+        "windows_upn": None,
+        "ad_sam_account": None,
+        "auto_sso_enabled": False,
+        "is_2fa_enabled": False,
     }
     
     policies = await get_system_security_policies()
@@ -419,21 +461,359 @@ async def setup_init(req: SetupInitRequest, request: Request):
     }
 
 # ==============================================================================
-# 2. AUTHENTICATION & SESSION ENDPOINTS (PostgreSQL Credential Verification)
+# 2. AUTHENTICATION, WINDOWS SSO & SESSION ENDPOINTS
 # ==============================================================================
+def _build_user_session_payload(row: Any, policies: Dict[str, Any]) -> Dict[str, Any]:
+    """Constructs a consistent user session payload with full role security_groups and SSO attributes."""
+    raw_menu = row["menu_access"]
+    menu_access = json.loads(raw_menu) if isinstance(raw_menu, str) else (raw_menu or [])
+    raw_perms = row["permissions"]
+    permissions = json.loads(raw_perms) if isinstance(raw_perms, str) else (raw_perms or {})
+
+    role_sec_groups = []
+    if isinstance(permissions, dict):
+        role_sec_groups = permissions.get("security_groups", [])
+    elif isinstance(permissions, list):
+        role_sec_groups = permissions
+
+    global_max = int(policies.get("global_max_idle_timeout_minutes", 30))
+    default_idle = int(policies.get("default_idle_timeout_minutes", 15))
+    user_idle = row.get("idle_timeout_minutes")
+    eff_idle = min(user_idle or default_idle, global_max)
+
+    return {
+        "id": str(row["id"]),
+        "username": row["email"],
+        "email": row["email"],
+        "full_name": row["full_name"],
+        "role": row["role_name"] or "Standard User",
+        "role_id": row["role_id"] or "role_standard",
+        "is_superadmin": bool(row["is_superadmin"]),
+        "status": row["status"],
+        "department": row["department"] or "General",
+        "organization_id": str(row["organization_id"]) if row["organization_id"] else None,
+        "organization_name": row["org_name"],
+        "branch_id": str(row["branch_id"]) if row["branch_id"] else None,
+        "branch_name": row["branch_name"],
+        "branch_code": row["branch_code"],
+        "security_groups": ["*"] if row["is_superadmin"] else role_sec_groups,
+        "menu_access": menu_access,
+        "permissions": permissions,
+        "idle_timeout_minutes": user_idle,
+        "effective_idle_timeout_minutes": eff_idle,
+        "global_max_idle_timeout_minutes": global_max,
+        "auth_provider": row.get("auth_provider") or "local",
+        "windows_upn": row.get("windows_upn"),
+        "ad_sam_account": row.get("ad_sam_account"),
+        "auto_sso_enabled": bool(row.get("auto_sso_enabled", False)),
+        "is_2fa_enabled": bool(row.get("is_2fa_enabled", False)),
+    }
+
+async def _resolve_or_provision_sso_user(
+    conn,
+    identity: Dict[str, Any],
+    sso_cfg: Dict[str, Any]
+) -> Any:
+    """
+    Matches an authenticated Windows SSO identity (Entra ID OIDC, Kerberos SPNEGO, or AD LDAP)
+    against PostgreSQL users by external_id, windows_upn, ad_sam_account, or email.
+    Supports Just-In-Time (JIT) user provisioning when enabled.
+    """
+    ext_id = (identity.get("external_id") or "").strip()
+    win_upn = (identity.get("windows_upn") or "").strip().lower()
+    sam_acc = (identity.get("ad_sam_account") or "").strip().lower()
+    email = (identity.get("email") or win_upn or "").strip().lower()
+    provider = (identity.get("provider") or "windows_sso").strip()
+
+    row = await conn.fetchrow("""
+        SELECT u.*, r.name as role_name, r.permissions, r.menu_access,
+               o.legal_name as org_name, b.name as branch_name, b.code as branch_code
+        FROM users u
+        LEFT JOIN roles r ON u.role_id = r.id
+        LEFT JOIN organizations o ON u.organization_id = o.id
+        LEFT JOIN branches b ON u.branch_id = b.id
+        WHERE ($1 <> '' AND u.external_id = $1)
+           OR ($2 <> '' AND LOWER(u.windows_upn) = $2)
+           OR ($3 <> '' AND LOWER(u.ad_sam_account) = $3)
+           OR ($4 <> '' AND LOWER(u.email) = $4)
+        ORDER BY u.is_superadmin DESC, u.created_at ASC
+        LIMIT 1
+    """, ext_id, win_upn, sam_acc, email)
+
+    if row:
+        # Synchronize Windows identity attributes if not yet linked on the matched user
+        await conn.execute("""
+            UPDATE users SET
+                external_id = COALESCE(NULLIF($2, ''), external_id),
+                windows_upn = COALESCE(NULLIF($3, ''), windows_upn),
+                ad_sam_account = COALESCE(NULLIF($4, ''), ad_sam_account),
+                auth_provider = CASE WHEN auth_provider = 'local' OR auth_provider IS NULL THEN $5 ELSE auth_provider END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+        """, row["id"], ext_id, win_upn, sam_acc, provider)
+
+        return await conn.fetchrow("""
+            SELECT u.*, r.name as role_name, r.permissions, r.menu_access,
+                   o.legal_name as org_name, b.name as branch_name, b.code as branch_code
+            FROM users u
+            LEFT JOIN roles r ON u.role_id = r.id
+            LEFT JOIN organizations o ON u.organization_id = o.id
+            LEFT JOIN branches b ON u.branch_id = b.id
+            WHERE u.id = $1
+        """, row["id"])
+
+    if not sso_cfg.get("auto_provision", True):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Windows account '{win_upn or email}' is not linked to an ERP user and Just-In-Time (JIT) provisioning is disabled."
+        )
+
+    # Just-In-Time (JIT) Provisioning
+    org_id = await conn.fetchval("SELECT id FROM organizations ORDER BY created_at ASC LIMIT 1")
+    branch_id = await conn.fetchval("SELECT id FROM branches ORDER BY created_at ASC LIMIT 1")
+    default_role_id = identity.get("role_id") or sso_cfg.get("default_role_id") or "role_user"
+    role_exists = await conn.fetchval("SELECT id FROM roles WHERE id = $1", default_role_id)
+    if not role_exists:
+        default_role_id = await conn.fetchval("SELECT id FROM roles WHERE is_system = false OR id != 'role_superadmin' ORDER BY created_at ASC LIMIT 1") or "role_user"
+
+    new_user_id = uuid.uuid4()
+    random_pwd_hash = await hash_password_async(secrets.token_urlsafe(32))
+    full_name = identity.get("full_name") or (win_upn.split("@")[0] if win_upn else "Windows SSO User")
+    department = identity.get("department") or "General"
+    auto_sso = bool(sso_cfg.get("auto_login_default", False))
+
+    await conn.execute("""
+        INSERT INTO users (
+            id, email, full_name, password_hash, status, is_superadmin,
+            organization_id, branch_id, role_id, department, allowed_cidrs,
+            auth_provider, external_id, windows_upn, ad_sam_account, auto_sso_enabled
+        )
+        VALUES ($1, $2, $3, $4, 'active', false, $5, $6, $7, $8, '0.0.0.0/0', $9, $10, $11, $12, $13)
+    """, new_user_id, email, full_name, random_pwd_hash, org_id, branch_id, default_role_id,
+       department, provider, ext_id or None, win_upn or None, sam_acc or None, auto_sso)
+
+    return await conn.fetchrow("""
+        SELECT u.*, r.name as role_name, r.permissions, r.menu_access,
+               o.legal_name as org_name, b.name as branch_name, b.code as branch_code
+        FROM users u
+        LEFT JOIN roles r ON u.role_id = r.id
+        LEFT JOIN organizations o ON u.organization_id = o.id
+        LEFT JOIN branches b ON u.branch_id = b.id
+        WHERE u.id = $1
+    """, new_user_id)
+
+
+@app.get("/api/v1/auth/sso/config")
+async def get_public_sso_config():
+    """Returns non-sensitive Windows SSO availability and modes for the Login screen."""
+    sso_cfg = await WindowsSSOEngine.get_sso_settings()
+    entra_ready = bool(sso_cfg.get("entra_enabled") and sso_cfg.get("entra_client_id"))
+    kerberos_ready = bool(sso_cfg.get("kerberos_enabled") or sso_cfg.get("trust_remote_user_header"))
+    ldap_ready = bool(sso_cfg.get("ldap_enabled"))
+    return {
+        "entra_enabled": entra_ready,
+        "entra_tenant_id": sso_cfg.get("entra_tenant_id") if entra_ready else None,
+        "kerberos_enabled": kerberos_ready,
+        "ldap_enabled": ldap_ready,
+        "ldap_domain": sso_cfg.get("ldap_domain") or settings.LDAP_DOMAIN,
+        "auto_login_default": bool(sso_cfg.get("auto_login_default", False)),
+        "sso_available": bool(entra_ready or kerberos_ready or ldap_ready),
+    }
+
+
+@app.get("/api/v1/system/sso-settings")
+async def get_admin_sso_settings(session: Dict[str, Any] = Depends(get_current_user_session)):
+    """Returns Windows SSO configuration for administrators (masks client secret)."""
+    if not (session.get("is_superadmin") or check_permission(session, "settings.manage") or check_permission(session, "users.manage")):
+        raise HTTPException(status_code=403, detail="Access denied: Administrator privileges required.")
+    cfg = await WindowsSSOEngine.get_sso_settings()
+    masked = dict(cfg)
+    if masked.get("entra_client_secret"):
+        masked["entra_client_secret"] = "••••••••••••"
+    return masked
+
+
+@app.put("/api/v1/system/sso-settings")
+async def update_admin_sso_settings(
+    payload: SSOSettingsPayload,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Updates Windows SSO configuration in PostgreSQL system_metadata."""
+    if not (session.get("is_superadmin") or check_permission(session, "settings.manage")):
+        raise HTTPException(status_code=403, detail="Access denied: Only Superadmin or Settings Manager can modify SSO federation settings.")
+    update_dict = {k: v for k, v in payload.model_dump().items() if v is not None}
+    updated = await WindowsSSOEngine.save_sso_settings(update_dict)
+    masked = dict(updated)
+    if masked.get("entra_client_secret"):
+        masked["entra_client_secret"] = "••••••••••••"
+    return {"status": "success", "settings": masked}
+
+
+@app.get("/api/v1/auth/sso/entra/authorize")
+async def sso_entra_authorize(
+    request: Request,
+    redirect_uri: Optional[str] = None,
+    login_hint: Optional[str] = None
+):
+    """Initiates Microsoft Entra ID OAuth2/OIDC flow with PKCE and state."""
+    client_ip = get_client_ip(request)
+    await enforce_rate_limit("sso_authorize", client_ip, max_attempts=15, window_seconds=60)
+    try:
+        return await WindowsSSOEngine.create_entra_authorization_url(
+            redirect_uri=redirect_uri,
+            login_hint=login_hint
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/v1/auth/sso/entra/callback")
+async def sso_entra_callback(req: EntraCallbackRequest, request: Request, response: Response):
+    """
+    Exchanges Microsoft Entra ID authorization code + PKCE verifier,
+    resolves or JIT-provisions the ERP user, and issues an active session.
+    """
+    client_ip = get_client_ip(request)
+    user_agent = request.headers.get("User-Agent", "Unknown")
+    await enforce_rate_limit("sso_callback", client_ip, max_attempts=10, window_seconds=60)
+
+    try:
+        identity = await WindowsSSOEngine.exchange_entra_code(
+            code=req.code,
+            state=req.state,
+            redirect_uri=req.redirect_uri
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+    sso_cfg = await WindowsSSOEngine.get_sso_settings()
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        row = await _resolve_or_provision_sso_user(conn, identity, sso_cfg)
+        if not row:
+            raise HTTPException(status_code=401, detail="Unable to resolve or provision Windows SSO user.")
+        if row["status"] in ["inactive", "suspended", "pending_deletion"]:
+            raise HTTPException(status_code=403, detail=f"Account is {row['status']}. Contact your administrator.")
+        policies = await get_system_security_policies()
+        user_data = _build_user_session_payload(row, policies)
+
+    session_token = await SessionManager.create_session(
+        user_id=user_data["id"],
+        user_data=user_data,
+        client_ip=client_ip,
+        user_agent=user_agent
+    )
+    response.set_cookie(
+        key="enterprise_session_id",
+        value=session_token,
+        httponly=True,
+        samesite="lax",
+        max_age=settings.SESSION_ABSOLUTE_MAX_SECONDS
+    )
+    return {
+        "status": "success",
+        "sso_provider": "entra_oidc",
+        "access_token": session_token,
+        "token_type": "Bearer",  # nosec B105
+        "user": user_data
+    }
+
+
+@app.api_route("/api/v1/auth/sso/negotiate", methods=["GET", "POST"])
+async def sso_kerberos_negotiate(request: Request):
+    """
+    HTTP SPNEGO / Kerberos Integrated Windows Authentication ('WWW-Authenticate: Negotiate')
+    and Trusted Reverse-Proxy Windows Identity endpoint.
+    """
+    client_ip = get_client_ip(request)
+    user_agent = request.headers.get("User-Agent", "Unknown")
+    await enforce_rate_limit("sso_negotiate", client_ip, max_attempts=20, window_seconds=60)
+
+    sso_cfg = await WindowsSSOEngine.get_sso_settings()
+    auth_header = request.headers.get("Authorization")
+    remote_user = (
+        request.headers.get("X-Remote-User")
+        or request.headers.get("X-Forwarded-User")
+        or request.headers.get("X-Authenticated-User")
+    )
+
+    direct_ip = request.client.host if request.client else "127.0.0.1"
+    result = WindowsSSOEngine.verify_kerberos_or_proxy_request(
+        auth_header=auth_header,
+        remote_user_header=remote_user,
+        client_ip=direct_ip,
+        sso_cfg=sso_cfg
+    )
+
+    if result["status"] == "challenge":
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": result["message"], "sso_challenge": "Negotiate"},
+            headers={"WWW-Authenticate": result.get("www_authenticate", "Negotiate")}
+        )
+    if result["status"] != "authenticated":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=result.get("message", "Windows Integrated Authentication failed.")
+        )
+
+    identity = result["identity"]
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        row = await _resolve_or_provision_sso_user(conn, identity, sso_cfg)
+        if not row:
+            raise HTTPException(status_code=401, detail="Unable to resolve Windows domain user.")
+        if row["status"] in ["inactive", "suspended", "pending_deletion"]:
+            raise HTTPException(status_code=403, detail=f"Account is {row['status']}. Contact your administrator.")
+        policies = await get_system_security_policies()
+        user_data = _build_user_session_payload(row, policies)
+
+    session_token = await SessionManager.create_session(
+        user_id=user_data["id"],
+        user_data=user_data,
+        client_ip=client_ip,
+        user_agent=user_agent
+    )
+
+    resp_headers = {}
+    if result.get("www_authenticate"):
+        resp_headers["WWW-Authenticate"] = result["www_authenticate"]
+
+    resp = JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "status": "success",
+            "sso_provider": identity.get("provider", "kerberos_spnego"),
+            "access_token": session_token,
+            "token_type": "Bearer",  # nosec B105
+            "user": user_data
+        },
+        headers=resp_headers
+    )
+    resp.set_cookie(
+        key="enterprise_session_id",
+        value=session_token,
+        httponly=True,
+        samesite="lax",
+        max_age=settings.SESSION_ABSOLUTE_MAX_SECONDS
+    )
+    return resp
+
+
 @app.post("/api/v1/auth/login")
-async def login(req: LoginRequest, request: Request):
+async def login(req: LoginRequest, request: Request, response: Response):
     client_ip = get_client_ip(request)
     user_agent = request.headers.get("User-Agent", "Unknown")
     
     # 1. Rate Limiting: max 5 attempts per minute per IP
     await enforce_rate_limit("login", client_ip, max_attempts=5, window_seconds=60)
     
-    clean_user = req.username.strip().lower()
+    raw_user = req.username.strip()
+    clean_user = raw_user.lower()
     clean_pwd = req.password.strip()
     
     if not clean_user:
-        raise HTTPException(status_code=400, detail="Please enter username or email.")
+        raise HTTPException(status_code=400, detail="Please enter username, email, or Windows domain account (DOMAIN\\username).")
     if not clean_pwd:
         raise HTTPException(status_code=400, detail="Please enter password.")
         
@@ -444,20 +824,50 @@ async def login(req: LoginRequest, request: Request):
             detail="Password exceeds maximum supported length (72 bytes)."
         )
         
+    sso_cfg = await WindowsSSOEngine.get_sso_settings()
+    ad_identity = None
+
+    # 3. Optional Active Directory / LDAP Authentication when enabled or DOMAIN\username is used
+    if sso_cfg.get("ldap_enabled") or "\\" in raw_user:
+        ad_identity = await asyncio.to_thread(
+            LDAPAuthenticator.authenticate_ad_user,
+            raw_user,
+            clean_pwd,
+            sso_cfg
+        )
+
     pool = get_db_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            SELECT u.*, r.name as role_name, r.permissions, r.menu_access,
-                   o.legal_name as org_name, b.name as branch_name, b.code as branch_code
-            FROM users u
-            LEFT JOIN roles r ON u.role_id = r.id
-            LEFT JOIN organizations o ON u.organization_id = o.id
-            LEFT JOIN branches b ON u.branch_id = b.id
-            WHERE LOWER(u.email) = $1
-               OR ($1 = 'admin' AND u.is_superadmin = true)
-            LIMIT 1
-        """, clean_user)
-        
+        if ad_identity:
+            row = await _resolve_or_provision_sso_user(conn, ad_identity, sso_cfg)
+        else:
+            row = await conn.fetchrow("""
+                SELECT u.*, r.name as role_name, r.permissions, r.menu_access,
+                       o.legal_name as org_name, b.name as branch_name, b.code as branch_code
+                FROM users u
+                LEFT JOIN roles r ON u.role_id = r.id
+                LEFT JOIN organizations o ON u.organization_id = o.id
+                LEFT JOIN branches b ON u.branch_id = b.id
+                WHERE LOWER(u.email) = $1
+                   OR LOWER(u.windows_upn) = $1
+                   OR LOWER(u.ad_sam_account) = $1
+                   OR ($1 = 'admin' AND u.is_superadmin = true)
+                LIMIT 1
+            """, clean_user)
+            
+            if not row:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid credentials. Please check your username and password."
+                )
+                
+            # Pure PostgreSQL Bcrypt Verification offloaded from event loop
+            if not await verify_password_async(clean_pwd, row["password_hash"]):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid credentials. Please check your username and password."
+                )
+
         if not row:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -476,50 +886,8 @@ async def login(req: LoginRequest, request: Request):
                 detail="This account has been deactivated. Please contact your system administrator."
             )
             
-        # 3. Pure PostgreSQL Bcrypt Verification: ZERO hardcoded test bypasses
-        if not verify_password(clean_pwd, row["password_hash"]):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials. Please check your username and password."
-            )
-            
-        menu_access = json.loads(row["menu_access"]) if row["menu_access"] else []
-        permissions = json.loads(row["permissions"]) if row["permissions"] else {}
-
-        role_sec_groups = []
-        if isinstance(permissions, dict):
-            role_sec_groups = permissions.get("security_groups", [])
-        elif isinstance(permissions, list):
-            role_sec_groups = permissions
-
-        user_data = {
-            "id": str(row["id"]),
-            "username": row["email"],
-            "email": row["email"],
-            "full_name": row["full_name"],
-            "role": row["role_name"] or "Standard User",
-            "role_id": row["role_id"] or "role_standard",
-            "is_superadmin": bool(row["is_superadmin"]),
-            "status": row["status"],
-            "department": row["department"] or "General",
-            "organization_id": str(row["organization_id"]) if row["organization_id"] else None,
-            "organization_name": row["org_name"],
-            "branch_id": str(row["branch_id"]) if row["branch_id"] else None,
-            "branch_name": row["branch_name"],
-            "branch_code": row["branch_code"],
-            "security_groups": ["*"] if row["is_superadmin"] else role_sec_groups,
-            "menu_access": menu_access,
-            "permissions": permissions,
-            "idle_timeout_minutes": row.get("idle_timeout_minutes"),
-        }
-
         policies = await get_system_security_policies()
-        global_max = int(policies.get("global_max_idle_timeout_minutes", 30))
-        default_idle = int(policies.get("default_idle_timeout_minutes", 15))
-        eff_idle = min(user_data["idle_timeout_minutes"] or default_idle, global_max)
-
-        user_data["effective_idle_timeout_minutes"] = eff_idle
-        user_data["global_max_idle_timeout_minutes"] = global_max
+        user_data = _build_user_session_payload(row, policies)
         
         # 4. Check if Two-Factor Authentication is enforced on account
         if row.get("is_2fa_enabled") and row.get("totp_secret"):
@@ -537,6 +905,13 @@ async def login(req: LoginRequest, request: Request):
         client_ip=client_ip,
         user_agent=user_agent
     )
+    response.set_cookie(
+        key="enterprise_session_id",
+        value=session_token,
+        httponly=True,
+        samesite="lax",
+        max_age=settings.SESSION_ABSOLUTE_MAX_SECONDS
+    )
     
     return {
         "status": "success",
@@ -546,10 +921,10 @@ async def login(req: LoginRequest, request: Request):
     }
 
 @app.post("/api/v1/auth/2fa/verify")
-async def verify_2fa(req: Verify2FARequest, request: Request):
+async def verify_2fa(req: Verify2FARequest, request: Request, response: Response):
     """
     Verifies TOTP code with rate limiting (5 attempts/min/IP) and replay attack prevention.
-    Strictly forbids any hardcoded code bypass.
+    Requires a valid stage-1 Redis pending_token to prevent password bypass.
     """
     client_ip = get_client_ip(request)
     user_agent = request.headers.get("User-Agent", "Unknown")
@@ -564,16 +939,24 @@ async def verify_2fa(req: Verify2FARequest, request: Request):
             detail="Invalid TOTP code format. Code must be 6 digits."
         )
         
-    target_user_id = req.user_id
+    if not req.pending_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing 2FA stage-1 pending token. Please sign in with your password first."
+        )
+
     redis = get_redis_client()
-    if req.pending_token and redis:
-        pending_key = f"2fa_pending:{req.pending_token}"
-        pending_data = await redis.hgetall(pending_key)
-        if pending_data and "user_id" in pending_data:
-            target_user_id = pending_data["user_id"]
-            
-    if not target_user_id:
-        raise HTTPException(status_code=400, detail="Missing user reference or 2FA challenge expired.")
+    if not redis:
+        raise HTTPException(status_code=503, detail="Session store unavailable for 2FA verification.")
+
+    pending_key = f"2fa_pending:{req.pending_token}"
+    pending_data = await redis.hgetall(pending_key)
+    if not pending_data or "user_id" not in pending_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="2FA challenge expired or invalid. Please sign in again."
+        )
+    target_user_id = pending_data["user_id"]
         
     try:
         parsed_uuid = uuid.UUID(target_user_id)
@@ -612,46 +995,23 @@ async def verify_2fa(req: Verify2FARequest, request: Request):
             detail="Invalid or already used TOTP code. Replay is strictly forbidden."
         )
         
-    menu_access = json.loads(row["menu_access"]) if row["menu_access"] else []
-    permissions = json.loads(row["permissions"]) if row["permissions"] else {}
-    
-    user_data = {
-        "id": str(row["id"]),
-        "username": row["email"],
-        "email": row["email"],
-        "full_name": row["full_name"],
-        "role": row["role_name"] or "Standard User",
-        "role_id": row["role_id"] or "role_standard",
-        "is_superadmin": bool(row["is_superadmin"]),
-        "status": row["status"],
-        "department": row["department"] or "General",
-        "organization_id": str(row["organization_id"]) if row["organization_id"] else None,
-        "organization_name": row["org_name"],
-        "branch_id": str(row["branch_id"]) if row["branch_id"] else None,
-        "branch_name": row["branch_name"],
-        "branch_code": row["branch_code"],
-        "security_groups": ["*"] if row["is_superadmin"] else [],
-        "menu_access": menu_access,
-        "permissions": permissions,
-        "idle_timeout_minutes": row.get("idle_timeout_minutes"),
-    }
-
     policies = await get_system_security_policies()
-    global_max = int(policies.get("global_max_idle_timeout_minutes", 30))
-    default_idle = int(policies.get("default_idle_timeout_minutes", 15))
-    eff_idle = min(user_data["idle_timeout_minutes"] or default_idle, global_max)
-
-    user_data["effective_idle_timeout_minutes"] = eff_idle
-    user_data["global_max_idle_timeout_minutes"] = global_max
+    user_data = _build_user_session_payload(row, policies)
     
-    if req.pending_token and redis:
-        await redis.delete(f"2fa_pending:{req.pending_token}")
+    await redis.delete(pending_key)
         
     session_token = await SessionManager.create_session(
         user_id=user_data["id"],
         user_data=user_data,
         client_ip=client_ip,
         user_agent=user_agent
+    )
+    response.set_cookie(
+        key="enterprise_session_id",
+        value=session_token,
+        httponly=True,
+        samesite="lax",
+        max_age=settings.SESSION_ABSOLUTE_MAX_SECONDS
     )
     
     return {
@@ -688,73 +1048,53 @@ async def setup_2fa(session: Dict[str, Any] = Depends(get_current_user_session))
         "qr_code_base64": qr_base64
     }
 
+@app.post("/api/v1/auth/2fa/disable")
+async def disable_2fa(session: Dict[str, Any] = Depends(get_current_user_session)):
+    """Disables 2FA for the active authenticated user."""
+    user_id = session["user_id"]
+    try:
+        parsed_uuid = uuid.UUID(user_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid user ID format.")
+
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE users SET totp_secret = NULL, is_2fa_enabled = false, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+        """, parsed_uuid)
+
+    return {"status": "success", "is_2fa_enabled": False}
+
 @app.get("/api/v1/auth/me")
 async def get_current_user_profile(session: Dict[str, Any] = Depends(get_current_user_session)):
     """Fetches up-to-date user profile and permissions from PostgreSQL."""
+    if session.get("auth_type") == "api_key":
+        return session
+
     user_id = session.get("user_id")
+    try:
+        parsed_uuid = uuid.UUID(str(user_id))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid session user identifier.")
+
     pool = get_db_pool()
     async with pool.acquire() as conn:
-        try:
-            parsed_uuid = uuid.UUID(user_id) if isinstance(user_id, str) and len(user_id) == 36 else None
-        except Exception:
-            parsed_uuid = None
-            
-        if parsed_uuid:
-            row = await conn.fetchrow("""
-                SELECT u.*, r.name as role_name, r.permissions, r.menu_access,
-                       o.legal_name as org_name, b.name as branch_name, b.code as branch_code
-                FROM users u
-                LEFT JOIN roles r ON u.role_id = r.id
-                LEFT JOIN organizations o ON u.organization_id = o.id
-                LEFT JOIN branches b ON u.branch_id = b.id
-                WHERE u.id = $1
-            """, parsed_uuid)
-        else:
-            row = await conn.fetchrow("""
-                SELECT u.*, r.name as role_name, r.permissions, r.menu_access,
-                       o.legal_name as org_name, b.name as branch_name, b.code as branch_code
-                FROM users u
-                LEFT JOIN roles r ON u.role_id = r.id
-                LEFT JOIN organizations o ON u.organization_id = o.id
-                LEFT JOIN branches b ON u.branch_id = b.id
-                WHERE u.is_superadmin = true
-                LIMIT 1
-            """)
-            
+        row = await conn.fetchrow("""
+            SELECT u.*, r.name as role_name, r.permissions, r.menu_access,
+                   o.legal_name as org_name, b.name as branch_name, b.code as branch_code
+            FROM users u
+            LEFT JOIN roles r ON u.role_id = r.id
+            LEFT JOIN organizations o ON u.organization_id = o.id
+            LEFT JOIN branches b ON u.branch_id = b.id
+            WHERE u.id = $1
+        """, parsed_uuid)
+
         if not row:
-            return session
-            
-        menu_access = json.loads(row["menu_access"]) if row["menu_access"] else []
-        permissions = json.loads(row["permissions"]) if row["permissions"] else {}
+            raise HTTPException(status_code=401, detail="Session user no longer exists.")
 
         policies = await get_system_security_policies()
-        global_max = int(policies.get("global_max_idle_timeout_minutes", 30))
-        default_idle = int(policies.get("default_idle_timeout_minutes", 15))
-        user_idle = row.get("idle_timeout_minutes")
-        effective_idle = session.get("effective_idle_timeout_minutes") or min(user_idle or default_idle, global_max)
-        
-        return {
-            "id": str(row["id"]),
-            "username": row["email"],
-            "email": row["email"],
-            "full_name": row["full_name"],
-            "role": row["role_name"] or "Standard User",
-            "role_id": row["role_id"] or "role_standard",
-            "is_superadmin": bool(row["is_superadmin"]),
-            "status": row["status"],
-            "department": row["department"] or "General",
-            "organization_id": str(row["organization_id"]) if row["organization_id"] else None,
-            "organization_name": row["org_name"],
-            "branch_id": str(row["branch_id"]) if row["branch_id"] else None,
-            "branch_name": row["branch_name"],
-            "branch_code": row["branch_code"],
-            "security_groups": ["*"] if row["is_superadmin"] else [],
-            "menu_access": menu_access,
-            "permissions": permissions,
-            "idle_timeout_minutes": user_idle,
-            "effective_idle_timeout_minutes": effective_idle,
-            "global_max_idle_timeout_minutes": global_max,
-        }
+        return _build_user_session_payload(row, policies)
 
 @app.get("/api/v1/auth/sessions")
 async def get_active_sessions(
@@ -767,6 +1107,12 @@ async def get_active_sessions(
 
 @app.post("/api/v1/auth/sessions/revoke")
 async def revoke_session(req: RevokeSessionRequest, session: Dict[str, Any] = Depends(get_current_user_session)):
+    # Verify ownership of target session token unless caller is Superadmin
+    if not session.get("is_superadmin"):
+        user_sessions = await SessionManager.list_active_sessions(session["user_id"])
+        owned_tokens = {s.get("token") for s in user_sessions}
+        if req.token != session.get("token") and req.token not in owned_tokens:
+            raise HTTPException(status_code=403, detail="Access denied: Cannot revoke another user's session.")
     success = await SessionManager.revoke_session(req.token)
     return {"status": "revoked" if success else "failed", "token": req.token}
 
@@ -776,7 +1122,10 @@ async def revoke_other_sessions(
     req: Optional[RevokeOtherSessionsRequest] = None,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
-    target_user_id = user_id or (req.user_id if req else None) or session["user_id"]
+    requested_uid = user_id or (req.user_id if req else None)
+    if requested_uid and str(requested_uid) != str(session.get("user_id")) and not session.get("is_superadmin"):
+        raise HTTPException(status_code=403, detail="Access denied: Cannot revoke sessions belonging to another user.")
+    target_user_id = requested_uid or session["user_id"]
     token_to_keep = (req.token if req and req.token else None) or session.get("token", "")
     count = await SessionManager.revoke_other_sessions(target_user_id, token_to_keep)
     return {"status": "success", "revoked_count": count}
@@ -786,7 +1135,7 @@ async def revoke_other_sessions(
 # ==============================================================================
 @app.get("/api/v1/iam/users")
 async def list_users(session: Dict[str, Any] = Depends(get_current_user_session)):
-    """Returns list of users from PostgreSQL with tenancy and role info."""
+    """Returns list of users from PostgreSQL with tenancy, role, and Windows SSO info."""
     if not (check_permission(session, "users.read") or check_permission(session, "users.manage")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -803,7 +1152,9 @@ async def list_users(session: Dict[str, Any] = Depends(get_current_user_session)
                        r.name as role_name, u.organization_id, o.legal_name as organization_name,
                        u.branch_id, b.name as branch_name, b.code as branch_code,
                        u.department, u.allowed_cidrs, u.date_of_birth, u.age,
-                       u.guardian_name, u.guardian_email, u.created_at, u.updated_at
+                       u.guardian_name, u.guardian_email, u.auth_provider, u.windows_upn,
+                       u.ad_sam_account, u.auto_sso_enabled, u.is_2fa_enabled,
+                       u.created_at, u.updated_at
                 FROM users u
                 LEFT JOIN roles r ON u.role_id = r.id
                 LEFT JOIN organizations o ON u.organization_id = o.id
@@ -821,7 +1172,9 @@ async def list_users(session: Dict[str, Any] = Depends(get_current_user_session)
                        r.name as role_name, u.organization_id, o.legal_name as organization_name,
                        u.branch_id, b.name as branch_name, b.code as branch_code,
                        u.department, u.allowed_cidrs, u.date_of_birth, u.age,
-                       u.guardian_name, u.guardian_email, u.created_at, u.updated_at
+                       u.guardian_name, u.guardian_email, u.auth_provider, u.windows_upn,
+                       u.ad_sam_account, u.auto_sso_enabled, u.is_2fa_enabled,
+                       u.created_at, u.updated_at
                 FROM users u
                 LEFT JOIN roles r ON u.role_id = r.id
                 LEFT JOIN organizations o ON u.organization_id = o.id
@@ -851,6 +1204,11 @@ async def list_users(session: Dict[str, Any] = Depends(get_current_user_session)
                 "age": r["age"],
                 "guardian_name": r["guardian_name"],
                 "guardian_email": r["guardian_email"],
+                "auth_provider": r["auth_provider"] or "local",
+                "windows_upn": r["windows_upn"],
+                "ad_sam_account": r["ad_sam_account"],
+                "auto_sso_enabled": bool(r["auto_sso_enabled"]),
+                "is_2fa_enabled": bool(r["is_2fa_enabled"]),
                 "created_at": r["created_at"].isoformat() if r["created_at"] else None,
                 "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
             })
@@ -866,6 +1224,8 @@ async def create_user(
     require_permission(session, "users.manage")
     pool = get_db_pool()
     clean_email = req.email.strip().lower()
+    clean_upn = req.windows_upn.strip().lower() if req.windows_upn else None
+    clean_sam = req.ad_sam_account.strip() if req.ad_sam_account else None
     
     async with pool.acquire() as conn:
         existing = await conn.fetchval(
@@ -886,23 +1246,31 @@ async def create_user(
                 role_id = matched_role
                 
         is_super = role_id == "role_superadmin" or "superadmin" in (req.role or "").lower()
+        if is_super and not session.get("is_superadmin"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Privilege escalation denied: Only an existing Superadmin can provision a Superadmin user."
+            )
+
         new_id = uuid.uuid4()
         initial_pwd = req.initial_password or "InitPass@2026"
         complexity_err = validate_password_complexity(initial_pwd)
         if complexity_err:
             raise HTTPException(status_code=400, detail=complexity_err)
-        pwd_hash = hash_password(initial_pwd)
+        pwd_hash = await hash_password_async(initial_pwd)
         
         await conn.execute("""
             INSERT INTO users (
                 id, email, full_name, password_hash, status, is_superadmin,
                 organization_id, branch_id, role_id, department, allowed_cidrs,
-                date_of_birth, age, guardian_name, guardian_email
+                date_of_birth, age, guardian_name, guardian_email,
+                auth_provider, windows_upn, ad_sam_account, auto_sso_enabled
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         """, new_id, clean_email, req.full_name, pwd_hash, req.status or "active", is_super,
            org_id, branch_id, role_id, req.department or "Operations", "0.0.0.0/0",
-           req.date_of_birth, req.age, req.guardian_name, req.guardian_email)
+           req.date_of_birth, req.age, req.guardian_name, req.guardian_email,
+           req.auth_provider or "local", clean_upn, clean_sam, bool(req.auto_sso_enabled))
         
         # Fetch created row
         r = await conn.fetchrow("""
@@ -930,6 +1298,10 @@ async def create_user(
             "department": r["department"],
             "date_of_birth": r["date_of_birth"],
             "age": r["age"],
+            "auth_provider": r["auth_provider"] or "local",
+            "windows_upn": r["windows_upn"],
+            "ad_sam_account": r["ad_sam_account"],
+            "auto_sso_enabled": bool(r["auto_sso_enabled"]),
         }
 
 @app.put("/api/v1/iam/users/{user_id}")
@@ -986,6 +1358,11 @@ async def update_user(
             is_super = req.is_superadmin if req.is_superadmin is not None else bool(existing["is_superadmin"])
             status_val = req.status or existing["status"]
             cidrs = req.allowed_cidrs or existing["allowed_cidrs"]
+
+        new_upn = req.windows_upn.strip().lower() if req.windows_upn is not None else existing.get("windows_upn")
+        new_sam = req.ad_sam_account.strip() if req.ad_sam_account is not None else existing.get("ad_sam_account")
+        new_provider = req.auth_provider if req.auth_provider is not None else (existing.get("auth_provider") or "local")
+        new_auto_sso = req.auto_sso_enabled if req.auto_sso_enabled is not None else bool(existing.get("auto_sso_enabled", False))
         
         await conn.execute("""
             UPDATE users SET
@@ -1001,11 +1378,16 @@ async def update_user(
                 guardian_name = COALESCE($11, guardian_name),
                 guardian_email = COALESCE($12, guardian_email),
                 idle_timeout_minutes = $13,
+                windows_upn = $14,
+                ad_sam_account = $15,
+                auth_provider = $16,
+                auto_sso_enabled = $17,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = $1
         """, u_id, req.full_name, req.email, status_val, is_super, role_id,
            req.department, cidrs, req.date_of_birth, req.age,
-           req.guardian_name, req.guardian_email, new_idle)
+           req.guardian_name, req.guardian_email, new_idle,
+           new_upn, new_sam, new_provider, new_auto_sso)
            
         return {"status": "success", "message": "User updated successfully."}
 
@@ -1033,7 +1415,7 @@ async def reset_user_password(
     if complexity_err:
         raise HTTPException(status_code=400, detail=complexity_err)
         
-    hashed_pwd = hash_password(req.password)
+    hashed_pwd = await hash_password_async(req.password)
     async with pool.acquire() as conn:
         if not is_superadmin and not is_self and can_manage:
             target_is_super = await conn.fetchval("SELECT is_superadmin FROM users WHERE id = $1", u_id)
@@ -1620,6 +2002,22 @@ async def request_data_deletion(
     }
 
     _gdpr_deletion_registry[req.user_id] = record
+    try:
+        pool = get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO system_metadata (key, value, updated_at)
+                VALUES ($1, $2, CURRENT_TIMESTAMP)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+            """, f"gdpr:deletion:{req.user_id}", json.dumps(record))
+            try:
+                u_uuid = uuid.UUID(str(req.user_id))
+                await conn.execute("UPDATE users SET status = 'pending_deletion', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND is_superadmin = false", u_uuid)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Failed to persist GDPR deletion request to DB: {e}")
+
     return record
 
 @app.post("/api/v1/compliance/gdpr/cancel-request")
@@ -1635,8 +2033,26 @@ async def cancel_data_deletion(
             detail="Access denied: Cannot cancel GDPR deletion request for another user."
         )
 
+    found = False
     if req.user_id in _gdpr_deletion_registry:
         del _gdpr_deletion_registry[req.user_id]
+        found = True
+
+    try:
+        pool = get_db_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM system_metadata WHERE key = $1", f"gdpr:deletion:{req.user_id}")
+            if res != "DELETE 0":
+                found = True
+            try:
+                u_uuid = uuid.UUID(str(req.user_id))
+                await conn.execute("UPDATE users SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = 'pending_deletion'", u_uuid)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    if found:
         return {
             "status": "active",
             "message": "Data deletion request successfully cancelled. Account restored to normal active status."
@@ -1661,8 +2077,21 @@ async def get_deletion_status(
 
     if user_id in _gdpr_deletion_registry:
         return _gdpr_deletion_registry[user_id]
+
+    try:
+        pool = get_db_pool()
+        async with pool.acquire() as conn:
+            val = await conn.fetchval("SELECT value FROM system_metadata WHERE key = $1", f"gdpr:deletion:{user_id}")
+            if val:
+                rec = json.loads(val)
+                _gdpr_deletion_registry[user_id] = rec
+                return rec
+    except Exception:
+        pass
+
     return {
         "user_id": user_id,
         "status": "active",
         "message": "No active deletion requests. Account in compliance standard."
     }
+

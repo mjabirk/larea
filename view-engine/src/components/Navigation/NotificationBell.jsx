@@ -14,7 +14,10 @@ import {
   Sparkles
 } from 'lucide-react';
 
+import { useAuth } from '../../context/AuthContext';
+
 export function NotificationBell({ onNavigate }) {
+  const { token, isAuthenticated } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -22,14 +25,12 @@ export function NotificationBell({ onNavigate }) {
   const [activeFilter, setActiveFilter] = useState('all'); // 'all' | 'unread'
   const popoverRef = useRef(null);
 
-  const getAuthHeaders = () => {
-    const token = typeof window !== 'undefined'
-      ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
-      : null;
+  const getAuthHeaders = useCallback(() => {
     return token ? { Authorization: `Bearer ${token}` } : {};
-  };
+  }, [token]);
 
   const fetchNotifications = useCallback(async () => {
+    if (!isAuthenticated || !token) return;
     try {
       const res = await fetch('/api/v1/notifications?limit=30', {
         headers: getAuthHeaders(),
@@ -42,13 +43,18 @@ export function NotificationBell({ onNavigate }) {
     } catch (err) {
       console.warn('Failed to fetch notifications:', err);
     }
-  }, []);
+  }, [isAuthenticated, token, getAuthHeaders]);
 
   useEffect(() => {
+    if (!isAuthenticated || !token) {
+      setNotifications([]);
+      setUnreadCount(0);
+      return;
+    }
     fetchNotifications();
     const timer = setInterval(fetchNotifications, 25000); // Polling every 25s
     return () => clearInterval(timer);
-  }, [fetchNotifications]);
+  }, [isAuthenticated, token, fetchNotifications]);
 
   // Handle outside click & Esc key to close popover
   useEffect(() => {

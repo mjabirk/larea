@@ -168,16 +168,31 @@ function MainAppShell() {
     attendanceRecords,
     users,
     switchActiveUser,
+    refreshTenancyData,
+    refreshAttendanceData,
   } = useTenancy();
 
   // Source of truth MUST be the authenticated user session from AuthContext
   const activeUser = authUser || session?.user || currentUser;
 
+  const lastActiveUserIdRef = React.useRef(null);
   React.useEffect(() => {
-    if (activeUser?.id && switchActiveUser) {
-      switchActiveUser(activeUser.id);
+    if (activeUser?.id && lastActiveUserIdRef.current !== activeUser.id) {
+      lastActiveUserIdRef.current = activeUser.id;
+      if (switchActiveUser) {
+        switchActiveUser(activeUser.id);
+      }
     }
-  }, [activeUser?.id, switchActiveUser]);
+  }, [activeUser?.id]);
+
+  const hasLoadedTenancyForTokenRef = React.useRef(null);
+  React.useEffect(() => {
+    if (session?.token && hasLoadedTenancyForTokenRef.current !== session.token) {
+      hasLoadedTenancyForTokenRef.current = session.token;
+      if (refreshTenancyData) refreshTenancyData(session.token);
+      if (refreshAttendanceData) refreshAttendanceData(session.token);
+    }
+  }, [session?.token]);
 
   const { t, language } = useLocale();
   const { themeMode, effectiveTheme, setThemeMode, currentAccent } = useTheme();
@@ -834,7 +849,7 @@ function MainAppShell() {
           ) : (
             <>
               {/* Unified Configuration & Settings Screens */}
-              {['hr_config', 'salary_rules', 'wps_config', 'api_keys', 'orgs', 'compliance_alerts', 'mail_servers', 'mail_templates', 'mail_logs', 'sms_gateways', 'whatsapp_configs', 'whatsapp_accounts', 'whatsapp_templates', 'communication_logs', 'sms_whatsapp_logs', 'automation_triggers'].includes(activeMenuId) && (
+              {['hr_config', 'salary_rules', 'wps_config', 'api_keys', 'orgs', 'windows_sso', 'compliance_alerts', 'mail_servers', 'mail_templates', 'mail_logs', 'sms_gateways', 'whatsapp_configs', 'whatsapp_accounts', 'whatsapp_templates', 'communication_logs', 'sms_whatsapp_logs', 'automation_triggers'].includes(activeMenuId) && (
                 <div className="p-4 sm:p-6">
                   <ConfigurationView activeMenuId={activeMenuId} />
                 </div>
@@ -987,20 +1002,6 @@ function MainAppShell() {
   );
 }
 
-function AuthWrapper({ children }) {
-  const { users, switchActiveUser } = useTenancy();
-  return (
-    <AuthProvider
-      users={users}
-      onUserLogin={(userId) => {
-        switchActiveUser(userId);
-      }}
-    >
-      {children}
-    </AuthProvider>
-  );
-}
-
 function AppContent() {
   const { isSystemInitialized, isLoading, isAuthenticated } = useAuth();
   const [policyModalOpen, setPolicyModalOpen] = useState(false);
@@ -1016,7 +1017,8 @@ function AppContent() {
     setBizModalOpen(true);
   };
 
-  // Boot Loading State (Verifying PostgreSQL connection & initialization status)
+  // 1. Boot Loading State (Verifying PostgreSQL connection & initialization status)
+  // NEVER render protected contexts or trigger redirects while isLoading is true!
   if (isLoading) {
     return (
       <div className="min-h-screen bg-[#0f172a] flex flex-col items-center justify-center font-sans text-slate-100 select-none">
@@ -1030,7 +1032,7 @@ function AppContent() {
     );
   }
 
-  // 1. First-Run Setup: If system is not initialized, force setup wizard
+  // 2. First-Run Setup: If system is not initialized, force setup wizard
   if (!isSystemInitialized) {
     return (
       <div className="app-scalable-root min-h-screen bg-[#0f172a] flex flex-col font-sans text-slate-100">
@@ -1049,7 +1051,7 @@ function AppContent() {
     );
   }
 
-  // 2. Enterprise Authentication: If initialized but unauthenticated, show login screen
+  // 3. Enterprise Authentication: If initialized but unauthenticated, show login screen
   if (!isAuthenticated) {
     return (
       <div className="app-scalable-root min-h-screen bg-[#0f172a] flex flex-col font-sans text-slate-100">
@@ -1071,24 +1073,26 @@ function AppContent() {
     );
   }
 
-  // 3. Authenticated: Render Main Application Shell
-  return <MainAppShell />;
+  // 4. Authenticated: Mount protected contexts (Tenancy, AccessControl, Chat) ONLY when isAuthenticated is confirmed
+  return (
+    <TenancyProvider>
+      <AccessControlProvider>
+        <ChatProvider>
+          <MainAppShell />
+        </ChatProvider>
+      </AccessControlProvider>
+    </TenancyProvider>
+  );
 }
 
 function App() {
   return (
     <ThemeProvider>
-      <TenancyProvider>
-        <LocaleProvider>
-          <AuthWrapper>
-            <AccessControlProvider>
-              <ChatProvider>
-                <AppContent />
-              </ChatProvider>
-            </AccessControlProvider>
-          </AuthWrapper>
-        </LocaleProvider>
-      </TenancyProvider>
+      <LocaleProvider>
+        <AuthProvider>
+          <AppContent />
+        </AuthProvider>
+      </LocaleProvider>
     </ThemeProvider>
   );
 }

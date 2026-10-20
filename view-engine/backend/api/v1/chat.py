@@ -999,13 +999,20 @@ async def _serve_chat_attachment(
     if not mime_type:
         mime_type = "application/octet-stream"
 
-    disposition_type = "attachment" if download else "inline"
+    safe_inline_mimes = {
+        "image/png", "image/jpeg", "image/gif", "image/webp",
+        "application/pdf", "audio/mpeg", "audio/wav", "audio/ogg",
+        "video/mp4", "video/webm"
+    }
+    is_safe_inline = mime_type.lower() in safe_inline_mimes
+    disposition_type = "attachment" if (download or not is_safe_inline) else "inline"
 
     return FileResponse(
         path=target_abs,
         filename=download_name,
-        media_type=mime_type,
-        content_disposition_type=disposition_type
+        media_type=mime_type if is_safe_inline else "application/octet-stream",
+        content_disposition_type=disposition_type,
+        headers={"Content-Security-Policy": "sandbox"}
     )
 
 
@@ -1058,14 +1065,25 @@ async def websocket_channel_endpoint(
     """
     Dedicated channel WebSocket endpoint with automatic reconnection and instant channel broadcast.
     """
+    try:
+        await websocket.accept()
+    except Exception:
+        return
+
     if not token:
-        await websocket.close(code=4001)
+        try:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        except Exception:
+            pass
         return
 
     client_ip = websocket.client.host if websocket.client else "127.0.0.1"
     session = await SessionManager.validate_session(token, client_ip)
     if not session:
-        await websocket.close(code=4001)
+        try:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        except Exception:
+            pass
         return
 
     user_id = str(session.get("id") or session.get("user_id"))
@@ -1073,8 +1091,8 @@ async def websocket_channel_endpoint(
     user_email = session.get("email")
 
     await chat_ws_manager.connect(websocket, channel_id, user_id)
-    # Also register with global multi-room ws_manager for cross-app presence
-    await ws_manager.connect(user_id, websocket, channel_ids=[channel_id])
+    # Register presence on global ws_manager without duplicating room channel_id broadcast
+    await ws_manager.connect(user_id, websocket, channel_ids=[])
 
     try:
         while True:
@@ -1161,14 +1179,25 @@ async def websocket_chat_endpoint(
     Real-time internal chat WebSocket endpoint with multi-room subscription architecture.
     On connect: loads all active channels for the user and subscribes socket to those rooms.
     """
+    try:
+        await websocket.accept()
+    except Exception:
+        return
+
     if not token:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        try:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        except Exception:
+            pass
         return
 
     client_ip = websocket.client.host if websocket.client else "127.0.0.1"
     session = await SessionManager.validate_session(token, client_ip)
     if not session:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        try:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        except Exception:
+            pass
         return
 
     user_id = str(session.get("id") or session.get("user_id"))

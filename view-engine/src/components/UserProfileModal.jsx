@@ -28,7 +28,7 @@ import { DataDeletionManager } from './legal/DataDeletionManager';
 
 export function UserProfileModal({ isOpen, onClose }) {
   const { currentUser, currentOrganization, currentBranch, userMemberships, resetToSetup } = useTenancy();
-  const { getAuthHeaders, currentUser: authUser, user: sessionUser } = useAuth();
+  const { getAuthHeaders, currentUser: authUser, user: sessionUser, refreshCurrentUser } = useAuth();
   const activeUser = authUser || sessionUser || currentUser;
   const {
     t,
@@ -49,7 +49,7 @@ export function UserProfileModal({ isOpen, onClose }) {
     updateThemePreferences,
   } = useTheme();
 
-  const [activeTab, setActiveTab] = useState('appearance'); // 'appearance' | 'localization'
+  const [activeTab, setActiveTab] = useState('appearance'); // 'appearance' | 'localization' | 'security' | 'privacy'
 
   // Local state for staged edits
   const [localThemeMode, setLocalThemeMode] = useState(themeMode);
@@ -64,17 +64,35 @@ export function UserProfileModal({ isOpen, onClose }) {
   const [globalMax, setGlobalMax] = useState(30);
   const [savedSuccess, setSavedSuccess] = useState(false);
 
+  // Windows SSO & 2FA state
+  const [localWindowsUpn, setLocalWindowsUpn] = useState('');
+  const [localAdSamAccount, setLocalAdSamAccount] = useState('');
+  const [localAutoSso, setLocalAutoSso] = useState(false);
+  const [is2FAEnabled, setIs2FAEnabled] = useState(false);
+  const [twoFAEnrollment, setTwoFAEnrollment] = useState(null);
+  const [is2FALoading, setIs2FALoading] = useState(false);
+
   const modalRef = useRef(null);
 
   useEffect(() => {
     if (!isOpen) return;
-    if (currentUser?.idle_timeout_minutes) {
-      setLocalIdleTimeout(String(currentUser.idle_timeout_minutes));
+    setLocalWindowsUpn(activeUser?.windows_upn || '');
+    setLocalAdSamAccount(activeUser?.ad_sam_account || '');
+    setLocalAutoSso(
+      activeUser?.auto_sso_enabled !== undefined
+        ? Boolean(activeUser.auto_sso_enabled)
+        : localStorage.getItem('enterprise_auto_sso') === 'true'
+    );
+    setIs2FAEnabled(Boolean(activeUser?.is_2fa_enabled));
+    setTwoFAEnrollment(null);
+
+    if (activeUser?.idle_timeout_minutes) {
+      setLocalIdleTimeout(String(activeUser.idle_timeout_minutes));
     } else {
       setLocalIdleTimeout('');
     }
-    if (currentUser?.global_max_idle_timeout_minutes) {
-      setGlobalMax(currentUser.global_max_idle_timeout_minutes);
+    if (activeUser?.global_max_idle_timeout_minutes) {
+      setGlobalMax(activeUser.global_max_idle_timeout_minutes);
     } else {
       fetch('/api/v1/settings/security-policies', {
         headers: getAuthHeaders ? getAuthHeaders() : {},
@@ -87,7 +105,7 @@ export function UserProfileModal({ isOpen, onClose }) {
         })
         .catch(() => {});
     }
-  }, [isOpen, currentUser, getAuthHeaders]);
+  }, [isOpen, activeUser, getAuthHeaders]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -121,6 +139,45 @@ export function UserProfileModal({ isOpen, onClose }) {
 
   if (!isOpen) return null;
 
+  const handleEnroll2FA = async () => {
+    setIs2FALoading(true);
+    try {
+      const res = await fetch('/api/v1/auth/2fa/setup', {
+        method: 'POST',
+        headers: getAuthHeaders ? getAuthHeaders() : {},
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTwoFAEnrollment(data);
+        setIs2FAEnabled(true);
+        if (refreshCurrentUser) await refreshCurrentUser();
+      }
+    } catch (e) {
+      console.error('Failed to setup 2FA:', e);
+    } finally {
+      setIs2FALoading(false);
+    }
+  };
+
+  const handleDisable2FA = async () => {
+    setIs2FALoading(true);
+    try {
+      const res = await fetch('/api/v1/auth/2fa/disable', {
+        method: 'POST',
+        headers: getAuthHeaders ? getAuthHeaders() : {},
+      });
+      if (res.ok) {
+        setTwoFAEnrollment(null);
+        setIs2FAEnabled(false);
+        if (refreshCurrentUser) await refreshCurrentUser();
+      }
+    } catch (e) {
+      console.error('Failed to disable 2FA:', e);
+    } finally {
+      setIs2FALoading(false);
+    }
+  };
+
   const handleApply = (e) => {
     e.preventDefault();
 
@@ -143,14 +200,21 @@ export function UserProfileModal({ isOpen, onClose }) {
       accentColor: localAccent,
     });
 
-    // 3. Save idle_timeout_minutes to /api/v1/iam/users/{id}
-    if (currentUser?.id) {
+    if (localAutoSso) {
+      localStorage.setItem('enterprise_auto_sso', 'true');
+    } else {
+      localStorage.removeItem('enterprise_auto_sso');
+    }
+
+    // 3. Save idle_timeout_minutes & Windows SSO preferences to /api/v1/iam/users/{id}
+    const targetUid = activeUser?.id || currentUser?.id;
+    if (targetUid) {
       const parsedTimeout = localIdleTimeout === '' ? null : parseInt(localIdleTimeout, 10);
       const token = typeof window !== 'undefined'
         ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
         : null;
 
-      fetch(`/api/v1/iam/users/${currentUser.id}`, {
+      fetch(`/api/v1/iam/users/${targetUid}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -158,15 +222,21 @@ export function UserProfileModal({ isOpen, onClose }) {
         },
         body: JSON.stringify({
           idle_timeout_minutes: parsedTimeout,
+          windows_upn: localWindowsUpn.trim() || null,
+          ad_sam_account: localAdSamAccount.trim() || null,
+          auto_sso_enabled: Boolean(localAutoSso),
         }),
       })
-        .then(() => {
+        .then(async () => {
           if (currentUser) {
             currentUser.idle_timeout_minutes = parsedTimeout;
             currentUser.effective_idle_timeout_minutes = Math.min(parsedTimeout || 15, globalMax);
           }
+          if (refreshCurrentUser) {
+            await refreshCurrentUser();
+          }
         })
-        .catch((e) => console.error('Failed to save inactivity timeout:', e));
+        .catch((e) => console.error('Failed to save profile security preferences:', e));
     }
 
     setSavedSuccess(true);
@@ -252,6 +322,19 @@ export function UserProfileModal({ isOpen, onClose }) {
 
           <button
             type="button"
+            onClick={() => setActiveTab('security')}
+            className={`pb-2.5 border-b-2 transition cursor-pointer flex items-center gap-1.5 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+              activeTab === 'security'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400 font-bold'
+                : 'border-transparent text-slate-500 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+            <span>Windows SSO & 2FA</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab('privacy')}
             className={`pb-2.5 border-b-2 transition cursor-pointer flex items-center gap-1.5 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
               activeTab === 'privacy'
@@ -263,6 +346,7 @@ export function UserProfileModal({ isOpen, onClose }) {
             <span>Privacy & GDPR</span>
           </button>
         </div>
+
 
         {/* Modal Body */}
         <form onSubmit={handleApply} className="p-6 space-y-6">
@@ -513,10 +597,141 @@ export function UserProfileModal({ isOpen, onClose }) {
             </div>
           )}
 
-          {/* TAB 3: DATA PRIVACY & GDPR SUBJECT RIGHTS */}
+          {/* TAB 3: WINDOWS SSO & MULTI-FACTOR SECURITY */}
+          {activeTab === 'security' && (
+            <div className="space-y-4 animate-fadeIn text-xs">
+              {/* Windows Single Sign-On Binding Card */}
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 font-bold text-slate-900 dark:text-white">
+                    <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                    <span>Windows Single Sign-On (Entra ID / Kerberos / AD)</span>
+                  </div>
+                  <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 font-mono text-[10px] font-semibold">
+                    {activeUser?.auth_provider || 'local'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  Link your corporate Windows User Principal Name (UPN) or Active Directory account so you can sign in with a single click from your Windows workstation browser.
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                      Windows UPN / Entra ID Email
+                    </label>
+                    <input
+                      type="text"
+                      value={localWindowsUpn}
+                      onChange={(e) => setLocalWindowsUpn(e.target.value)}
+                      placeholder="user@company.com"
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-xs font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                      AD Domain Account (sAMAccountName)
+                    </label>
+                    <input
+                      type="text"
+                      value={localAdSamAccount}
+                      onChange={(e) => setLocalAdSamAccount(e.target.value)}
+                      placeholder="CORP\username"
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-xs font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
+                </div>
+
+                <label className="flex items-start gap-2.5 pt-2 border-t border-slate-200/70 dark:border-slate-700/60 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localAutoSso}
+                    onChange={(e) => setLocalAutoSso(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 mt-0.5 cursor-pointer"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-800 dark:text-slate-200 block">
+                      Enable Automatic Windows Sign-In on Launch
+                    </span>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                      Automatically authenticate via Integrated Windows Authentication (SPNEGO/Kerberos) when opening the ERP. Signing out manually pauses auto-login until your next sign-in.
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {/* Multi-Factor Authentication (TOTP 2FA) Card */}
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 font-bold text-slate-900 dark:text-white">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                      <span>Multi-Factor Authentication (TOTP 2FA)</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      Protect your account with Microsoft Authenticator, Google Authenticator, or any RFC-6238 TOTP app.
+                    </p>
+                  </div>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                      is2FAEnabled
+                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                        : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {is2FAEnabled ? 'Enabled' : 'Not Enrolled'}
+                  </span>
+                </div>
+
+                {twoFAEnrollment?.qr_code_base64 && (
+                  <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-emerald-500/30 flex flex-col sm:flex-row items-center gap-4">
+                    <img
+                      src={twoFAEnrollment.qr_code_base64}
+                      alt="TOTP QR Code"
+                      className="w-28 h-28 rounded-lg border border-slate-200 dark:border-slate-700 p-1 bg-white shrink-0"
+                    />
+                    <div className="space-y-1.5 text-[11px]">
+                      <div className="font-bold text-emerald-600 dark:text-emerald-400">
+                        Scan with Microsoft or Google Authenticator
+                      </div>
+                      <p className="text-slate-500 dark:text-slate-400">
+                        Scan this QR code in your authenticator app, or enter the secret key manually:
+                      </p>
+                      <code className="block px-2.5 py-1 rounded bg-slate-100 dark:bg-slate-800 font-mono text-xs text-slate-800 dark:text-slate-200 select-all">
+                        {twoFAEnrollment.secret}
+                      </code>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  {is2FAEnabled && (
+                    <button
+                      type="button"
+                      disabled={is2FALoading}
+                      onClick={handleDisable2FA}
+                      className="px-3 py-1.5 rounded-lg border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-semibold text-xs cursor-pointer transition"
+                    >
+                      Disable 2FA
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={is2FALoading}
+                    onClick={handleEnroll2FA}
+                    className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs cursor-pointer transition"
+                  >
+                    {is2FAEnabled ? 'Rotate 2FA Secret / Show QR' : 'Enable Authenticator 2FA'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: DATA PRIVACY & GDPR SUBJECT RIGHTS */}
           {activeTab === 'privacy' && (
             <div className="space-y-4 animate-fadeIn">
-              <DataDeletionManager user={currentUser} />
+              <DataDeletionManager user={activeUser} />
             </div>
           )}
 

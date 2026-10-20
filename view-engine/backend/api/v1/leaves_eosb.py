@@ -342,6 +342,10 @@ async def approve_leave_request(
             user_id, author_name = await resolve_audit_author(conn, session)
             is_super = session.get("is_superadmin")
             has_manage = check_permission(session, "payroll.manage") or check_permission(session, "hr.salary_manage")
+            can_approve_l1 = is_super or has_manage or check_permission(session, "employees.update") or check_permission(session, "attendances.approve")
+
+            if not can_approve_l1:
+                raise HTTPException(status_code=403, detail="Access denied: Supervisor or HR privileges required to approve leave requests.")
 
             # Fast-track check
             if payload.fast_track:
@@ -356,6 +360,8 @@ async def approve_leave_request(
                     l1_by = author_name
                     l2_by = leave["level2_approved_by"]
                 elif current_status == "pending_hr":
+                    if not is_super and not has_manage:
+                        raise HTTPException(status_code=403, detail="Level-2 final approval requires HR Director or Payroll Manager privileges.")
                     new_status = "approved"
                     l1_by = leave["level1_approved_by"]
                     l2_by = author_name

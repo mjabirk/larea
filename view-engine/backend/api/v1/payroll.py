@@ -409,14 +409,20 @@ async def create_payroll_batch(
             if not org_uuid:
                 org_uuid = await conn.fetchval("SELECT id FROM organizations LIMIT 1;")
 
-            # Generate unique batch code
-            existing_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM payroll_batches WHERE salary_year_month = $1;", ym
-            ) or 0
-            if existing_count == 0:
-                batch_code = f"PAY-{ym}"
+            # Generate collision-safe unique batch code
+            base_code = f"PAY-{ym}"
+            exists = await conn.fetchval("SELECT 1 FROM payroll_batches WHERE batch_code = $1;", base_code)
+            if not exists:
+                batch_code = base_code
             else:
-                batch_code = f"PAY-{ym}-{existing_count + 1:02d}"
+                seq = 2
+                while True:
+                    candidate = f"PAY-{ym}-{seq:02d}"
+                    taken = await conn.fetchval("SELECT 1 FROM payroll_batches WHERE batch_code = $1;", candidate)
+                    if not taken:
+                        batch_code = candidate
+                        break
+                    seq += 1
 
             title = payload.title.strip() if payload.title and payload.title.strip() else f"Payroll - {ym}"
             batch_id = uuid.uuid4()
@@ -735,8 +741,9 @@ async def lock_payroll_batch(
                     status = 'synced',
                     updated_at = CURRENT_TIMESTAMP
                 WHERE TO_CHAR(check_in, 'YYYY-MM') = $1
-                  AND LOWER(status) = 'verified';
-            """, ym)
+                  AND LOWER(status) = 'verified'
+                  AND employee_id IN (SELECT employee_id FROM payslips WHERE batch_id = $2::uuid);
+            """, ym, b_uuid)
 
             await conn.execute("""
                 INSERT INTO audit_logs (
@@ -1385,6 +1392,9 @@ async def approve_payroll_adjustment(
     fast_track = payload.fast_track if payload else False
     is_super = session.get("is_superadmin") or "*" in session.get("security_groups", [])
     has_payroll_manage = check_permission(session, "payroll.manage") or is_super
+    can_approve_l1 = has_payroll_manage or check_permission(session, "employees.update") or check_permission(session, "attendances.approve")
+    if not can_approve_l1:
+        raise HTTPException(status_code=403, detail="Access denied: Supervisor or Payroll Manager privileges required to approve adjustments.")
 
     async with pool.acquire() as conn:
         async with conn.transaction():

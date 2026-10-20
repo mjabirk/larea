@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import { useAuth } from './AuthContext';
 
 const TenancyContext = createContext(null);
 
@@ -15,7 +16,23 @@ const EMPTY_TENANCY_DATA = {
   activeBranchId: null,
 };
 
+const getAuthenticatedUserId = () => {
+  try {
+    const raw = typeof window !== 'undefined'
+      ? (localStorage.getItem('enterprise_session_cache') || sessionStorage.getItem('enterprise_session_cache'))
+      : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return parsed?.user?.id || parsed?.id || parsed?.user_id || null;
+    }
+  } catch (e) {
+    // ignore
+  }
+  return null;
+};
+
 export function TenancyProvider({ children }) {
+  const { isAuthenticated, isLoading, token } = useAuth();
   const [tenancyState, setTenancyState] = useState(EMPTY_TENANCY_DATA);
 
   // Attendance Records Store
@@ -28,19 +45,24 @@ export function TenancyProvider({ children }) {
     }
   });
 
-  const getAuthHeaders = () => {
-    const token = typeof window !== 'undefined'
-      ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
-      : null;
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
+  const [isTenancyLoading, setIsTenancyLoading] = useState(false);
+
+  const getAuthHeaders = useCallback((customToken = null) => {
+    const activeToken = customToken || token;
+    return activeToken ? { Authorization: `Bearer ${activeToken}` } : {};
+  }, [token]);
 
   // Fetch live Tenancy & User data from PostgreSQL backend
-  const refreshTenancyData = useCallback(async () => {
+  const refreshTenancyData = useCallback(async (customToken = null) => {
+    const headers = getAuthHeaders(customToken);
+    if (!headers.Authorization) {
+      return;
+    }
+    setIsTenancyLoading(true);
     try {
       const [tenancyRes, usersRes] = await Promise.all([
-        fetch('/api/v1/iam/tenancy', { headers: getAuthHeaders() }).catch(() => null),
-        fetch('/api/v1/iam/users', { headers: getAuthHeaders() }).catch(() => null),
+        fetch('/api/v1/iam/tenancy', { headers }).catch(() => null),
+        fetch('/api/v1/iam/users', { headers }).catch(() => null),
       ]);
 
       let orgs = [];
@@ -68,21 +90,6 @@ export function TenancyProvider({ children }) {
           role: u.role || 'Standard User',
         }));
 
-        const getAuthenticatedUserId = () => {
-          try {
-            const raw = typeof window !== 'undefined'
-              ? (localStorage.getItem('enterprise_session_cache') || sessionStorage.getItem('enterprise_session_cache'))
-              : null;
-            if (raw) {
-              const parsed = JSON.parse(raw);
-              return parsed?.user?.id || parsed?.id || null;
-            }
-          } catch (e) {
-            // ignore
-          }
-          return null;
-        };
-
         const authUid = getAuthenticatedUserId();
 
         setTenancyState((prev) => ({
@@ -99,15 +106,21 @@ export function TenancyProvider({ children }) {
       }
     } catch (err) {
       console.warn('Failed to load tenancy data from backend:', err);
+    } finally {
+      setIsTenancyLoading(false);
     }
-  }, []);
+  }, [getAuthHeaders]);
 
-  const refreshAttendanceData = useCallback(async () => {
+  const refreshAttendanceData = useCallback(async (customToken = null) => {
     try {
-      const res = await fetch('/api/v1/attendance', { headers: getAuthHeaders() });
+      const headers = getAuthHeaders(customToken);
+      if (!headers.Authorization) {
+        return;
+      }
+      const res = await fetch('/api/v1/attendance', { headers });
       if (res.ok) {
         const data = await res.json();
-        if (data.records && Array.isArray(data.records) && data.records.length > 0) {
+        if (data.records && Array.isArray(data.records)) {
           setAttendanceRecords(data.records);
           localStorage.setItem('enterprise_attendance_records', JSON.stringify(data.records));
         }
@@ -115,35 +128,68 @@ export function TenancyProvider({ children }) {
     } catch (e) {
       console.warn('Failed to load attendance records from backend:', e);
     }
-  }, []);
+  }, [getAuthHeaders]);
 
   useEffect(() => {
+    if (isLoading || !isAuthenticated || !token) {
+      setTenancyState(EMPTY_TENANCY_DATA);
+      setAttendanceRecords([]);
+      return;
+    }
+
     let isMounted = true;
     const initializeData = async () => {
       try {
-        await refreshTenancyData();
+        await refreshTenancyData(token);
         if (isMounted) {
-          await refreshAttendanceData();
+          await refreshAttendanceData(token);
         }
       } catch (err) {
         console.warn('Initial data load error:', err);
       }
     };
     initializeData();
+
+    // Listen for authentication changes (login, session restored, logout)
+    const handleAuthChange = (e) => {
+      const detail = e?.detail;
+      if (detail?.type === 'login' || detail?.type === 'session_restored') {
+        const authToken = detail?.token;
+        if (authToken) {
+          refreshTenancyData(authToken);
+          refreshAttendanceData(authToken);
+        }
+        if (detail?.user?.id) {
+          setTenancyState((prev) => ({
+            ...prev,
+            activeUserId: detail.user.id,
+          }));
+        }
+      } else if (detail?.type === 'logout') {
+        setTenancyState(EMPTY_TENANCY_DATA);
+        setAttendanceRecords([]);
+      }
+    };
+
+    window.addEventListener('larea-auth-change', handleAuthChange);
     return () => {
       isMounted = false;
+      window.removeEventListener('larea-auth-change', handleAuthChange);
     };
-  }, [refreshTenancyData, refreshAttendanceData]);
+  }, [isLoading, isAuthenticated, token, refreshTenancyData, refreshAttendanceData]);
 
   // Synchronize activeUserId with logged-in user session in storage
   useEffect(() => {
     const syncAuthUser = () => {
       const authUid = getAuthenticatedUserId();
       if (authUid && tenancyState.activeUserId !== authUid) {
-        setTenancyState((prev) => ({
-          ...prev,
-          activeUserId: authUid,
-        }));
+        setTenancyState((prev) => {
+          if (prev.activeUserId === authUid) return prev;
+          return {
+            ...prev,
+            activeUserId: authUid,
+          };
+        });
       }
     };
     syncAuthUser();
@@ -152,80 +198,95 @@ export function TenancyProvider({ children }) {
   }, [tenancyState.activeUserId]);
 
   // Active entities
-  const getAuthenticatedUserId = () => {
-    try {
-      const raw = typeof window !== 'undefined'
-        ? (localStorage.getItem('enterprise_session_cache') || sessionStorage.getItem('enterprise_session_cache'))
-        : null;
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return parsed?.user?.id || parsed?.id || parsed?.user_id || null;
-      }
-    } catch (e) {
-      // ignore
-    }
-    return null;
-  };
-
   const currentAuthUid = getAuthenticatedUserId();
   const targetUserId = currentAuthUid || tenancyState.activeUserId;
-  const currentUser =
-    (targetUserId ? tenancyState.users.find((u) => u.id === targetUserId) : null) ||
-    (!currentAuthUid ? tenancyState.users[0] : null) ||
-    null;
-
-  const currentOrganization =
-    tenancyState.organizations.find((o) => o.id === tenancyState.activeOrgId) ||
-    tenancyState.organizations[0] ||
-    null;
-
-  const currentBranch =
-    tenancyState.branches.find((b) => b.id === tenancyState.activeBranchId) ||
-    tenancyState.branches[0] ||
-    null;
-
-  const memberships =
-    tenancyState.organization_memberships || tenancyState.memberships || [];
-
-  const userMemberships = memberships.filter((m) => m.user_id === currentUser?.id);
-  const userOrganizations = tenancyState.organizations.filter((o) =>
-    userMemberships.some((m) => m.organization_id === o.id)
-  );
-  const userBranchesInCurrentOrg = tenancyState.branches.filter(
-    (b) =>
-      b.organization_id === currentOrganization?.id &&
-      userMemberships.some((m) => m.branch_id === b.id)
-  );
-
-  const switchOrganization = (orgId) => {
-    const targetBranches = tenancyState.branches.filter(
-      (b) => b.organization_id === orgId
+  const currentUser = useMemo(() => {
+    return (
+      (targetUserId ? tenancyState.users.find((u) => u.id === targetUserId) : null) ||
+      (!currentAuthUid ? tenancyState.users[0] : null) ||
+      null
     );
-    setTenancyState((prev) => ({
-      ...prev,
-      activeOrgId: orgId,
-      activeBranchId: targetBranches[0]?.id || prev.activeBranchId,
-    }));
-  };
+  }, [targetUserId, tenancyState.users, currentAuthUid]);
 
-  const switchBranch = (branchId) => {
-    const targetBranch = tenancyState.branches.find((b) => b.id === branchId);
-    setTenancyState((prev) => ({
-      ...prev,
-      activeBranchId: branchId,
-      activeOrgId: targetBranch ? targetBranch.organization_id : prev.activeOrgId,
-    }));
-  };
+  const currentOrganization = useMemo(() => {
+    return (
+      tenancyState.organizations.find((o) => o.id === tenancyState.activeOrgId) ||
+      tenancyState.organizations[0] ||
+      null
+    );
+  }, [tenancyState.organizations, tenancyState.activeOrgId]);
 
-  const switchActiveUser = (userId) => {
-    setTenancyState((prev) => ({
-      ...prev,
-      activeUserId: userId,
-    }));
-  };
+  const currentBranch = useMemo(() => {
+    return (
+      tenancyState.branches.find((b) => b.id === tenancyState.activeBranchId) ||
+      tenancyState.branches[0] ||
+      null
+    );
+  }, [tenancyState.branches, tenancyState.activeBranchId]);
+
+  const memberships = useMemo(() => {
+    return tenancyState.organization_memberships || tenancyState.memberships || [];
+  }, [tenancyState.organization_memberships, tenancyState.memberships]);
+
+  const userMemberships = useMemo(() => {
+    if (!currentUser?.id) return [];
+    return memberships.filter((m) => m.user_id === currentUser.id);
+  }, [memberships, currentUser?.id]);
+
+  const userOrganizations = useMemo(() => {
+    return tenancyState.organizations.filter((o) =>
+      userMemberships.some((m) => m.organization_id === o.id)
+    );
+  }, [tenancyState.organizations, userMemberships]);
+
+  const userBranchesInCurrentOrg = useMemo(() => {
+    if (!currentOrganization?.id) return [];
+    return tenancyState.branches.filter(
+      (b) =>
+        b.organization_id === currentOrganization.id &&
+        userMemberships.some((m) => m.branch_id === b.id)
+    );
+  }, [tenancyState.branches, currentOrganization?.id, userMemberships]);
+
+  const switchOrganization = useCallback((orgId) => {
+    if (!orgId) return;
+    setTenancyState((prev) => {
+      if (prev.activeOrgId === orgId) return prev;
+      const targetBranches = prev.branches.filter((b) => b.organization_id === orgId);
+      return {
+        ...prev,
+        activeOrgId: orgId,
+        activeBranchId: targetBranches[0]?.id || prev.activeBranchId,
+      };
+    });
+  }, []);
+
+  const switchBranch = useCallback((branchId) => {
+    if (!branchId) return;
+    setTenancyState((prev) => {
+      if (prev.activeBranchId === branchId) return prev;
+      const targetBranch = prev.branches.find((b) => b.id === branchId);
+      return {
+        ...prev,
+        activeBranchId: branchId,
+        activeOrgId: targetBranch ? targetBranch.organization_id : prev.activeOrgId,
+      };
+    });
+  }, []);
+
+  const switchActiveUser = useCallback((userId) => {
+    if (!userId) return;
+    setTenancyState((prev) => {
+      if (prev.activeUserId === userId) return prev;
+      return {
+        ...prev,
+        activeUserId: userId,
+      };
+    });
+  }, []);
 
   // Complete setup wizard helper
-  const completeSetupWizard = ({ orgData, adminData, prefData }) => {
+  const completeSetupWizard = useCallback(({ orgData, adminData, prefData }) => {
     // Re-sync directly from PostgreSQL
     refreshTenancyData();
     return {
@@ -235,22 +296,28 @@ export function TenancyProvider({ children }) {
         is_superadmin: true,
       },
     };
-  };
+  }, [refreshTenancyData]);
 
   // Create User: Persists to PostgreSQL via POST /api/v1/iam/users
-  const createUser = async ({
+  const createUser = useCallback(async ({
     full_name,
     email,
     role,
+    role_id,
+    department,
     branch_id,
     initial_password,
     date_of_birth,
     age,
     guardian_name,
     guardian_email,
+    windows_upn,
+    ad_sam_account,
+    auth_provider,
+    auto_sso_enabled,
   }) => {
-    const targetBranchId = branch_id || currentBranch?.id || tenancyState.branches[0]?.id;
-    const targetOrgId = currentOrganization?.id || tenancyState.organizations[0]?.id;
+    const targetBranchId = branch_id || tenancyState.activeBranchId || tenancyState.branches[0]?.id;
+    const targetOrgId = tenancyState.activeOrgId || tenancyState.organizations[0]?.id;
 
     try {
       const res = await fetch('/api/v1/iam/users', {
@@ -260,6 +327,8 @@ export function TenancyProvider({ children }) {
           full_name,
           email,
           role,
+          role_id,
+          department: department || 'Operations',
           branch_id: targetBranchId,
           organization_id: targetOrgId,
           initial_password: initial_password || 'InitPass@2026',
@@ -267,6 +336,10 @@ export function TenancyProvider({ children }) {
           age,
           guardian_name,
           guardian_email,
+          windows_upn: windows_upn || null,
+          ad_sam_account: ad_sam_account || null,
+          auth_provider: auth_provider || 'local',
+          auto_sso_enabled: Boolean(auto_sso_enabled),
         }),
       });
 
@@ -287,10 +360,10 @@ export function TenancyProvider({ children }) {
       console.error('Error creating user in PostgreSQL:', err);
       throw err;
     }
-  };
+  }, [tenancyState.activeBranchId, tenancyState.branches, tenancyState.activeOrgId, tenancyState.organizations]);
 
   // Update User: Persists to PostgreSQL via PUT /api/v1/iam/users/{id}
-  const updateUser = async (userId, updatedFields) => {
+  const updateUser = useCallback(async (userId, updatedFields) => {
     try {
       await fetch(`/api/v1/iam/users/${userId}`, {
         method: 'PUT',
@@ -310,10 +383,10 @@ export function TenancyProvider({ children }) {
       });
       return { ...prev, users: updatedUsers };
     });
-  };
+  }, []);
 
   // Reset User Password: Calls POST /api/v1/iam/users/{id}/reset-password
-  const resetUserPassword = async (userId, newPassword) => {
+  const resetUserPassword = useCallback(async (userId, newPassword) => {
     try {
       const res = await fetch(`/api/v1/iam/users/${userId}/reset-password`, {
         method: 'POST',
@@ -329,10 +402,10 @@ export function TenancyProvider({ children }) {
       console.error('Failed to persist reset password in backend:', err);
       throw err;
     }
-  };
+  }, []);
 
   // Delete User: Calls DELETE /api/v1/iam/users/{id}
-  const deleteUser = async (userId) => {
+  const deleteUser = useCallback(async (userId) => {
     try {
       await fetch(`/api/v1/iam/users/${userId}`, {
         method: 'DELETE',
@@ -346,9 +419,9 @@ export function TenancyProvider({ children }) {
       ...prev,
       users: prev.users.filter((u) => u.id !== userId),
     }));
-  };
+  }, []);
 
-  const requestDataDeletion = (userId, deletionMetadata = {}) => {
+  const requestDataDeletion = useCallback((userId, deletionMetadata = {}) => {
     setTenancyState((prev) => {
       const updatedUsers = prev.users.map((u) => {
         if (u.id === userId) {
@@ -370,9 +443,9 @@ export function TenancyProvider({ children }) {
       });
       return { ...prev, users: updatedUsers };
     });
-  };
+  }, []);
 
-  const cancelDataDeletion = (userId) => {
+  const cancelDataDeletion = useCallback((userId) => {
     setTenancyState((prev) => {
       const updatedUsers = prev.users.map((u) => {
         if (u.id === userId) {
@@ -387,10 +460,10 @@ export function TenancyProvider({ children }) {
       });
       return { ...prev, users: updatedUsers };
     });
-  };
+  }, []);
 
   // Attendance management (persisted to PostgreSQL /api/v1/attendance)
-  const addAttendanceRecord = async (record) => {
+  const addAttendanceRecord = useCallback(async (record) => {
     try {
       const payload = {
         employee_id: record.employee_id,
@@ -428,9 +501,9 @@ export function TenancyProvider({ children }) {
       localStorage.setItem('enterprise_attendance_records', JSON.stringify(updated));
       return updated;
     });
-  };
+  }, []);
 
-  const updateAttendanceRecord = async (id, updatedFields) => {
+  const updateAttendanceRecord = useCallback(async (id, updatedFields) => {
     try {
       const res = await fetch(`/api/v1/attendance/${id}`, {
         method: 'PUT',
@@ -457,9 +530,9 @@ export function TenancyProvider({ children }) {
       localStorage.setItem('enterprise_attendance_records', JSON.stringify(updated));
       return updated;
     });
-  };
+  }, []);
 
-  const deleteAttendanceRecord = async (id) => {
+  const deleteAttendanceRecord = useCallback(async (id) => {
     try {
       await fetch(`/api/v1/attendance/${id}`, {
         method: 'DELETE',
@@ -474,37 +547,85 @@ export function TenancyProvider({ children }) {
       localStorage.setItem('enterprise_attendance_records', JSON.stringify(updated));
       return updated;
     });
-  };
+  }, []);
 
-  const value = {
-    organizations: tenancyState.organizations,
-    branches: tenancyState.branches,
-    users: tenancyState.users,
-    organization_memberships: memberships,
-    memberships: memberships,
-    user_preferences: tenancyState.user_preferences || [],
-    attendanceRecords,
-    currentUser,
-    currentOrganization,
-    currentBranch,
-    userOrganizations,
-    userBranchesInCurrentOrg,
-    userMemberships,
-    switchOrganization,
-    switchBranch,
-    switchActiveUser,
-    completeSetupWizard,
-    createUser,
-    updateUser,
-    deleteUser,
-    requestDataDeletion,
-    cancelDataDeletion,
-    resetUserPassword,
-    addAttendanceRecord,
-    updateAttendanceRecord,
-    deleteAttendanceRecord,
-    refreshTenancyData,
-  };
+  const resetToSetup = useCallback(() => {
+    window.history.pushState(null, '', '/?view=config');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, []);
+
+  const closeSetupWizard = useCallback(() => {
+    window.history.replaceState(null, '', '/?view=launcher');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, []);
+
+  const value = useMemo(
+    () => ({
+      organizations: tenancyState.organizations,
+      branches: tenancyState.branches,
+      users: tenancyState.users,
+      organization_memberships: memberships,
+      memberships,
+      user_preferences: tenancyState.user_preferences || [],
+      attendanceRecords,
+      currentUser,
+      currentOrganization,
+      currentBranch,
+      userOrganizations,
+      userBranchesInCurrentOrg,
+      userMemberships,
+      switchOrganization,
+      switchBranch,
+      switchActiveUser,
+      completeSetupWizard,
+      resetToSetup,
+      closeSetupWizard,
+      createUser,
+      updateUser,
+      deleteUser,
+      requestDataDeletion,
+      cancelDataDeletion,
+      resetUserPassword,
+      addAttendanceRecord,
+      updateAttendanceRecord,
+      deleteAttendanceRecord,
+      refreshTenancyData,
+      refreshAttendanceData,
+      isTenancyLoading,
+    }),
+    [
+      tenancyState.organizations,
+      tenancyState.branches,
+      tenancyState.users,
+      tenancyState.user_preferences,
+      memberships,
+      attendanceRecords,
+      currentUser,
+      currentOrganization,
+      currentBranch,
+      userOrganizations,
+      userBranchesInCurrentOrg,
+      userMemberships,
+      switchOrganization,
+      switchBranch,
+      switchActiveUser,
+      completeSetupWizard,
+      resetToSetup,
+      closeSetupWizard,
+      createUser,
+      updateUser,
+      deleteUser,
+      requestDataDeletion,
+      cancelDataDeletion,
+      resetUserPassword,
+      addAttendanceRecord,
+      updateAttendanceRecord,
+      deleteAttendanceRecord,
+      refreshTenancyData,
+      refreshAttendanceData,
+      isTenancyLoading,
+    ]
+  );
 
   return (
     <TenancyContext.Provider value={value}>{children}</TenancyContext.Provider>
@@ -514,7 +635,39 @@ export function TenancyProvider({ children }) {
 export function useTenancy() {
   const context = useContext(TenancyContext);
   if (!context) {
-    throw new Error('useTenancy must be used within a TenancyProvider');
+    return {
+      organizations: [],
+      branches: [],
+      users: [],
+      organization_memberships: [],
+      memberships: [],
+      user_preferences: [],
+      attendanceRecords: [],
+      currentUser: null,
+      currentOrganization: null,
+      currentBranch: null,
+      userOrganizations: [],
+      userBranchesInCurrentOrg: [],
+      userMemberships: [],
+      switchOrganization: () => {},
+      switchBranch: () => {},
+      switchActiveUser: () => {},
+      completeSetupWizard: () => {},
+      resetToSetup: () => {},
+      closeSetupWizard: () => {},
+      createUser: async () => {},
+      updateUser: async () => {},
+      deleteUser: async () => {},
+      requestDataDeletion: () => {},
+      cancelDataDeletion: () => {},
+      resetUserPassword: async () => {},
+      addAttendanceRecord: async () => {},
+      updateAttendanceRecord: async () => {},
+      deleteAttendanceRecord: async () => {},
+      refreshTenancyData: async () => {},
+      refreshAttendanceData: async () => {},
+      isTenancyLoading: false,
+    };
   }
   return context;
 }

@@ -523,107 +523,117 @@ async def create_employee_contract(
         raise HTTPException(status_code=400, detail="Invalid employee UUID.")
 
     async with pool.acquire() as conn:
-        emp = await conn.fetchrow("SELECT id, full_name, employee_number, organization_id FROM employees WHERE id = $1;", emp_uuid)
-        if not emp:
-            raise HTTPException(status_code=404, detail="Employee not found.")
+        async with conn.transaction():
+            emp = await conn.fetchrow("SELECT id, full_name, employee_number, organization_id FROM employees WHERE id = $1;", emp_uuid)
+            if not emp:
+                raise HTTPException(status_code=404, detail="Employee not found.")
 
-        # Generate contract reference if missing
-        if not payload.contract_reference:
-            current_year = datetime.datetime.now().year
-            seq = await conn.fetchval("""
-                SELECT COUNT(*) FROM employee_contracts WHERE employee_id = $1;
-            """, emp_uuid) + 1
-            ref = f"CNT-{current_year}-{emp['employee_number'].replace('EMP-', '')}-{seq}"
-        else:
-            ref = payload.contract_reference.strip().upper()
-
-        new_contract_id = uuid.uuid4()
-        start_d = parse_date(payload.start_date)
-        end_d = parse_date(payload.end_date)
-        wage_base = float(payload.wage_base)
-        org_id = emp["organization_id"]
-
-        # If created as active, demote previous active contracts
-        if payload.status == "active":
-            await conn.execute("""
-                UPDATE employee_contracts
-                SET status = 'expired', updated_at = CURRENT_TIMESTAMP
-                WHERE employee_id = $1 AND status = 'active';
-            """, emp_uuid)
-
-        await conn.execute("""
-            INSERT INTO employee_contracts (
-                id, employee_id, contract_reference, title, start_date, end_date,
-                wage_base, currency, status, notice_period_days, trial_period_days,
-                working_hours_per_week, terms_notes, organization_id
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
-            );
-        """,
-            new_contract_id, emp_uuid, ref, payload.title.strip(), start_d, end_d,
-            wage_base, payload.currency or "QAR", payload.status or "draft",
-            payload.notice_period_days or 30, payload.trial_period_days or 90,
-            payload.working_hours_per_week or 40.0, payload.terms_notes, org_id
-        )
-
-        # Look up employee's grade_id
-        emp_grade_id = await conn.fetchval("SELECT grade_id FROM employees WHERE id = $1;", emp_uuid)
-
-        # Insert benefit lines if provided
-        for line in (payload.benefit_lines or []):
-            rule = await conn.fetchrow("SELECT id, name, category, calculation_type, default_amount, percentage_rate FROM salary_rules WHERE id = $1;", line.rule_id)
-            if not rule:
-                continue
-
-            calc_type = line.calculation_type or rule["calculation_type"]
-            amt_val = float(line.amount_value)
-
-            if calc_type == "grade_based" or rule["calculation_type"] == "grade_based":
-                calc_type = "grade_based"
-                grade_rate = None
-                if emp_grade_id:
-                    grade_rate = await conn.fetchval(
-                        "SELECT amount FROM salary_rule_grade_rates WHERE rule_id = $1 AND grade_id = $2;",
-                        line.rule_id, emp_grade_id
+            # Generate collision-safe contract reference if missing
+            if not payload.contract_reference:
+                current_year = datetime.datetime.now().year
+                emp_short = (emp["employee_number"] or "EMP").replace("EMP-", "")
+                seq = (await conn.fetchval(
+                    "SELECT COUNT(*) FROM employee_contracts WHERE employee_id = $1;", emp_uuid
+                ) or 0) + 1
+                while True:
+                    candidate = f"CNT-{current_year}-{emp_short}-{seq}"
+                    taken = await conn.fetchval(
+                        "SELECT 1 FROM employee_contracts WHERE contract_reference = $1;", candidate
                     )
-                if grade_rate is not None:
-                    amt_val = float(grade_rate)
-                elif amt_val <= 0:
-                    amt_val = float(rule["default_amount"] or 0.0)
-                computed = round(amt_val, 2)
-            elif calc_type == "percentage_of_base":
-                computed = round((wage_base * amt_val) / 100.0, 2)
+                    if not taken:
+                        ref = candidate
+                        break
+                    seq += 1
             else:
-                computed = round(amt_val, 2)
+                ref = payload.contract_reference.strip().upper()
+
+            new_contract_id = uuid.uuid4()
+            start_d = parse_date(payload.start_date)
+            end_d = parse_date(payload.end_date)
+            wage_base = float(payload.wage_base)
+            org_id = emp["organization_id"]
+
+            # If created as active, demote previous active contracts
+            if payload.status == "active":
+                await conn.execute("""
+                    UPDATE employee_contracts
+                    SET status = 'expired', updated_at = CURRENT_TIMESTAMP
+                    WHERE employee_id = $1 AND status = 'active';
+                """, emp_uuid)
 
             await conn.execute("""
-                INSERT INTO contract_benefit_lines (
-                    id, contract_id, rule_id, calculation_type, amount_value, computed_monthly_total
-                ) VALUES ($1, $2, $3, $4, $5, $6);
-            """, uuid.uuid4(), new_contract_id, line.rule_id, calc_type, amt_val, computed)
+                INSERT INTO employee_contracts (
+                    id, employee_id, contract_reference, title, start_date, end_date,
+                    wage_base, currency, status, notice_period_days, trial_period_days,
+                    working_hours_per_week, terms_notes, organization_id
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+                );
+            """,
+                new_contract_id, emp_uuid, ref, payload.title.strip(), start_d, end_d,
+                wage_base, payload.currency or "QAR", payload.status or "draft",
+                payload.notice_period_days or 30, payload.trial_period_days or 90,
+                payload.working_hours_per_week or 40.0, payload.terms_notes, org_id
+            )
 
-        # If active, keep employee base salary synchronized
-        if payload.status == "active":
-            await conn.execute("""
-                UPDATE employees
-                SET base_salary = $1, currency = $2, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $3;
-            """, wage_base, payload.currency or "QAR", emp_uuid)
+            # Look up employee's grade_id
+            emp_grade_id = await conn.fetchval("SELECT grade_id FROM employees WHERE id = $1;", emp_uuid)
 
-        # Audit trail logging
-        client_ip = get_client_ip(request)
-        await log_contract_audit(
-            conn=conn,
-            contract_id=str(new_contract_id),
-            action="CREATE",
-            note=f"Created contract {ref} for {emp['full_name']} (base wage: {wage_base} {payload.currency or 'QAR'}).",
-            session=session,
-            client_ip=client_ip,
-            changes={"wage_base": wage_base, "currency": payload.currency, "status": payload.status}
-        )
+            # Insert benefit lines if provided
+            for line in (payload.benefit_lines or []):
+                rule = await conn.fetchrow("SELECT id, name, category, calculation_type, default_amount, percentage_rate FROM salary_rules WHERE id = $1;", line.rule_id)
+                if not rule:
+                    continue
 
-        created_contract = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", new_contract_id)
-        return mask_contract_payload(serialize_row(dict(created_contract)), session)
+                calc_type = line.calculation_type or rule["calculation_type"]
+                amt_val = float(line.amount_value)
+
+                if calc_type == "grade_based" or rule["calculation_type"] == "grade_based":
+                    calc_type = "grade_based"
+                    grade_rate = None
+                    if emp_grade_id:
+                        grade_rate = await conn.fetchval(
+                            "SELECT amount FROM salary_rule_grade_rates WHERE rule_id = $1 AND grade_id = $2;",
+                            line.rule_id, emp_grade_id
+                        )
+                    if grade_rate is not None:
+                        amt_val = float(grade_rate)
+                    elif amt_val <= 0:
+                        amt_val = float(rule["default_amount"] or 0.0)
+                    computed = round(amt_val, 2)
+                elif calc_type == "percentage_of_base":
+                    computed = round((wage_base * amt_val) / 100.0, 2)
+                else:
+                    computed = round(amt_val, 2)
+
+                await conn.execute("""
+                    INSERT INTO contract_benefit_lines (
+                        id, contract_id, rule_id, calculation_type, amount_value, computed_monthly_total
+                    ) VALUES ($1, $2, $3, $4, $5, $6);
+                """, uuid.uuid4(), new_contract_id, line.rule_id, calc_type, amt_val, computed)
+
+            # If active, keep employee base salary synchronized
+            if payload.status == "active":
+                await conn.execute("""
+                    UPDATE employees
+                    SET base_salary = $1, currency = $2, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $3;
+                """, wage_base, payload.currency or "QAR", emp_uuid)
+
+            # Audit trail logging
+            client_ip = get_client_ip(request)
+            await log_contract_audit(
+                conn=conn,
+                contract_id=str(new_contract_id),
+                action="CREATE",
+                note=f"Created contract {ref} for {emp['full_name']} (base wage: {wage_base} {payload.currency or 'QAR'}).",
+                session=session,
+                client_ip=client_ip,
+                changes={"wage_base": wage_base, "currency": payload.currency, "status": payload.status}
+            )
+
+            created_contract = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", new_contract_id)
+            return mask_contract_payload(serialize_row(dict(created_contract)), session)
 
 @router.put("/api/v1/contracts/{contract_id}")
 async def update_contract(

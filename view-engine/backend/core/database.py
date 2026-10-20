@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import datetime
@@ -54,6 +55,10 @@ def hash_password(password: str) -> str:
     pwd_bytes = (password or "").encode("utf-8")[:72]
     return bcrypt.hashpw(pwd_bytes, bcrypt.gensalt()).decode("utf-8")
 
+async def hash_password_async(password: str) -> str:
+    """Non-blocking bcrypt password hash offloaded to worker thread."""
+    return await asyncio.to_thread(hash_password, password)
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify plain password against bcrypt hash with 72-byte safe truncation."""
     try:
@@ -63,6 +68,10 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return bcrypt.checkpw(pwd_bytes, hashed_password.encode("utf-8"))
     except Exception:
         return False
+
+async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
+    """Non-blocking bcrypt password verification offloaded to worker thread."""
+    return await asyncio.to_thread(verify_password, plain_password, hashed_password)
 
 # ==============================================================================
 # SCHEMA INITIALIZATION & SYSTEM SEEDING
@@ -82,6 +91,29 @@ async def init_schema():
             VALUES ('cfg:security_policies', '{"global_max_idle_timeout_minutes": 30, "default_idle_timeout_minutes": 15}')
             ON CONFLICT (key) DO NOTHING;
         """)
+
+        default_sso_cfg = json.dumps({
+            "entra_enabled": settings.SSO_ENTRA_ENABLED,
+            "entra_tenant_id": settings.SSO_ENTRA_TENANT_ID,
+            "entra_client_id": settings.SSO_ENTRA_CLIENT_ID,
+            "entra_client_secret": settings.SSO_ENTRA_CLIENT_SECRET,
+            "entra_redirect_uri": settings.SSO_ENTRA_REDIRECT_URI,
+            "kerberos_enabled": settings.SSO_KERBEROS_ENABLED,
+            "kerberos_service_principal": settings.SSO_KERBEROS_SERVICE_PRINCIPAL,
+            "trust_remote_user_header": settings.SSO_TRUST_REMOTE_USER_HEADER,
+            "ldap_enabled": settings.LDAP_ENABLED,
+            "ldap_server": settings.LDAP_SERVER,
+            "ldap_base_dn": settings.LDAP_BASE_DN,
+            "ldap_domain": settings.LDAP_DOMAIN,
+            "auto_provision": settings.SSO_AUTO_PROVISION,
+            "default_role_id": settings.SSO_DEFAULT_ROLE_ID,
+            "auto_login_default": settings.SSO_AUTO_LOGIN_DEFAULT,
+        })
+        await conn.execute("""
+            INSERT INTO system_metadata (key, value)
+            VALUES ('cfg:sso_settings', $1)
+            ON CONFLICT (key) DO NOTHING;
+        """, default_sso_cfg)
 
         # 2. Roles & Permissions table
         await conn.execute("""
@@ -145,6 +177,11 @@ async def init_schema():
                 totp_secret VARCHAR(64),
                 is_2fa_enabled BOOLEAN DEFAULT false,
                 idle_timeout_minutes INT DEFAULT NULL,
+                auth_provider VARCHAR(50) DEFAULT 'local',
+                external_id VARCHAR(255),
+                windows_upn VARCHAR(255),
+                ad_sam_account VARCHAR(150),
+                auto_sso_enabled BOOLEAN DEFAULT false,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
@@ -152,6 +189,13 @@ async def init_schema():
             ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64);
             ALTER TABLE users ADD COLUMN IF NOT EXISTS is_2fa_enabled BOOLEAN DEFAULT false;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS idle_timeout_minutes INT DEFAULT NULL;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(50) DEFAULT 'local';
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS external_id VARCHAR(255);
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS windows_upn VARCHAR(255);
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS ad_sam_account VARCHAR(150);
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS auto_sso_enabled BOOLEAN DEFAULT false;
+            CREATE INDEX IF NOT EXISTS idx_users_windows_upn ON users(LOWER(windows_upn));
+            CREATE INDEX IF NOT EXISTS idx_users_external_id ON users(external_id);
         """)
 
         # 6. Persistent API Keys table (headless biometrics & daemon authentication)

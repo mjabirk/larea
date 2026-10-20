@@ -23,6 +23,8 @@ export function AccessControlProvider({ children }) {
   const tenancy = useTenancy();
   const auth = useAuth();
 
+  const { isAuthenticated, isLoading, token } = auth || {};
+
   // Active user resolution
   const currentUser = auth?.currentUser || tenancy?.currentUser || null;
   const userMemberships = tenancy?.userMemberships || [];
@@ -34,16 +36,18 @@ export function AccessControlProvider({ children }) {
   const [roles, setRoles] = useState(DEFAULT_ROLES);
   const [rolePermissions, setRolePermissions] = useState(INITIAL_ROLE_PERMISSIONS);
 
-  const getAuthHeaders = () => {
-    const token = typeof window !== 'undefined'
-      ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
-      : null;
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
+  const getAuthHeaders = useCallback((customToken = null) => {
+    const activeToken = customToken || token;
+    return activeToken ? { Authorization: `Bearer ${activeToken}` } : {};
+  }, [token]);
 
-  const fetchRoles = useCallback(async () => {
+  const fetchRoles = useCallback(async (customToken = null) => {
+    const headers = getAuthHeaders(customToken);
+    if (!headers.Authorization) {
+      return;
+    }
     try {
-      const res = await fetch('/api/v1/iam/roles', { headers: getAuthHeaders() });
+      const res = await fetch('/api/v1/iam/roles', { headers });
       if (res.ok) {
         const data = await res.json();
         const loadedRoles = data.roles || [];
@@ -61,10 +65,29 @@ export function AccessControlProvider({ children }) {
     } catch (e) {
       console.warn('Failed to load roles from backend, falling back to defaults:', e);
     }
-  }, []);
+  }, [getAuthHeaders]);
 
   useEffect(() => {
-    fetchRoles();
+    if (isLoading || !isAuthenticated || !token) {
+      setRoles(DEFAULT_ROLES);
+      setRolePermissions(INITIAL_ROLE_PERMISSIONS);
+      return;
+    }
+    fetchRoles(token);
+  }, [isLoading, isAuthenticated, token, fetchRoles]);
+
+  useEffect(() => {
+    const handleAuthChange = (e) => {
+      const detail = e?.detail;
+      if (detail?.type === 'login' || detail?.type === 'session_restored') {
+        if (detail.token) fetchRoles(detail.token);
+      } else if (detail?.type === 'logout') {
+        setRoles(DEFAULT_ROLES);
+        setRolePermissions(INITIAL_ROLE_PERMISSIONS);
+      }
+    };
+    window.addEventListener('larea-auth-change', handleAuthChange);
+    return () => window.removeEventListener('larea-auth-change', handleAuthChange);
   }, [fetchRoles]);
 
   // Local storage cache for customized user access profile bindings

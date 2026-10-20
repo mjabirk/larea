@@ -204,7 +204,7 @@ async def upload_employee_document(
             );
         """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name,
             f"Uploaded encrypted {document_type} document: '{filename}' ({file_size // 1024} KB).",
-            '{"document_upload": {"filename": "' + filename + '", "type": "' + document_type + '"}}',
+            json.dumps({"document_upload": {"filename": filename, "type": document_type}}),
             client_ip
         )
 

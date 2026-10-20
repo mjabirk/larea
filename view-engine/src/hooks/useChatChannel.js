@@ -239,8 +239,8 @@ export function useChatChannel(channelId, token) {
         ws.onclose = (ev) => {
           if (!isMountedRef.current) return;
           setIsConnected(false);
-          // Don't auto-reconnect if rejected for auth (code 4001)
-          if (ev.code === 4001) return;
+          // Don't auto-reconnect if rejected for auth (code 1008 / 4001 / 403) or token missing
+          if (ev.code === 1008 || ev.code === 4001 || ev.code === 4003 || ev.code === 403 || !token) return;
 
           // Exponential backoff up to 10s
           const delay = Math.min(10000, 1500 * Math.pow(1.5, reconnectAttemptsRef.current));

@@ -20,6 +20,16 @@ export function useIdleTimer({
   const lastPingRef = useRef(Date.now());
   const isPingingRef = useRef(false);
 
+  const onTimeoutRef = useRef(onTimeout);
+  useEffect(() => {
+    onTimeoutRef.current = onTimeout;
+  }, [onTimeout]);
+
+  const getAuthHeadersRef = useRef(getAuthHeaders);
+  useEffect(() => {
+    getAuthHeadersRef.current = getAuthHeaders;
+  }, [getAuthHeaders]);
+
   const totalTimeoutSeconds = Math.max(60, (effectiveTimeoutMinutes || 15) * 60);
 
   // Ping /api/v1/auth/me to refresh Redis TTL on demand or during active interaction
@@ -27,7 +37,7 @@ export function useIdleTimer({
     if (isPingingRef.current) return;
     isPingingRef.current = true;
     try {
-      const headers = getAuthHeaders ? getAuthHeaders() : {};
+      const headers = getAuthHeadersRef.current ? getAuthHeadersRef.current() : {};
       await fetch('/api/v1/auth/me', { headers });
       lastPingRef.current = Date.now();
       lastActivityRef.current = Date.now();
@@ -37,7 +47,7 @@ export function useIdleTimer({
     } finally {
       isPingingRef.current = false;
     }
-  }, [getAuthHeaders]);
+  }, []);
 
   const stayLoggedIn = useCallback(() => {
     refreshSession();
@@ -81,8 +91,8 @@ export function useIdleTimer({
 
       if (remaining <= 0) {
         setIsWarningVisible(false);
-        if (onTimeout) {
-          onTimeout();
+        if (onTimeoutRef.current) {
+          onTimeoutRef.current();
         }
       } else if (remaining <= 60) {
         setSecondsRemaining(remaining);
@@ -100,7 +110,7 @@ export function useIdleTimer({
         window.removeEventListener(evt, handleUserActivity);
       });
     };
-  }, [isAuthenticated, totalTimeoutSeconds, isWarningVisible, onTimeout, refreshSession]);
+  }, [isAuthenticated, totalTimeoutSeconds, isWarningVisible, refreshSession]);
 
   return {
     isWarningVisible,

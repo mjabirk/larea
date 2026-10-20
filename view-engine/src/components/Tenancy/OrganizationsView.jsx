@@ -13,13 +13,19 @@ import { useTenancy } from '../../context/TenancyContext';
 import { useAuth } from '../../context/AuthContext';
 
 export function OrganizationsView() {
-  const { organizations, branches, refreshTenancyData } = useTenancy();
+  const { organizations, branches, refreshTenancyData, isTenancyLoading } = useTenancy();
   const { getAuthHeaders } = useAuth();
 
   const [feedback, setFeedback] = useState(null);
   const [editingOrg, setEditingOrg] = useState(null);
   const [isOrgDirty, setIsOrgDirty] = useState(false);
   const [branchModal, setBranchModal] = useState({ isOpen: false, isEdit: false, data: null });
+
+  React.useEffect(() => {
+    if (refreshTenancyData) {
+      refreshTenancyData();
+    }
+  }, []);
 
   const showToast = (text, type = 'success') => {
     setFeedback({ text, type });
@@ -110,7 +116,9 @@ export function OrganizationsView() {
             </span>
           </div>
           <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-            {organizations.length} Organizations • {branches.length} Branches
+            {isTenancyLoading && organizations.length === 0
+              ? 'Loading...'
+              : `${organizations.length} Organizations • ${branches.length} Branches`}
           </span>
         </div>
       </div>
@@ -326,9 +334,21 @@ export function OrganizationsView() {
       )}
 
       {/* Organizations Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {organizations.map((org) => {
-          const orgBranches = branches.filter((b) => b.organization_id === org.id);
+      {isTenancyLoading && organizations.length === 0 ? (
+        <div className="p-12 text-center text-slate-400 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800">
+          <div className="flex items-center justify-center gap-2.5">
+            <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            <span className="text-xs">Loading companies and operating branches...</span>
+          </div>
+        </div>
+      ) : organizations.length === 0 ? (
+        <div className="p-12 text-center text-slate-400 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs">
+          No organizations configured.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {organizations.map((org) => {
+            const orgBranches = branches.filter((b) => b.organization_id === org.id);
 
           return (
             <div
@@ -469,6 +489,7 @@ export function OrganizationsView() {
           );
         })}
       </div>
+      )}
     </div>
   );
 }

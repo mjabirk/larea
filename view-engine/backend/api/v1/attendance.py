@@ -143,11 +143,13 @@ async def create_attendance_log(
         inherited_dept = payload.department or emp["department_id"] or "Operations"
         emp_name = payload.employee_name or emp["full_name"]
 
-        # Generate attendance code
+        # Generate collision-safe attendance code
         max_seq = await conn.fetchval("""
-            SELECT COUNT(*) FROM attendance_logs;
-        """) or 0
-        code = f"ATT-2026-{1001 + max_seq}"
+            SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ATT-[0-9]{4}-([0-9]+)') AS INT)), 1000)
+            FROM attendance_logs
+            WHERE code ~ '^ATT-[0-9]{4}-[0-9]+$';
+        """) or 1000
+        code = f"ATT-2026-{max_seq + 1}"
 
         t_in = parse_iso(payload.check_in)
         if not t_in:

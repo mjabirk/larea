@@ -71,8 +71,13 @@ export function RolesView() {
     resetRolesToDefaults,
   } = useAccessControl();
 
-  const { users } = useTenancy();
+  const { users, refreshTenancyData } = useTenancy();
   const { t } = useLocale();
+
+  useEffect(() => {
+    if (refreshRoles) refreshRoles();
+    if (refreshTenancyData) refreshTenancyData();
+  }, []);
 
   const [selectedRoleId, setSelectedRoleId] = useState('role_ops_lead');
   const [roleSearch, setRoleSearch] = useState('');

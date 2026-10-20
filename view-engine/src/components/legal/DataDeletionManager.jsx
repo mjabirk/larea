@@ -24,10 +24,19 @@ export function DataDeletionManager({ user, onStatusChanged }) {
   const [deletionStatus, setDeletionStatus] = useState(null);
 
   // Load existing status from backend or local record
+  const getAuthHeaders = () => {
+    const token = typeof window !== 'undefined'
+      ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
+      : null;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
   useEffect(() => {
     if (!targetUser?.id) return;
 
-    fetch(`/api/v1/compliance/gdpr/status/${targetUser.id}`)
+    fetch(`/api/v1/compliance/gdpr/status/${targetUser.id}`, {
+      headers: getAuthHeaders(),
+    })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data && data.status === 'pending_deletion') {
@@ -62,7 +71,7 @@ export function DataDeletionManager({ user, onStatusChanged }) {
       // 1. Call backend compliance endpoint
       const response = await fetch('/api/v1/compliance/gdpr/delete-request', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           user_id: targetUser.id,
           reason: 'Data subject requested right-to-be-forgotten under GDPR Art. 17',
@@ -115,7 +124,7 @@ export function DataDeletionManager({ user, onStatusChanged }) {
     try {
       await fetch('/api/v1/compliance/gdpr/cancel-request', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ user_id: targetUser.id }),
       });
 

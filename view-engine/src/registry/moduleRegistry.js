@@ -127,6 +127,12 @@ export const APP_MODULES = [
         label: "Roles & Permissions",
         model: "roles",
         required_groups: ["iam.roles_admin", "iam.security_admin", "users.manage"]
+      },
+      {
+        id: "windows_sso",
+        label: "Windows SSO & Directory",
+        model: "sso_settings",
+        required_groups: ["iam.security_admin", "users.manage", "org.manage"]
       }
     ]
   },
@@ -135,7 +141,7 @@ export const APP_MODULES = [
     name: "System Configuration",
     shortName: "Settings",
     iconName: "SlidersHorizontal",
-    description: "Organizations, WhatsApp/SMS gateways, email templates, and automated triggers",
+    description: "Organizations, Windows SSO federation, WhatsApp/SMS gateways, email templates, and automated triggers",
     color: "#475569",
     menuGroups: [
       {
@@ -144,6 +150,7 @@ export const APP_MODULES = [
         iconName: "Building2",
         menus: [
           { id: "orgs", label: "Companies & Branches", model: "organizations", required_groups: ["org.read", "org.manage"] },
+          { id: "windows_sso", label: "Windows SSO & Directory", model: "sso_settings", required_groups: ["iam.security_admin", "users.manage", "org.manage"] },
           { id: "compliance_alerts", label: "QID & Visa Alert Rules", model: "compliance_settings", required_groups: ["org.manage", "hr.manager"] }
         ]
       },
@@ -179,6 +186,7 @@ export const APP_MODULES = [
     ],
     menus: [
       { id: "orgs", label: "Companies & Branches", model: "organizations" },
+      { id: "windows_sso", label: "Windows SSO & Directory", model: "sso_settings" },
       { id: "compliance_alerts", label: "QID & Visa Alert Rules", model: "compliance_settings" },
       { id: "mail_servers", label: "Email Servers", model: "mail_servers" },
       { id: "mail_templates", label: "Email Templates", model: "mail_templates" },

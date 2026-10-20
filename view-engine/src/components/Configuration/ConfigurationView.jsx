@@ -22,9 +22,11 @@ import { WhatsAppConfigsView } from './WhatsAppConfigsView';
 import { WhatsAppTemplatesView } from './WhatsAppTemplatesView';
 import { CommunicationLogsView } from './CommunicationLogsView';
 import { AutomationTriggersView } from './AutomationTriggersView';
+import { useAuth } from '../../context/AuthContext';
 
 export function ConfigurationView({ activeMenuId = 'wps_config' }) {
     const [savedBanner, setSavedBanner] = useState('');
+    const { refreshSSOConfig } = useAuth();
 
     const getAuthHeaders = () => {
         const token = typeof window !== 'undefined'
@@ -32,6 +34,25 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
             : null;
         return token ? { Authorization: `Bearer ${token}` } : {};
     };
+
+    // Windows SSO & Active Directory Federation Settings State
+    const [ssoSettings, setSsoSettings] = useState({
+        sso_entra_enabled: false,
+        sso_entra_tenant_id: 'common',
+        sso_entra_client_id: '',
+        sso_entra_client_secret: '',
+        sso_entra_redirect_uri: '',
+        sso_kerberos_enabled: false,
+        sso_kerberos_service_principal: 'HTTP@localhost',
+        sso_trust_remote_user_header: false,
+        ldap_enabled: false,
+        ldap_server_uri: 'ldap://dc01.corp.internal:389',
+        ldap_domain: 'CORP',
+        ldap_base_dn: 'DC=corp,DC=internal',
+        sso_auto_provision: true,
+        sso_default_role_id: 'role-viewer',
+        sso_auto_login_default: false,
+    });
 
     // Qatar WPS Bank Settings State (Persisted to localStorage / system_metadata)
     const [wpsConfig, setWpsConfig] = useState(() => {
@@ -83,9 +104,10 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
         let isMounted = true;
         const loadSettings = async () => {
             try {
-                const [wpsRes, hrRes] = await Promise.all([
+                const [wpsRes, hrRes, ssoRes] = await Promise.all([
                     fetch('/api/v1/settings/qatar_wps_config', { headers: getAuthHeaders() }),
                     fetch('/api/v1/settings/qatar_hr_config', { headers: getAuthHeaders() }),
+                    fetch('/api/v1/system/sso-settings', { headers: getAuthHeaders() }),
                 ]);
 
                 if (wpsRes.ok) {
@@ -101,6 +123,17 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                     if (hrData?.value && typeof hrData.value === 'object' && Object.keys(hrData.value).length > 0 && isMounted) {
                         setHrConfig(hrData.value);
                         localStorage.setItem('enterprise_qatar_hr_config', JSON.stringify(hrData.value));
+                    }
+                }
+
+                if (ssoRes.ok) {
+                    const ssoData = await ssoRes.json();
+                    if (ssoData && typeof ssoData === 'object' && isMounted) {
+                        setSsoSettings((prev) => ({
+                            ...prev,
+                            ...ssoData,
+                            sso_entra_client_secret: '',
+                        }));
                     }
                 }
             } catch (err) {
@@ -126,6 +159,32 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
     if (activeMenuId === 'whatsapp_templates') return <WhatsAppTemplatesView />;
     if (activeMenuId === 'communication_logs' || activeMenuId === 'sms_whatsapp_logs') return <CommunicationLogsView />;
     if (activeMenuId === 'automation_triggers') return <AutomationTriggersView />;
+
+    const handleSaveSso = async (e) => {
+        e.preventDefault();
+        try {
+            const payload = { ...ssoSettings };
+            if (!payload.sso_entra_client_secret) {
+                delete payload.sso_entra_client_secret;
+            }
+            const res = await fetch('/api/v1/system/sso-settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify(payload),
+            });
+            if (res.ok) {
+                if (refreshSSOConfig) await refreshSSOConfig();
+                setSavedBanner('Windows Single Sign-On & Identity Federation settings saved to PostgreSQL.');
+            } else {
+                const err = await res.json().catch(() => ({}));
+                setSavedBanner(err.detail || 'Failed to save Windows SSO settings (Superadmin required).');
+            }
+        } catch (err) {
+            console.warn('Failed to persist Windows SSO settings:', err);
+            setSavedBanner('Failed to save Windows SSO settings.');
+        }
+        setTimeout(() => setSavedBanner(''), 3500);
+    };
 
     const handleSaveWps = async (e) => {
         e.preventDefault();
@@ -356,6 +415,285 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                             >
                                 + Add
                             </button>
+                        </div>
+                    </div>
+                </form>
+            )}
+
+            {/* 3. WINDOWS SINGLE SIGN-ON & IDENTITY FEDERATION (ENTRA OIDC / KERBEROS / AD LDAP) */}
+            {activeMenuId === 'windows_sso' && (
+                <form
+                    onSubmit={handleSaveSso}
+                    className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xs space-y-6"
+                >
+                    <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
+                        <div>
+                            <div className="inline-flex items-center gap-1.5 text-blue-600 dark:text-blue-400 text-xs font-bold uppercase tracking-wider">
+                                <ShieldCheck className="w-4 h-4" />
+                                <span>Enterprise Identity & Windows Single Sign-On</span>
+                            </div>
+                            <h2 className="text-lg font-bold text-slate-900 dark:text-white mt-1">
+                                Microsoft Entra ID (OIDC), Kerberos SPNEGO & Active Directory Federation
+                            </h2>
+                            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                                Configure web-based Windows authentication for multi-user Linux/WSL server deployments accessed by remote Windows client workstations.
+                            </p>
+                        </div>
+                        <button
+                            type="submit"
+                            className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer shrink-0"
+                        >
+                            <Save className="w-4 h-4" />
+                            <span>Save SSO Settings</span>
+                        </button>
+                    </div>
+
+                    {/* Section A: Microsoft Entra ID (Azure AD) OIDC v2.0 with PKCE */}
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 space-y-4 text-xs">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h3 className="font-bold text-slate-900 dark:text-white text-sm">
+                                    1. Microsoft Entra ID (Azure AD) OpenID Connect v2.0 + PKCE
+                                </h3>
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                                    Enables seamless one-click "Sign in with Windows" using Windows Hello, PRT, and Entra ID conditional access.
+                                </p>
+                            </div>
+                            <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-800 dark:text-slate-200">
+                                <input
+                                    type="checkbox"
+                                    checked={Boolean(ssoSettings.sso_entra_enabled)}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, sso_entra_enabled: e.target.checked })}
+                                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                                />
+                                <span>Enable Entra ID OIDC</span>
+                            </label>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                    Directory (Tenant) ID
+                                </label>
+                                <input
+                                    type="text"
+                                    value={ssoSettings.sso_entra_tenant_id || ''}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, sso_entra_tenant_id: e.target.value })}
+                                    placeholder="common or 00000000-0000-0000-0000-000000000000"
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-slate-900 dark:text-white"
+                                />
+                            </div>
+                            <div>
+                                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                    Application (Client) ID
+                                </label>
+                                <input
+                                    type="text"
+                                    value={ssoSettings.sso_entra_client_id || ''}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, sso_entra_client_id: e.target.value })}
+                                    placeholder="00000000-0000-0000-0000-000000000000"
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-slate-900 dark:text-white"
+                                />
+                            </div>
+                            <div>
+                                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                    Client Secret (Optional for Confidential Client)
+                                </label>
+                                <input
+                                    type="password"
+                                    value={ssoSettings.sso_entra_client_secret || ''}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, sso_entra_client_secret: e.target.value })}
+                                    placeholder={ssoSettings.sso_entra_client_secret_configured ? '•••••••• (Configured — leave blank to keep)' : 'Enter Entra Client Secret'}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-slate-900 dark:text-white"
+                                />
+                            </div>
+                            <div>
+                                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                    OAuth2 Redirect URI (Optional Override)
+                                </label>
+                                <input
+                                    type="text"
+                                    value={ssoSettings.sso_entra_redirect_uri || ''}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, sso_entra_redirect_uri: e.target.value })}
+                                    placeholder={typeof window !== 'undefined' ? `${window.location.origin}/` : 'https://erp.company.com/'}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-slate-900 dark:text-white"
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Section B: HTTP SPNEGO / Kerberos & Reverse Proxy */}
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 space-y-4 text-xs">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h3 className="font-bold text-slate-900 dark:text-white text-sm">
+                                    2. Integrated Windows Authentication (HTTP SPNEGO / Kerberos)
+                                </h3>
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                                    Zero-prompt intranet Single Sign-On for domain-joined Windows PCs using Kerberos tickets or a trusted reverse proxy.
+                                </p>
+                            </div>
+                            <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-800 dark:text-slate-200">
+                                <input
+                                    type="checkbox"
+                                    checked={Boolean(ssoSettings.sso_kerberos_enabled)}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, sso_kerberos_enabled: e.target.checked })}
+                                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                                />
+                                <span>Enable Kerberos SPNEGO</span>
+                            </label>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+                            <div>
+                                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                    Kerberos Service Principal Name (SPN)
+                                </label>
+                                <input
+                                    type="text"
+                                    value={ssoSettings.sso_kerberos_service_principal || ''}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, sso_kerberos_service_principal: e.target.value })}
+                                    placeholder="HTTP@erp.corp.internal"
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-slate-900 dark:text-white"
+                                />
+                            </div>
+                            <div className="pt-4">
+                                <label className="flex items-start gap-2.5 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={Boolean(ssoSettings.sso_trust_remote_user_header)}
+                                        onChange={(e) => setSsoSettings({ ...ssoSettings, sso_trust_remote_user_header: e.target.checked })}
+                                        className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 mt-0.5 cursor-pointer"
+                                    />
+                                    <div>
+                                        <span className="font-semibold text-slate-800 dark:text-slate-200 block">
+                                            Trust Reverse-Proxy Header (X-Remote-User / X-Forwarded-User)
+                                        </span>
+                                        <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                                            Enable only when Nginx/Apache/IIS terminates Kerberos or OAuth2 Proxy in front of FastAPI.
+                                        </span>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Section C: Active Directory LDAP / LDAPS Bind */}
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 space-y-4 text-xs">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h3 className="font-bold text-slate-900 dark:text-white text-sm">
+                                    3. Active Directory LDAP / LDAPS Direct Authentication
+                                </h3>
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                                    Allows users to sign in on the ERP login form using their Windows domain credentials (DOMAIN\username or user@domain).
+                                </p>
+                            </div>
+                            <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-800 dark:text-slate-200">
+                                <input
+                                    type="checkbox"
+                                    checked={Boolean(ssoSettings.ldap_enabled)}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, ldap_enabled: e.target.checked })}
+                                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                                />
+                                <span>Enable AD LDAP Bind</span>
+                            </label>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                    LDAP / LDAPS Server URI
+                                </label>
+                                <input
+                                    type="text"
+                                    value={ssoSettings.ldap_server_uri || ''}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, ldap_server_uri: e.target.value })}
+                                    placeholder="ldaps://dc01.corp.internal:636"
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-slate-900 dark:text-white"
+                                />
+                            </div>
+                            <div>
+                                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                    Active Directory NetBIOS / Domain
+                                </label>
+                                <input
+                                    type="text"
+                                    value={ssoSettings.ldap_domain || ''}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, ldap_domain: e.target.value })}
+                                    placeholder="CORP"
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-slate-900 dark:text-white"
+                                />
+                            </div>
+                            <div>
+                                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                    Search Base DN
+                                </label>
+                                <input
+                                    type="text"
+                                    value={ssoSettings.ldap_base_dn || ''}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, ldap_base_dn: e.target.value })}
+                                    placeholder="DC=corp,DC=internal"
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-slate-900 dark:text-white"
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Section D: Just-in-Time (JIT) User Provisioning & Default Auto-SSO */}
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 space-y-4 text-xs">
+                        <h3 className="font-bold text-slate-900 dark:text-white text-sm">
+                            4. Just-In-Time (JIT) Account Provisioning & Auto-Login Policy
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
+                            <label className="flex items-start gap-2.5 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={Boolean(ssoSettings.sso_auto_provision)}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, sso_auto_provision: e.target.checked })}
+                                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 mt-0.5 cursor-pointer"
+                                />
+                                <div>
+                                    <span className="font-semibold text-slate-800 dark:text-slate-200 block">
+                                        Auto-Provision New Windows Users
+                                    </span>
+                                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                                        Automatically create an ERP user account on first verified Windows sign-in.
+                                    </span>
+                                </div>
+                            </label>
+
+                            <label className="flex items-start gap-2.5 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={Boolean(ssoSettings.sso_auto_login_default)}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, sso_auto_login_default: e.target.checked })}
+                                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 mt-0.5 cursor-pointer"
+                                />
+                                <div>
+                                    <span className="font-semibold text-slate-800 dark:text-slate-200 block">
+                                        Default Silent Kerberos Auto-Login
+                                    </span>
+                                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                                        Attempt silent SPNEGO sign-in on boot for all domain workstations.
+                                    </span>
+                                </div>
+                            </label>
+
+                            <div>
+                                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                    Default Role for Auto-Provisioned Users
+                                </label>
+                                <select
+                                    value={ssoSettings.sso_default_role_id || 'role-viewer'}
+                                    onChange={(e) => setSsoSettings({ ...ssoSettings, sso_default_role_id: e.target.value })}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-slate-900 dark:text-white"
+                                >
+                                    <option value="role-viewer">role-viewer (Read-Only Staff)</option>
+                                    <option value="role-supervisor">role-supervisor (Site Supervisor)</option>
+                                    <option value="role-hr-manager">role-hr-manager (HR Manager)</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
                 </form>
