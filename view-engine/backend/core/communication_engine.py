@@ -748,8 +748,10 @@ async def execute_automation_trigger(
                     except Exception:
                         pass
                 pdf_res = await asyncio.to_thread(generate_payslip_pdf_report, record_data, batch_mock, org_info)
-                with open(pdf_res["abs_path"], "rb") as f:
-                    media_meta = save_whatsapp_media(pdf_res["filename"], f.read(), "application/pdf")
+                def _prepare_wa_pdf(pdf_abs: str, pdf_fn: str):
+                    with open(pdf_abs, "rb") as f:
+                        return save_whatsapp_media(pdf_fn, f.read(), "application/pdf")
+                media_meta = await asyncio.to_thread(_prepare_wa_pdf, pdf_res["abs_path"], pdf_res["filename"])
 
             success, provider_id, err = await asyncio.to_thread(
                 WhatsAppMetaService.send_template_message,

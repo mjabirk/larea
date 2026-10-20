@@ -3,6 +3,7 @@ import uuid
 import json
 import datetime
 import logging
+import asyncio
 import mimetypes
 import re
 from urllib.parse import unquote, quote
@@ -923,7 +924,7 @@ async def upload_chat_file(
     if len(content_bytes) > 25 * 1024 * 1024:  # 25 MB max limit
         raise HTTPException(status_code=400, detail="File size exceeds maximum 25MB limit.")
 
-    meta = save_chat_attachment(file.filename, content_bytes, file.content_type)
+    meta = await asyncio.to_thread(save_chat_attachment, file.filename, content_bytes, file.content_type)
     att_obj = normalize_attachment_obj({
         "name": meta["filename"],
         "disk_path": meta["disk_path"],

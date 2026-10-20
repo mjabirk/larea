@@ -252,15 +252,29 @@ from backend.core.dependencies import (
 )
 
 # Redis-based Atomic Rate Limiting Helpers (DoS Protection & Brute Force Prevention)
+RATE_LIMIT_LUA = """
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return current
+"""
+
 async def enforce_rate_limit(key_prefix: str, identifier: str, max_attempts: int, window_seconds: int = 60):
-    """Enforces atomic sliding rate limits per IP/identity in Redis/DragonflyDB."""
+    """Enforces atomic rate limits per IP/identity in Redis/DragonflyDB via atomic Lua script."""
     redis = get_redis_client()
     if not redis:
         return
     key = f"ratelimit:{key_prefix}:{identifier}"
-    current = await redis.incr(key)
-    if current == 1:
-        await redis.expire(key, window_seconds)
+    try:
+        current = await redis.eval(RATE_LIMIT_LUA, 1, key, window_seconds)
+    except Exception:
+        async with redis.pipeline(transaction=True) as pipe:
+            pipe.incr(key)
+            pipe.expire(key, window_seconds)
+            res = await pipe.execute()
+            current = res[0]
+
     if current > max_attempts:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -2431,8 +2445,11 @@ async def get_view_schema(
     if not schema_path or not schema_path.exists():
         raise HTTPException(status_code=404, detail=f"Schema definition not found for model: {clean_model}")
         
-    with open(schema_path, "r", encoding="utf-8") as f:
-        schema = json.load(f)
+    def _read_schema_file(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    schema = await asyncio.to_thread(_read_schema_file, schema_path)
 
     # 1. Server-side RBAC Filtering: Salary and Monetary Fields
     has_salary_read = can_read_salary(session)

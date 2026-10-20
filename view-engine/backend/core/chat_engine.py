@@ -7,6 +7,7 @@ import logging
 import asyncio
 import datetime
 import mimetypes
+import threading
 from typing import Optional, Dict, Any, List, Set
 
 from fastapi import WebSocket
@@ -398,30 +399,34 @@ class ChatConnectionManager:
         self.channel_subscriptions: Dict[str, Set[WebSocket]] = {}
         # user_id -> set of active WebSockets (for presence & direct alerts)
         self.user_sockets: Dict[str, Set[WebSocket]] = {}
+        self._lock = threading.Lock()
 
     async def connect(self, websocket: WebSocket, channel_id: str, user_id: str):
         if websocket.client_state == WebSocketState.CONNECTING:
             await websocket.accept()
         c_id = str(channel_id)
         u_id = str(user_id)
-        self.channel_subscriptions.setdefault(c_id, set()).add(websocket)
-        self.user_sockets.setdefault(u_id, set()).add(websocket)
+        with self._lock:
+            self.channel_subscriptions.setdefault(c_id, set()).add(websocket)
+            self.user_sockets.setdefault(u_id, set()).add(websocket)
 
     def disconnect(self, websocket: WebSocket, channel_id: str, user_id: str):
         c_id = str(channel_id)
         u_id = str(user_id)
-        if c_id in self.channel_subscriptions:
-            self.channel_subscriptions[c_id].discard(websocket)
-            if not self.channel_subscriptions[c_id]:
-                del self.channel_subscriptions[c_id]
-        if u_id in self.user_sockets:
-            self.user_sockets[u_id].discard(websocket)
-            if not self.user_sockets[u_id]:
-                del self.user_sockets[u_id]
+        with self._lock:
+            if c_id in self.channel_subscriptions:
+                self.channel_subscriptions[c_id].discard(websocket)
+                if not self.channel_subscriptions[c_id]:
+                    del self.channel_subscriptions[c_id]
+            if u_id in self.user_sockets:
+                self.user_sockets[u_id].discard(websocket)
+                if not self.user_sockets[u_id]:
+                    del self.user_sockets[u_id]
 
     async def broadcast_to_channel(self, channel_id: str, message_payload: dict):
         c_id = str(channel_id)
-        subscribers = list(self.channel_subscriptions.get(c_id, []))
+        with self._lock:
+            subscribers = list(self.channel_subscriptions.get(c_id, []))
         for socket in subscribers:
             try:
                 await socket.send_json(message_payload)
@@ -429,7 +434,8 @@ class ChatConnectionManager:
                 pass
 
     def is_user_online(self, user_id: str) -> bool:
-        return bool(self.user_sockets.get(str(user_id)))
+        with self._lock:
+            return bool(self.user_sockets.get(str(user_id)))
 
 
 chat_ws_manager = ChatConnectionManager()

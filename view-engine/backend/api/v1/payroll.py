@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from backend.core.database import get_db_pool, log_audit_event
 from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, check_permission
 from backend.core.audit import record_audit_log
-from backend.core.sequences import uuid7, get_next_payroll_batch_code
+from backend.core.sequences import uuid7, get_next_payroll_batch_code, get_atomic_counter
 
 logger = logging.getLogger("payroll")
 
@@ -1415,11 +1415,9 @@ async def reverse_payroll_batch(
                 WHERE id = $1;
             """, b_uuid)
 
-            # 2. Generate unique reversal batch code
+            # 2. Generate unique reversal batch code via lock-free atomic sequence
             base_code = batch["batch_code"].replace("-REV", "")
-            seq = (await conn.fetchval(
-                "SELECT COUNT(*) FROM payroll_batches WHERE batch_code LIKE $1;", f"{base_code}-REV%"
-            ) or 0) + 1
+            seq = await get_atomic_counter(f"payroll_rev:{base_code}", tenant_id=t_id, start_value=1)
             rev_code = f"{base_code}-REV" if seq == 1 else f"{base_code}-REV{seq}"
 
             rev_id = uuid.uuid4()

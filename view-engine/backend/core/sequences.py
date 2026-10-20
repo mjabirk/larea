@@ -14,88 +14,142 @@ import threading
 
 logger = logging.getLogger("enterprise.sequences")
 
-_local = threading.local()
+# Process-wide lock and monotonic counter state for RFC 9562 UUIDv7
+_uuid7_lock = threading.Lock()
+_uuid7_last_ms = -1
+_uuid7_seq = 0
 
 def uuid7() -> uuid.UUID:
-    """Thread-safe, lock-free RFC 9562 UUIDv7 generator using thread-local state."""
-    # Initialize thread-local state on first call in this thread
-    try:
-        last_ms = _local.last_ms
-        seq = _local.seq
-    except AttributeError:
-        last_ms = -1
-        seq = 0
+    """
+    Thread-safe RFC 9562 UUIDv7 generator.
+    Guarantees strict process-wide, cross-thread sub-millisecond monotonicity.
+    Entropy is generated independently per invocation outside the lock to minimize contention.
+    """
+    global _uuid7_last_ms, _uuid7_seq
+    with _uuid7_lock:
+        ms = int(time.time() * 1000)
+        if ms <= _uuid7_last_ms:
+            ms = _uuid7_last_ms
+            _uuid7_seq += 1
+            if _uuid7_seq > 0x0FFF:
+                ms += 1
+                _uuid7_last_ms = ms
+                _uuid7_seq = 0
+        else:
+            _uuid7_last_ms = ms
+            _uuid7_seq = 0
 
-    ms = int(time.time() * 1000)
+        current_ms = _uuid7_last_ms
+        current_seq = _uuid7_seq
 
-    if ms <= last_ms:
-        ms = last_ms
-        seq += 1
-        if seq > 0x0FFF:
-            ms += 1
-            last_ms = ms
-            seq = 0
-    else:
-        last_ms = ms
-        seq = 0
-
-    _local.last_ms = last_ms
-    _local.seq = seq
-
-    # Entropy generated independently per thread
+    # Entropy generated outside lock for maximum concurrency
     rand_b = int.from_bytes(os.urandom(8), "big") & 0x3FFFFFFFFFFFFFFF
-
-    u = (ms << 80) | (7 << 76) | (seq << 64) | (2 << 62) | rand_b
+    u = (current_ms << 80) | (7 << 76) | (current_seq << 64) | (2 << 62) | rand_b
     return uuid.UUID(int=u)
 
 
 async def _get_db_max_counter(seq_name: str, tenant_id: str) -> int:
-    """Queries current maximum counter from DB to seed DragonflyDB/Redis cleanly."""
+    """
+    Queries current maximum counter from DB to seed DragonflyDB/Redis cleanly.
+    Enforces strict multi-tenant isolation by filtering on organization_id when tenant_id is provided.
+    """
     try:
         from backend.core.database import get_db_pool
         pool = get_db_pool()
         if not pool:
             return 0
 
+        # Resolve organization UUID if tenant_id is formatted as a valid UUID
+        org_uuid: Optional[uuid.UUID] = None
+        if tenant_id and tenant_id != "default_tenant":
+            try:
+                org_uuid = uuid.UUID(str(tenant_id))
+            except (ValueError, TypeError):
+                org_uuid = None
+
         async with pool.acquire() as conn:
             if seq_name.startswith("attendance"):
-                val = await conn.fetchval("""
-                    SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ATT-[0-9]{4}-([0-9]+)') AS INT)), 1000)
-                    FROM attendance_logs
-                    WHERE code ~ '^ATT-[0-9]{4}-[0-9]+$';
-                """)
+                if org_uuid:
+                    val = await conn.fetchval("""
+                        SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ATT-[0-9]{4}-([0-9]+)') AS INT)), 1000)
+                        FROM attendance_logs
+                        WHERE code ~ '^ATT-[0-9]{4}-[0-9]+$' AND organization_id = $1;
+                    """, org_uuid)
+                else:
+                    val = await conn.fetchval("""
+                        SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ATT-[0-9]{4}-([0-9]+)') AS INT)), 1000)
+                        FROM attendance_logs
+                        WHERE code ~ '^ATT-[0-9]{4}-[0-9]+$';
+                    """)
                 return int(val or 1000)
             elif seq_name.startswith("roster"):
-                val = await conn.fetchval("""
-                    SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ROS-[0-9]{4}-([0-9]+)') AS INT)), 1000)
-                    FROM shift_rosters
-                    WHERE code ~ '^ROS-[0-9]{4}-[0-9]+$';
-                """)
+                if org_uuid:
+                    val = await conn.fetchval("""
+                        SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ROS-[0-9]{4}-([0-9]+)') AS INT)), 1000)
+                        FROM shift_rosters
+                        WHERE code ~ '^ROS-[0-9]{4}-[0-9]+$' AND organization_id = $1;
+                    """, org_uuid)
+                else:
+                    val = await conn.fetchval("""
+                        SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ROS-[0-9]{4}-([0-9]+)') AS INT)), 1000)
+                        FROM shift_rosters
+                        WHERE code ~ '^ROS-[0-9]{4}-[0-9]+$';
+                    """)
                 return int(val or 1000)
             elif seq_name.startswith("payroll:"):
                 ym = seq_name.split(":", 1)[1]
-                cnt = await conn.fetchval(
-                    "SELECT COUNT(*) FROM payroll_batches WHERE salary_year_month = $1;", ym
-                )
+                if org_uuid:
+                    cnt = await conn.fetchval(
+                        "SELECT COUNT(*) FROM payroll_batches WHERE salary_year_month = $1 AND organization_id = $2;",
+                        ym, org_uuid
+                    )
+                else:
+                    cnt = await conn.fetchval(
+                        "SELECT COUNT(*) FROM payroll_batches WHERE salary_year_month = $1;", ym
+                    )
                 return int(cnt or 0)
             elif seq_name.startswith("contract:"):
                 # contract:{year}:{emp_short}
                 parts = seq_name.split(":")
                 if len(parts) >= 3:
                     emp_short = parts[2]
-                    cnt = await conn.fetchval("""
-                        SELECT COUNT(*) FROM employee_contracts c
-                        JOIN employees e ON c.employee_id = e.id
-                        WHERE e.employee_number LIKE $1;
-                    """, f"%{emp_short}%")
+                    if org_uuid:
+                        cnt = await conn.fetchval("""
+                            SELECT COUNT(*) FROM employee_contracts c
+                            JOIN employees e ON c.employee_id = e.id
+                            WHERE e.employee_number LIKE $1 AND (c.organization_id = $2 OR e.organization_id = $2);
+                        """, f"%{emp_short}%", org_uuid)
+                    else:
+                        cnt = await conn.fetchval("""
+                            SELECT COUNT(*) FROM employee_contracts c
+                            JOIN employees e ON c.employee_id = e.id
+                            WHERE e.employee_number LIKE $1;
+                        """, f"%{emp_short}%")
                     return int(cnt or 0)
+            elif seq_name.startswith("employee_number") or seq_name.startswith("employee:"):
+                if org_uuid:
+                    val = await conn.fetchval("""
+                        SELECT COALESCE(MAX(CAST(SUBSTRING(employee_number FROM 5) AS INT)), 1000)
+                        FROM employees
+                        WHERE employee_number ~ '^EMP-[0-9]+$' AND organization_id = $1;
+                    """, org_uuid)
+                else:
+                    val = await conn.fetchval("""
+                        SELECT COALESCE(MAX(CAST(SUBSTRING(employee_number FROM 5) AS INT)), 1000)
+                        FROM employees
+                        WHERE employee_number ~ '^EMP-[0-9]+$';
+                    """)
+                return int(val or 1000)
     except Exception as e:
         logger.warning(f"Could not seed counter {seq_name} from DB: {e}")
     return 0
 
 
 async def _fallback_db_sequence(seq_name: str, tenant_id: str, start_value: int) -> int:
-    """Atomic single-query PostgreSQL upsert fallback when Redis is unreachable."""
+    """
+    Atomic single-query PostgreSQL upsert fallback when Redis is unreachable.
+    Seeds from _get_db_max_counter() on initial fallback insert to avoid resetting existing database sequences.
+    """
     from backend.core.database import get_db_pool
     pool = get_db_pool()
     full_key = f"{tenant_id}:{seq_name}"
@@ -104,6 +158,10 @@ async def _fallback_db_sequence(seq_name: str, tenant_id: str, start_value: int)
         return start_value
 
     try:
+        # Seed initial value based on existing DB state if not yet in document_sequences
+        seed = await _get_db_max_counter(seq_name, tenant_id)
+        initial_insert_val = max(seed, start_value - 1) + 1
+
         async with pool.acquire() as conn:
             val = await conn.fetchval("""
                 INSERT INTO document_sequences (sequence_key, current_val, updated_at)
@@ -112,7 +170,7 @@ async def _fallback_db_sequence(seq_name: str, tenant_id: str, start_value: int)
                 SET current_val = document_sequences.current_val + 1,
                     updated_at = CURRENT_TIMESTAMP
                 RETURNING current_val;
-            """, full_key, start_value)
+            """, full_key, initial_insert_val)
             return int(val)
     except Exception as e:
         logger.error(f"Fallback DB sequence failed for {full_key}: {e}")
@@ -126,8 +184,8 @@ async def get_atomic_counter(
 ) -> int:
     """
     Atomically increments and returns the next sequence counter via DragonflyDB/Redis INCR.
-    If the key does not exist, seeds from PostgreSQL before incrementing.
-    Completely eliminates row-level SELECT ... FOR UPDATE table locking and race conditions.
+    If the key does not exist, seeds from PostgreSQL using atomic SETNX (nx=True) before incrementing.
+    Eliminates race conditions where concurrent requests overwrite and reset an already-incremented counter.
     """
     from backend.core.session import get_redis_client
     redis = get_redis_client()
@@ -139,7 +197,8 @@ async def get_atomic_counter(
             if not exists:
                 seed = await _get_db_max_counter(seq_name, tenant_id)
                 init_val = max(seed, start_value - 1)
-                await redis.set(key, init_val)
+                # Atomic SETNX: only sets if key does NOT exist, preventing race-condition overwrites
+                await redis.set(key, init_val, nx=True)
 
             return await redis.incr(key)
         except Exception as e:
@@ -261,3 +320,18 @@ async def get_next_roster_id() -> uuid.UUID:
 async def get_next_transaction_id() -> uuid.UUID:
     """Returns a time-ordered UUIDv7 for zkteco_transactions."""
     return uuid7()
+
+
+async def get_next_employee_number(
+    *args,
+    tenant_id: str = "default_tenant",
+    **kwargs
+) -> str:
+    """
+    Generates lock-free, zero-collision employee number: EMP-{seq}
+    e.g. EMP-1001. Scales across enterprise organizations without table locking.
+    """
+    t_id = kwargs.get("tenant_id", tenant_id)
+    val = await get_atomic_counter("employee_number", tenant_id=t_id, start_value=1000)
+    return f"EMP-{val}"
+

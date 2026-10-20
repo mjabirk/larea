@@ -13,6 +13,8 @@ from backend.core.dependencies import (
     verify_record_tenant,
 )
 from backend.core.chat_engine import handle_employee_department_sync
+from backend.core.sequences import get_next_employee_number
+
 
 logger = logging.getLogger("enterprise.employees")
 
@@ -209,26 +211,21 @@ async def create_employee(
     pool = get_db_pool()
     new_id = uuid.uuid4()
 
-    # Generate employee number if missing
+    # Resolve organization context and generate atomic employee number if missing
     async with pool.acquire() as conn:
-        if not payload.employee_number:
-            max_num = await conn.fetchval("""
-                SELECT MAX(CAST(SUBSTRING(employee_number FROM 5) AS INT))
-                FROM employees
-                WHERE employee_number ~ '^EMP-[0-9]+$';
-            """) or 1000
-            emp_number = f"EMP-{max_num + 1}"
-        else:
-            emp_number = payload.employee_number.strip().upper()
-
-        full_name = payload.full_name or f"{payload.first_name.strip()} {payload.last_name.strip()}"
-
-        client_ip = get_client_ip(request) if request else "127.0.0.1"
         branch_uuid = uuid.UUID(payload.branch_id) if payload.branch_id else await conn.fetchval("SELECT id FROM branches LIMIT 1;")
         if not session.get("is_superadmin") and session.get("organization_id"):
             org_uuid = uuid.UUID(str(session["organization_id"]))
         else:
             org_uuid = uuid.UUID(payload.organization_id) if payload.organization_id else await conn.fetchval("SELECT id FROM organizations LIMIT 1;")
+
+        if not payload.employee_number:
+            emp_number = await get_next_employee_number(tenant_id=str(org_uuid) if org_uuid else "default_tenant")
+        else:
+            emp_number = payload.employee_number.strip().upper()
+
+        full_name = payload.full_name or f"{payload.first_name.strip()} {payload.last_name.strip()}"
+        client_ip = get_client_ip(request) if request else "127.0.0.1"
 
         async with conn.transaction():
             await conn.execute("""

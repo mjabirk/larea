@@ -12,6 +12,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 from typing import Optional, Dict, Any, List, Tuple
+import threading
+
 
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib import colors
@@ -131,60 +133,66 @@ def save_attachment_file(filename: str, content_bytes: bytes, mime_type: Optiona
 UNICODE_FONT_NAME = "Helvetica"
 UNICODE_BOLD_FONT_NAME = "Helvetica-Bold"
 _UNICODE_FONTS_REGISTERED = False
+_font_lock = threading.Lock()
 
 def ensure_unicode_fonts_registered() -> Tuple[str, str]:
     """
     Register Unicode-compatible TTF fonts (DejaVuSans, Cairo, Amiri, Arial, Segoe UI)
     with graceful fallback to default Helvetica fonts.
+    Thread-safe double-checked locking prevents concurrent registration races.
     """
     global UNICODE_FONT_NAME, UNICODE_BOLD_FONT_NAME, _UNICODE_FONTS_REGISTERED
     if _UNICODE_FONTS_REGISTERED:
         return UNICODE_FONT_NAME, UNICODE_BOLD_FONT_NAME
 
-    reg_candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/cairo/Cairo-Regular.ttf",
-        "/usr/share/fonts/truetype/amiri/Amiri-Regular.ttf",
-        "/mnt/c/Windows/Fonts/arial.ttf",
-        "C:\\Windows\\Fonts\\arial.ttf",
-        "/mnt/c/Windows/Fonts/segoeui.ttf",
-        "C:\\Windows\\Fonts\\segoeui.ttf",
-    ]
-    bold_candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/cairo/Cairo-Bold.ttf",
-        "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
-        "/mnt/c/Windows/Fonts/arialbd.ttf",
-        "C:\\Windows\\Fonts\\arialbd.ttf",
-        "/mnt/c/Windows/Fonts/segoeuib.ttf",
-        "C:\\Windows\\Fonts\\segoeuib.ttf",
-    ]
+    with _font_lock:
+        if _UNICODE_FONTS_REGISTERED:
+            return UNICODE_FONT_NAME, UNICODE_BOLD_FONT_NAME
 
-    reg_path = next((p for p in reg_candidates if os.path.exists(p)), None)
-    bold_path = next((p for p in bold_candidates if os.path.exists(p)), None)
+        reg_candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/cairo/Cairo-Regular.ttf",
+            "/usr/share/fonts/truetype/amiri/Amiri-Regular.ttf",
+            "/mnt/c/Windows/Fonts/arial.ttf",
+            "C:\\Windows\\Fonts\\arial.ttf",
+            "/mnt/c/Windows/Fonts/segoeui.ttf",
+            "C:\\Windows\\Fonts\\segoeui.ttf",
+        ]
+        bold_candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/cairo/Cairo-Bold.ttf",
+            "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
+            "/mnt/c/Windows/Fonts/arialbd.ttf",
+            "C:\\Windows\\Fonts\\arialbd.ttf",
+            "/mnt/c/Windows/Fonts/segoeuib.ttf",
+            "C:\\Windows\\Fonts\\segoeuib.ttf",
+        ]
 
-    if reg_path:
-        try:
-            pdfmetrics.registerFont(TTFont("CustomUnicodeFont", reg_path))
-            UNICODE_FONT_NAME = "CustomUnicodeFont"
-        except Exception as e:
-            logger.warning(f"Could not register unicode font from {reg_path}: {e}")
+        reg_path = next((p for p in reg_candidates if os.path.exists(p)), None)
+        bold_path = next((p for p in bold_candidates if os.path.exists(p)), None)
 
-    if bold_path:
-        try:
-            pdfmetrics.registerFont(TTFont("CustomUnicodeBoldFont", bold_path))
-            UNICODE_BOLD_FONT_NAME = "CustomUnicodeBoldFont"
-        except Exception as e:
-            logger.warning(f"Could not register unicode bold font from {bold_path}: {e}")
-            if UNICODE_FONT_NAME != "Helvetica":
-                UNICODE_BOLD_FONT_NAME = UNICODE_FONT_NAME
+        if reg_path:
+            try:
+                pdfmetrics.registerFont(TTFont("CustomUnicodeFont", reg_path))
+                UNICODE_FONT_NAME = "CustomUnicodeFont"
+            except Exception as e:
+                logger.warning(f"Could not register unicode font from {reg_path}: {e}")
 
-    _UNICODE_FONTS_REGISTERED = True
-    return UNICODE_FONT_NAME, UNICODE_BOLD_FONT_NAME
+        if bold_path:
+            try:
+                pdfmetrics.registerFont(TTFont("CustomUnicodeBoldFont", bold_path))
+                UNICODE_BOLD_FONT_NAME = "CustomUnicodeBoldFont"
+            except Exception as e:
+                logger.warning(f"Could not register unicode bold font from {bold_path}: {e}")
+                if UNICODE_FONT_NAME != "Helvetica":
+                    UNICODE_BOLD_FONT_NAME = UNICODE_FONT_NAME
+
+        _UNICODE_FONTS_REGISTERED = True
+        return UNICODE_FONT_NAME, UNICODE_BOLD_FONT_NAME
 
 
 def format_arabic_text(text: Any) -> str:

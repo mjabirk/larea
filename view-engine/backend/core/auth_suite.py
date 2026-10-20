@@ -3,6 +3,7 @@ import time
 import secrets
 import json
 import uuid
+import threading
 from typing import Optional, Dict, Any, List
 import pyotp
 import qrcode
@@ -349,6 +350,23 @@ class WindowsSSOEngine:
     3. Active Directory LDAP/LDAPS Synchronization & JIT User Provisioning
     """
     _memory_state_store: Dict[str, Dict[str, Any]] = {}
+    _memory_state_lock = threading.Lock()
+
+    @classmethod
+    def _store_state(cls, state: str, payload: Dict[str, Any]):
+        """Store SSO state in memory with automatic eviction of expired entries (>600s)."""
+        with cls._memory_state_lock:
+            now = int(time.time())
+            expired = [k for k, v in cls._memory_state_store.items() if now - int(v.get("created_at", 0)) > 600]
+            for k in expired:
+                cls._memory_state_store.pop(k, None)
+            cls._memory_state_store[state] = payload
+
+    @classmethod
+    def _pop_state(cls, state: str) -> Optional[Dict[str, Any]]:
+        """Atomically pop SSO state from memory store."""
+        with cls._memory_state_lock:
+            return cls._memory_state_store.pop(state, None)
 
     @staticmethod
     async def get_sso_settings() -> Dict[str, Any]:
@@ -447,9 +465,9 @@ class WindowsSSOEngine:
                 await redis.hset(f"sso_state:{state}", mapping=state_payload)
                 await redis.expire(f"sso_state:{state}", 600)
             except Exception:
-                WindowsSSOEngine._memory_state_store[state] = state_payload
+                WindowsSSOEngine._store_state(state, state_payload)
         else:
-            WindowsSSOEngine._memory_state_store[state] = state_payload
+            WindowsSSOEngine._store_state(state, state_payload)
 
         params = {
             "client_id": client_id,
@@ -498,7 +516,7 @@ class WindowsSSOEngine:
             except Exception:
                 pass
         if not state_data:
-            state_data = WindowsSSOEngine._memory_state_store.pop(state, None)
+            state_data = WindowsSSOEngine._pop_state(state)
 
         if not state_data or not state_data.get("code_verifier"):
             raise ValueError("Invalid or expired SSO state token. Please try signing in again.")

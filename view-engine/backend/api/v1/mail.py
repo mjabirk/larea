@@ -937,7 +937,7 @@ async def upload_attachment(
     Returns metadata for attaching to outgoing emails.
     """
     content = await file.read()
-    meta = save_attachment_file(file.filename, content, file.content_type)
+    meta = await asyncio.to_thread(save_attachment_file, file.filename, content, file.content_type)
     return {
         "status": "success",
         "filename": meta["filename"],
