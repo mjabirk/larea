@@ -13,21 +13,40 @@
       "label": "Status",
       "options": [
         { "value": "draft", "label": "Draft" },
-        { "value": "verified", "label": "Verified" },
-        { "value": "synced", "label": "Synced" }
+        { "value": "pending_approval", "label": "Pending Approval" },
+        { "value": "verified", "label": "Verified / Approved" },
+        { "value": "synced", "label": "Synced" },
+        { "value": "rejected", "label": "Rejected" }
       ]
-    }
+    },
+    "approval_status": {
+      "type": "selection",
+      "label": "Approval Status",
+      "readonly": true,
+      "options": [
+        { "value": "draft", "label": "Draft" },
+        { "value": "pending_approval", "label": "Pending Approval" },
+        { "value": "verified", "label": "Approved / Verified" },
+        { "value": "rejected", "label": "Rejected" }
+      ]
+    },
+    "created_by": { "type": "integer", "label": "Created By (Maker)", "readonly": true },
+    "submitted_by": { "type": "integer", "label": "Submitted By", "readonly": true },
+    "approved_by": { "type": "integer", "label": "Approved By (Checker)", "readonly": true },
+    "approved_at": { "type": "datetime", "label": "Approved At", "readonly": true }
   },
   "views": {
     "list": {
-      "columns": ["id", "employee_name", "department", "check_in", "duration_hours", "status"]
+      "columns": ["id", "employee_name", "department", "check_in", "duration_hours", "status", "approved_by"]
     },
     "form": {
       "statusbar": {
         "field": "status",
         "buttons": [
-          { "id": "btn_verify", "label": "Verify", "target": "verified", "style": "primary" },
-          { "id": "btn_sync", "label": "Push to Payroll", "target": "synced", "style": "secondary" }
+          { "id": "btn_submit", "label": "Submit for Approval", "action": "submit", "target": "pending_approval", "style": "warning", "visible_when": "record.status === 'draft'" },
+          { "id": "btn_verify", "label": "Approve Record", "action": "approve", "target": "verified", "style": "primary", "visible_when": "record.status === 'pending_approval'", "requires_dual_control": true },
+          { "id": "btn_reject", "label": "Reject", "action": "reject", "target": "rejected", "style": "danger", "visible_when": "record.status === 'pending_approval'", "requires_dual_control": true },
+          { "id": "btn_sync", "label": "Push to Payroll", "action": "sync", "target": "synced", "style": "secondary", "visible_when": "record.status === 'verified'" }
         ]
       },
       "sections": [
@@ -39,6 +58,16 @@
             { "name": "department", "span": 6, "label_placement": "inline" },
             { "name": "duration_hours", "span": 6, "label_placement": "inline", "suffix": "Hours" },
             { "name": "status", "span": 6, "label_placement": "inline" }
+          ]
+        },
+        {
+          "title": "SOX 404 Dual Control & Audit",
+          "columns": 12,
+          "fields": [
+            { "name": "created_by", "span": 3, "label_placement": "inline" },
+            { "name": "submitted_by", "span": 3, "label_placement": "inline" },
+            { "name": "approved_by", "span": 3, "label_placement": "inline" },
+            { "name": "approved_at", "span": 3, "label_placement": "inline" }
           ]
         }
       ]

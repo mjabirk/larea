@@ -44,13 +44,30 @@ export const ATTENDANCE_MODEL = {
       type: 'selection',
       string: 'Status',
       selection: [
-        { value: 'draft', label: 'To Approve' },
+        { value: 'draft', label: 'Draft' },
+        { value: 'pending_approval', label: 'To Approve' },
         { value: 'validated', label: 'Validated' },
         { value: 'refused', label: 'Refused' },
       ],
       default: 'draft',
       widget: 'badge',
     },
+    approval_status: {
+      type: 'selection',
+      string: 'Approval Status',
+      selection: [
+        { value: 'draft', label: 'Draft' },
+        { value: 'pending_approval', label: 'Pending Approval' },
+        { value: 'verified', label: 'Approved' },
+        { value: 'rejected', label: 'Rejected' },
+      ],
+      readonly: true,
+      default: 'draft',
+    },
+    created_by: { type: 'integer', string: 'Created By (Maker)', readonly: true },
+    submitted_by: { type: 'integer', string: 'Submitted By', readonly: true },
+    approved_by: { type: 'integer', string: 'Approved By (Checker)', readonly: true },
+    approved_at: { type: 'datetime', string: 'Approved At', readonly: true },
     work_entry_type_id: {
       type: 'selection',
       string: 'Time Type',
@@ -209,18 +226,25 @@ export const ATTENDANCE_FORM_VIEW = {
     header: {
       buttons: [
         {
+          name: 'action_submit',
+          string: 'Submit for Approval',
+          type: 'warning',
+          icon: 'Send',
+          invisible: "record.state !== 'draft'",
+        },
+        {
           name: 'action_validate',
-          string: 'Validate',
+          string: 'Approve Record',
           type: 'primary',
           icon: 'Check',
-          invisible: "record.state !== 'draft'",
+          invisible: "record.state !== 'pending_approval'",
         },
         {
           name: 'action_refuse',
           string: 'Refuse',
           type: 'secondary',
           icon: 'X',
-          invisible: "!['draft', 'validated'].includes(record.state)",
+          invisible: "!['pending_approval', 'validated'].includes(record.state)",
         },
         {
           name: 'action_reset_to_draft',
@@ -232,7 +256,7 @@ export const ATTENDANCE_FORM_VIEW = {
       ],
       statusbar: {
         field: 'state',
-        visible: ['draft', 'validated', 'refused'],
+        visible: ['draft', 'pending_approval', 'validated', 'refused'],
       },
     },
     sheet: {

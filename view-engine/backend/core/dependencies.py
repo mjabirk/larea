@@ -145,6 +145,9 @@ def check_permission(session: Dict[str, Any], permission_key: str) -> bool:
                 elif action == "manage":
                     if m_perms.get("manage") or (m_perms.get("create") and m_perms.get("update")):
                         return True
+                elif action == "approve":
+                    if m_perms.get("approve") or m_perms.get("update") or m_perms.get("manage"):
+                        return True
                 else:
                     if m_perms.get(action):
                         return True

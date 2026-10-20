@@ -23,9 +23,11 @@ import {
   Sparkles,
   Briefcase,
   X,
+  ShieldAlert,
 } from 'lucide-react';
 import { useLocale } from '../../context/LocaleContext';
 import { useTenancy } from '../../context/TenancyContext';
+import { useAuth } from '../../context/AuthContext';
 import { formatToLocalDatetimeInputValue, formatDateTime } from './Widgets';
 
 export function FormView({
@@ -36,6 +38,20 @@ export function FormView({
 }) {
   const { t } = useLocale();
   const { currentUser } = useTenancy();
+  const auth = useAuth();
+  const sessionUser = auth?.user || currentUser;
+  const sessionUserId = sessionUser?.id;
+  const sessionUserEmail = sessionUser?.email;
+  const sessionUsername = sessionUser?.username;
+
+  const isMakerOrSubmitter = Boolean(
+    sessionUserId && record && (
+      String(record.created_by) === String(sessionUserId) ||
+      String(record.submitted_by) === String(sessionUserId) ||
+      (sessionUsername && (String(record.created_by) === String(sessionUsername) || String(record.submitted_by) === String(sessionUsername))) ||
+      (sessionUserEmail && (String(record.created_by) === String(sessionUserEmail) || String(record.submitted_by) === String(sessionUserEmail)))
+    )
+  );
 
   const [employees, setEmployees] = useState([]);
   const [isLoadingEmployees, setIsLoadingEmployees] = useState(false);
@@ -180,19 +196,21 @@ export function FormView({
     onChangeRecord(updated);
   };
 
-  const handleTransition = (newStatus) => {
+  const handleTransition = (newStatus, actionName = null) => {
+    const act = actionName || `set_status_${newStatus}`;
     handleFieldChange('status', newStatus);
-    onFormAction && onFormAction(`set_status_${newStatus}`, { ...record, status: newStatus });
+    onFormAction && onFormAction(act, { ...record, status: newStatus });
   };
 
-  // Workflow stages definition
+  // Workflow stages definition (SOX 404 dual-control compliance)
   const stages = [
-    { id: 'draft', label: t('draft'), desc: 'Created via terminal ingestion' },
-    { id: 'verified', label: t('verified'), desc: 'Reviewed by HR supervisor' },
-    { id: 'synced', label: t('synced'), desc: 'Locked for payroll calculation' },
+    { id: 'draft', label: t('draft') || 'Draft', desc: 'Created by maker (pending submission)' },
+    { id: 'pending_approval', label: 'Pending Approval', desc: 'Awaiting independent dual-control review' },
+    { id: 'verified', label: t('verified') || 'Verified / Approved', desc: 'Reviewed & verified by independent checker' },
+    { id: 'synced', label: t('synced') || 'Synced to Payroll', desc: 'Locked for payroll calculation' },
   ];
 
-  const currentStatus = record.status || 'draft';
+  const currentStatus = record.status || record.approval_status || 'draft';
   const currentStageIndex = stages.findIndex((s) => s.id === currentStatus);
 
   return (
@@ -503,22 +521,89 @@ export function FormView({
             </div>
 
             {/* Contextual Action Trigger Button */}
-            <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
               {currentStatus === 'draft' && (
-                <button
-                  type="button"
-                  onClick={() => handleTransition('verified')}
-                  className="w-full py-2.5 px-4 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>{t('verify_record')}</span>
-                </button>
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => handleTransition('pending_approval', 'submit')}
+                    className="w-full py-2.5 px-4 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
+                  >
+                    <Send className="w-4 h-4 rtl:rotate-180" />
+                    <span>Submit for Approval</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleTransition('verified', 'approve')}
+                    className="w-full py-2 px-3 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 font-medium text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                    <span>Direct Verification (Checker)</span>
+                  </button>
+                </div>
+              )}
+
+              {currentStatus === 'pending_approval' && (
+                <div className="space-y-2.5">
+                  {isMakerOrSubmitter && (
+                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
+                      <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                      <div className="leading-snug">
+                        <strong>SOX 404 Dual-Control:</strong> You authored/submitted this record. Approval must be performed by an independent checker (self-approval prohibited).
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    {!isMakerOrSubmitter && (
+                      <button
+                        type="button"
+                        onClick={() => handleTransition('rejected', 'reject')}
+                        className="py-2.5 px-3 rounded-lg border border-rose-300 dark:border-rose-800/80 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 font-semibold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                        <span>Reject</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      disabled={isMakerOrSubmitter}
+                      onClick={() => handleTransition('verified', 'approve')}
+                      className={`flex-1 py-2.5 px-4 rounded-lg font-semibold text-xs flex items-center justify-center gap-2 transition shadow-xs ${
+                        isMakerOrSubmitter
+                          ? 'bg-slate-300 dark:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-not-allowed opacity-70'
+                          : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>{isMakerOrSubmitter ? 'Self-Approval Prohibited' : 'Approve Record'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {currentStatus === 'rejected' && (
+                <div className="space-y-2">
+                  <div className="w-full py-2 px-3 rounded-lg bg-rose-50 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-800 text-xs font-semibold flex items-center justify-center gap-1.5">
+                    <X className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                    <span>Rejected in Review</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleTransition('draft', 'reset')}
+                    className="w-full py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 text-[11px] font-medium transition cursor-pointer"
+                  >
+                    {t('reopen_draft') || 'Reset to Draft'}
+                  </button>
+                </div>
               )}
 
               {currentStatus === 'verified' && (
                 <button
                   type="button"
-                  onClick={() => handleTransition('synced')}
+                  onClick={() => handleTransition('synced', 'sync')}
                   className="w-full py-2.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
                 >
                   <Send className="w-4 h-4 rtl:rotate-180" />
@@ -534,7 +619,7 @@ export function FormView({
                   </div>
                   <button
                     type="button"
-                    onClick={() => handleTransition('draft')}
+                    onClick={() => handleTransition('draft', 'reset')}
                     className="w-full py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 text-[11px] font-medium transition cursor-pointer"
                   >
                     {t('reopen_draft')}
@@ -582,11 +667,42 @@ export function FormView({
                   </span>
                 </div>
 
-                <div className="flex flex-col gap-0.5 py-1">
-                  <span className="text-slate-400 dark:text-slate-500 font-medium">{t('last_modified_by')}</span>
-                  <span className="text-slate-800 dark:text-slate-200 text-[11px] font-medium">
-                    {record.created_by_name || record.last_modified_by || record.updated_by || currentUser?.full_name || 'System Operator'}
+                <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
+                  <span className="text-slate-400 dark:text-slate-500 font-medium">Created By (Maker)</span>
+                  <span className="font-mono text-slate-800 dark:text-slate-200 text-[11px] font-medium">
+                    {record.created_by_name || (record.created_by ? `User #${String(record.created_by).slice(0, 8)}` : (record.last_modified_by || 'Staff'))}
                   </span>
+                </div>
+
+                <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
+                  <span className="text-slate-400 dark:text-slate-500 font-medium">Submitted By</span>
+                  <span className="font-mono text-slate-800 dark:text-slate-200 text-[11px] font-medium">
+                    {record.submitted_by_name || (record.submitted_by ? `User #${String(record.submitted_by).slice(0, 8)}` : (record.status !== 'draft' ? (record.created_by_name || 'Direct Submit') : 'Pending Submission'))}
+                  </span>
+                </div>
+
+                <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
+                  <span className="text-slate-400 dark:text-slate-500 font-medium">Approved By (Checker)</span>
+                  <span className="font-mono text-slate-800 dark:text-slate-200 text-[11px] font-medium">
+                    {record.approved_by_name || (record.approved_by ? `User #${String(record.approved_by).slice(0, 8)}` : (record.status === 'verified' || record.status === 'synced' ? 'Approved' : 'Pending Review'))}
+                  </span>
+                </div>
+
+                {record.approved_at && (
+                  <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
+                    <span className="text-slate-400 dark:text-slate-500 font-medium">Approved At</span>
+                    <span className="font-mono text-slate-700 dark:text-slate-300 text-[11px]">
+                      {formatDateTime(record.approved_at)}
+                    </span>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-0.5 py-1">
+                  <span className="text-slate-400 dark:text-slate-500 font-medium">SOX 404 Control</span>
+                  <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>Dual-Control Enforced</span>
+                  </div>
                 </div>
               </div>
           </div>

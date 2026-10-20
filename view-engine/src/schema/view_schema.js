@@ -15,10 +15,27 @@ export const VIEW_SCHEMA = {
       label: "Status",
       options: [
         { value: "draft", label: "Draft" },
-        { value: "verified", label: "Verified" },
-        { value: "synced", label: "Synced to Payroll" }
+        { value: "pending_approval", label: "Pending Approval" },
+        { value: "verified", label: "Verified / Approved" },
+        { value: "synced", label: "Synced to Payroll" },
+        { value: "rejected", label: "Rejected" }
       ]
     },
+    approval_status: {
+      type: "selection",
+      label: "Approval Status",
+      readonly: true,
+      options: [
+        { value: "draft", label: "Draft" },
+        { value: "pending_approval", label: "Pending Approval" },
+        { value: "verified", label: "Approved / Verified" },
+        { value: "rejected", label: "Rejected" }
+      ]
+    },
+    created_by: { type: "integer", label: "Created By (Maker)", readonly: true },
+    submitted_by: { type: "integer", label: "Submitted By", readonly: true },
+    approved_by: { type: "integer", label: "Approved By (Checker)", readonly: true },
+    approved_at: { type: "datetime", label: "Approved At", readonly: true },
     notes: { type: "text", label: "Notes & Exceptions" },
     machine_ip: { type: "string", label: "Machine IP", readonly: true },
     ingestion_source: { type: "string", label: "Ingestion Source", readonly: true },
@@ -27,14 +44,16 @@ export const VIEW_SCHEMA = {
   },
   views: {
     list: {
-      columns: ["id", "employee_name", "department", "check_in", "duration_hours", "status"]
+      columns: ["id", "employee_name", "department", "check_in", "duration_hours", "status", "approved_by"]
     },
     form: {
       statusbar: {
         field: "status",
         buttons: [
-          { id: "btn_verify", label: "Verify Record", target: "verified", style: "primary" },
-          { id: "btn_sync", label: "Push to Payroll", target: "synced", style: "success" }
+          { id: "btn_submit", label: "Submit for Approval", action: "submit", target: "pending_approval", style: "warning" },
+          { id: "btn_verify", label: "Approve Record", action: "approve", target: "verified", style: "primary" },
+          { id: "btn_reject", label: "Reject", action: "reject", target: "rejected", style: "danger" },
+          { id: "btn_sync", label: "Push to Payroll", action: "sync", target: "synced", style: "success" }
         ]
       }
     },

@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any, List
 import asyncpg
 import bcrypt
 from backend.core.config import settings
+from backend.core.audit import build_canonical_payload, format_canonical_timestamp, compute_row_hash
 
 logger = logging.getLogger("enterprise.db")
 
@@ -196,6 +197,28 @@ async def init_schema():
             ALTER TABLE users ADD COLUMN IF NOT EXISTS auto_sso_enabled BOOLEAN DEFAULT false;
             CREATE INDEX IF NOT EXISTS idx_users_windows_upn ON users(LOWER(windows_upn));
             CREATE INDEX IF NOT EXISTS idx_users_external_id ON users(external_id);
+
+            -- SOX 404 Maker-Checker Dual Control columns & constraint for roles
+            ALTER TABLE roles ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE roles ADD COLUMN IF NOT EXISTS submitted_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE roles ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE roles ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+            ALTER TABLE roles ADD COLUMN IF NOT EXISTS approval_status VARCHAR(30) DEFAULT 'approved';
+
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'chk_roles_maker_checker'
+                ) THEN
+                    ALTER TABLE roles ADD CONSTRAINT chk_roles_maker_checker
+                    CHECK (
+                        approved_by IS NULL OR (
+                            (created_by IS NULL OR approved_by <> created_by) AND
+                            (submitted_by IS NULL OR approved_by <> submitted_by)
+                        )
+                    );
+                END IF;
+            END $$;
         """)
 
         # 6. Persistent API Keys table (headless biometrics & daemon authentication)
@@ -311,10 +334,11 @@ async def init_schema():
             CREATE INDEX IF NOT EXISTS idx_employee_docs_emp ON employee_documents(employee_id);
         """)
 
-        # 9. Audit Logs & Record Chatter table (Field-level tracking & notes)
+        # 9. Audit Logs & Record Chatter table (Field-level tracking, notes, SOX 404 / ISO 27001 Cryptographic Hash Chain)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS audit_logs (
                 id UUID PRIMARY KEY,
+                tenant_id VARCHAR(100) DEFAULT 'default_tenant',
                 entity_type VARCHAR(50) NOT NULL,
                 entity_id VARCHAR(100) NOT NULL,
                 action VARCHAR(20) NOT NULL,
@@ -323,10 +347,18 @@ async def init_schema():
                 changes JSONB,
                 note TEXT,
                 ip_address VARCHAR(45),
+                prev_hash VARCHAR(64),
+                row_hash VARCHAR(64),
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(100) DEFAULT 'default_tenant';
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS prev_hash VARCHAR(64);
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS row_hash VARCHAR(64);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_row_hash ON audit_logs(row_hash);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_chain ON audit_logs(tenant_id, created_at ASC);
         """)
 
         # 10. Attendance Logs table (Relational employee foreign key & inherited department)
@@ -356,6 +388,28 @@ async def init_schema():
             CREATE INDEX IF NOT EXISTS idx_attendance_org_checkin ON attendance_logs(organization_id, check_in DESC);
             ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS employee_id UUID REFERENCES employees(id) ON DELETE RESTRICT;
             ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS department VARCHAR(100);
+
+            -- SOX 404 Maker-Checker Dual Control columns & constraint for attendance_logs
+            ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS submitted_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+            ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS approval_status VARCHAR(30) DEFAULT 'draft';
+
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'chk_attendance_maker_checker'
+                ) THEN
+                    ALTER TABLE attendance_logs ADD CONSTRAINT chk_attendance_maker_checker
+                    CHECK (
+                        approved_by IS NULL OR (
+                            (created_by IS NULL OR approved_by <> created_by) AND
+                            (submitted_by IS NULL OR approved_by <> submitted_by)
+                        )
+                    );
+                END IF;
+            END $$;
         """)
 
         # 10b. ZKTeco ADMS Biometric Hardware & Access Control tables
@@ -492,6 +546,31 @@ async def init_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_contracts_emp ON employee_contracts(employee_id);
             CREATE INDEX IF NOT EXISTS idx_contracts_status ON employee_contracts(status);
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS amendment_of_id UUID REFERENCES employee_contracts(id) ON DELETE SET NULL;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS amendment_reason TEXT;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS revision_number INT DEFAULT 1;
+
+            -- SOX 404 Maker-Checker Dual Control columns & constraint for employee_contracts
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS submitted_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS approval_status VARCHAR(30) DEFAULT 'draft';
+
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'chk_contracts_maker_checker'
+                ) THEN
+                    ALTER TABLE employee_contracts ADD CONSTRAINT chk_contracts_maker_checker
+                    CHECK (
+                        approved_by IS NULL OR (
+                            (created_by IS NULL OR approved_by <> created_by) AND
+                            (submitted_by IS NULL OR approved_by <> submitted_by)
+                        )
+                    );
+                END IF;
+            END $$;
         """)
 
         # 13. Contract Benefit Lines table (Dynamic package breakdown per contract)
@@ -531,6 +610,10 @@ async def init_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_payroll_batches_ym ON payroll_batches(salary_year_month DESC);
             CREATE INDEX IF NOT EXISTS idx_payroll_batches_status ON payroll_batches(status);
+            ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS posted_at TIMESTAMPTZ;
+            ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS posted_by VARCHAR(255);
+            ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS reversal_of_id UUID REFERENCES payroll_batches(id) ON DELETE SET NULL;
+            ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS reversal_reason TEXT;
         """)
 
         # 15. Payslips table (Individual employee computation & Qatar WPS audit)
@@ -677,6 +760,27 @@ async def init_schema():
             ALTER TABLE payroll_adjustments ADD COLUMN IF NOT EXISTS rule_id VARCHAR(50);
             CREATE INDEX IF NOT EXISTS idx_payroll_adj_ym_emp ON payroll_adjustments(salary_year_month, employee_id);
             CREATE INDEX IF NOT EXISTS idx_payroll_adj_status ON payroll_adjustments(approval_status);
+
+            -- SOX 404 Maker-Checker Dual Control columns & constraint for payroll_adjustments
+            ALTER TABLE payroll_adjustments ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE payroll_adjustments ADD COLUMN IF NOT EXISTS submitted_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE payroll_adjustments ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE payroll_adjustments ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'chk_adjustments_maker_checker'
+                ) THEN
+                    ALTER TABLE payroll_adjustments ADD CONSTRAINT chk_adjustments_maker_checker
+                    CHECK (
+                        approved_by IS NULL OR (
+                            (created_by IS NULL OR approved_by <> created_by) AND
+                            (submitted_by IS NULL OR approved_by <> submitted_by)
+                        )
+                    );
+                END IF;
+            END $$;
 
             CREATE TABLE IF NOT EXISTS leave_types (
                 id VARCHAR(50) PRIMARY KEY,
@@ -1856,5 +1960,272 @@ async def init_schema():
                     ON CONFLICT (channel_id, user_id) DO UPDATE SET is_auto_assigned = true;
                 """, uuid.uuid4(), dept_chan_id, mu["id"])
 
-        logger.info("PostgreSQL schema initialization, mail, notifications, SMS, WhatsApp & Chat seeding completed.")
+        # 39. SOX 404 / ISO 27001 Compliance: Backfill Legacy Audit Chain
+        unhashed = await conn.fetch("""
+            SELECT id, tenant_id, entity_type, entity_id, action, changed_by_user_id,
+                   changes, note, created_at
+            FROM audit_logs
+            WHERE row_hash IS NULL
+            ORDER BY created_at ASC, id ASC;
+        """)
+        if unhashed:
+            for r in unhashed:
+                t_id = r["tenant_id"] or "default_tenant"
+                latest_h = await conn.fetchval("""
+                    SELECT row_hash FROM audit_logs
+                    WHERE tenant_id = $1 AND row_hash IS NOT NULL
+                    ORDER BY created_at DESC, id DESC LIMIT 1;
+                """, t_id)
+                p_hash = latest_h if latest_h else "GENESIS"
+                c_payload = build_canonical_payload(changes=r["changes"], note=r["note"])
+                dt_str = format_canonical_timestamp(r["created_at"]) if r["created_at"] else ""
+                u_str = str(r["changed_by_user_id"]) if r["changed_by_user_id"] else "SYSTEM"
+                act = str(r["action"] or "").upper()
+                res = f"{r['entity_type']}:{r['entity_id']}"
+                r_hash = compute_row_hash(t_id, p_hash, dt_str, u_str, act, res, c_payload)
+                await conn.execute("""
+                    UPDATE audit_logs
+                    SET tenant_id = $1, prev_hash = $2, row_hash = $3
+                    WHERE id = $4;
+                """, t_id, p_hash, r_hash, r["id"])
+
+        # 40. PostgreSQL Database-Level Tamper Protection & Immutability Triggers
+        await conn.execute("""
+            -- A. Audit Logs Append-Only Tamper Protection
+            CREATE OR REPLACE FUNCTION prevent_audit_log_tampering()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: audit_logs is an append-only cryptographic ledger. UPDATE, DELETE, and TRUNCATE operations are strictly prohibited.'
+                    USING ERRCODE = '55000';
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_audit_logs_tamper_protection ON audit_logs;
+            CREATE TRIGGER trg_audit_logs_tamper_protection
+            BEFORE UPDATE OR DELETE ON audit_logs
+            FOR EACH ROW
+            EXECUTE FUNCTION prevent_audit_log_tampering();
+
+            DROP TRIGGER IF EXISTS trg_audit_logs_truncate_protection ON audit_logs;
+            CREATE TRIGGER trg_audit_logs_truncate_protection
+            BEFORE TRUNCATE ON audit_logs
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION prevent_audit_log_tampering();
+
+            -- B. Audit Logs Automatic Hash Chain Fallback for Raw SQL Inserts
+            CREATE OR REPLACE FUNCTION enforce_audit_log_hash_chain()
+            RETURNS TRIGGER AS $$
+            DECLARE
+                latest_h VARCHAR(64);
+                canonical_data TEXT;
+                dt_str TEXT;
+                uid_str TEXT;
+            BEGIN
+                IF NEW.tenant_id IS NULL OR NEW.tenant_id = '' THEN
+                    NEW.tenant_id := 'default_tenant';
+                END IF;
+
+                IF NEW.prev_hash IS NULL OR NEW.prev_hash = '' THEN
+                    SELECT row_hash INTO latest_h
+                    FROM audit_logs
+                    WHERE tenant_id = NEW.tenant_id AND row_hash IS NOT NULL
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1;
+                    
+                    IF latest_h IS NULL OR latest_h = '' THEN
+                        NEW.prev_hash := 'GENESIS';
+                    ELSE
+                        NEW.prev_hash := latest_h;
+                    END IF;
+                END IF;
+
+                IF NEW.created_at IS NULL THEN
+                    NEW.created_at := CURRENT_TIMESTAMP;
+                END IF;
+
+                IF NEW.row_hash IS NULL OR NEW.row_hash = '' THEN
+                    dt_str := to_char(NEW.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US+00:00');
+                    uid_str := COALESCE(NEW.changed_by_user_id::text, 'SYSTEM');
+                    canonical_data := NEW.tenant_id || NEW.prev_hash || dt_str || uid_str || UPPER(COALESCE(NEW.action, '')) || (NEW.entity_type || ':' || NEW.entity_id) || COALESCE(NEW.changes::text, '{}');
+                    NEW.row_hash := encode(sha256(canonical_data::bytea), 'hex');
+                END IF;
+
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_audit_logs_hash_chain ON audit_logs;
+            CREATE TRIGGER trg_audit_logs_hash_chain
+            BEFORE INSERT ON audit_logs
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_audit_log_hash_chain();
+
+            -- C. Contracts Immutability: Block modification of core terms once active/approved
+            CREATE OR REPLACE FUNCTION enforce_contract_immutability()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF TG_OP = 'DELETE' THEN
+                    IF OLD.status IN ('active', 'approved', 'posted') THEN
+                        RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot delete contract % with status %. Active/approved contracts are immutable records.', OLD.contract_reference, OLD.status
+                            USING ERRCODE = '55000';
+                    END IF;
+                    RETURN OLD;
+                END IF;
+
+                IF TG_OP = 'UPDATE' THEN
+                    IF OLD.status IN ('active', 'approved', 'posted') THEN
+                        -- Allow lifecycle transitions if core terms remain untouched
+                        IF NEW.status IN ('expired', 'superseded', 'amended', 'cancelled', 'terminated') AND
+                           NEW.wage_base = OLD.wage_base AND
+                           NEW.currency = OLD.currency AND
+                           NEW.start_date = OLD.start_date AND
+                           NEW.employee_id = OLD.employee_id AND
+                           NEW.contract_reference = OLD.contract_reference THEN
+                            RETURN NEW;
+                        END IF;
+
+                        -- Block direct changes to core terms
+                        IF NEW.wage_base != OLD.wage_base OR
+                           NEW.currency != OLD.currency OR
+                           NEW.start_date != OLD.start_date OR
+                           NEW.employee_id != OLD.employee_id OR
+                           NEW.contract_reference != OLD.contract_reference THEN
+                            RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Core terms of % contract % cannot be modified directly. Please create an amendment revision.', OLD.status, OLD.contract_reference
+                                USING ERRCODE = '55000';
+                        END IF;
+                    END IF;
+                    RETURN NEW;
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_contract_immutability ON employee_contracts;
+            CREATE TRIGGER trg_contract_immutability
+            BEFORE UPDATE OR DELETE ON employee_contracts
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_contract_immutability();
+
+            -- D. Contract Benefit Lines Immutability
+            CREATE OR REPLACE FUNCTION enforce_contract_benefit_immutability()
+            RETURNS TRIGGER AS $$
+            DECLARE
+                c_status VARCHAR;
+            BEGIN
+                SELECT status INTO c_status FROM employee_contracts WHERE id = OLD.contract_id;
+                IF c_status IN ('active', 'approved', 'posted') THEN
+                    RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot modify or delete benefit lines of an active/approved contract (status: %). Use the contract amendment workflow.', c_status
+                        USING ERRCODE = '55000';
+                END IF;
+                IF TG_OP = 'DELETE' THEN
+                    RETURN OLD;
+                ELSE
+                    RETURN NEW;
+                END IF;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_contract_benefit_immutability ON contract_benefit_lines;
+            CREATE TRIGGER trg_contract_benefit_immutability
+            BEFORE UPDATE OR DELETE ON contract_benefit_lines
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_contract_benefit_immutability();
+
+            -- E. Payroll Batches Immutability: Block modification of financial figures once locked/posted
+            CREATE OR REPLACE FUNCTION enforce_payroll_immutability()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF TG_OP = 'DELETE' THEN
+                    IF OLD.status IN ('locked', 'exported', 'posted', 'approved') THEN
+                        RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot delete % payroll batch %. Sealed financial records are immutable.', OLD.status, OLD.batch_code
+                            USING ERRCODE = '55000';
+                    END IF;
+                    RETURN OLD;
+                END IF;
+
+                IF TG_OP = 'UPDATE' THEN
+                    IF OLD.status IN ('locked', 'exported', 'posted', 'approved') THEN
+                        IF NEW.total_base_salary != OLD.total_base_salary OR
+                           NEW.total_allowances != OLD.total_allowances OR
+                           NEW.total_deductions != OLD.total_deductions OR
+                           NEW.total_net_salary != OLD.total_net_salary OR
+                           NEW.salary_year_month != OLD.salary_year_month THEN
+                            RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Financial figures of % payroll batch % are immutable.', OLD.status, OLD.batch_code
+                                USING ERRCODE = '55000';
+                        END IF;
+                    END IF;
+                    RETURN NEW;
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_payroll_batch_immutability ON payroll_batches;
+            CREATE TRIGGER trg_payroll_batch_immutability
+            BEFORE UPDATE OR DELETE ON payroll_batches
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_payroll_immutability();
+
+            -- F. Payslips Immutability
+            CREATE OR REPLACE FUNCTION enforce_payslip_immutability()
+            RETURNS TRIGGER AS $$
+            DECLARE
+                b_status VARCHAR;
+                b_code VARCHAR;
+            BEGIN
+                SELECT status, batch_code INTO b_status, b_code FROM payroll_batches WHERE id = OLD.batch_id;
+                IF b_status IN ('locked', 'exported', 'posted', 'approved') THEN
+                    RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot modify or delete payslips in % payroll batch %.', b_status, b_code
+                        USING ERRCODE = '55000';
+                END IF;
+                IF TG_OP = 'DELETE' THEN
+                    RETURN OLD;
+                ELSE
+                    RETURN NEW;
+                END IF;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_payslip_immutability ON payslips;
+            CREATE TRIGGER trg_payslip_immutability
+            BEFORE UPDATE OR DELETE ON payslips
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_payslip_immutability();
+
+            -- G. Payroll Adjustments Immutability
+            CREATE OR REPLACE FUNCTION enforce_payroll_adjustment_immutability()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF TG_OP = 'DELETE' THEN
+                    IF OLD.approval_status = 'approved' THEN
+                        RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot delete approved payroll adjustment %.', OLD.code
+                            USING ERRCODE = '55000';
+                    END IF;
+                    RETURN OLD;
+                END IF;
+
+                IF TG_OP = 'UPDATE' THEN
+                    IF OLD.approval_status = 'approved' THEN
+                        IF NEW.approval_status NOT IN ('approved', 'reversed') OR
+                           NEW.computed_amount != OLD.computed_amount OR
+                           NEW.employee_id != OLD.employee_id OR
+                           NEW.salary_year_month != OLD.salary_year_month THEN
+                            RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Financial figures of approved adjustment % are immutable.', OLD.code
+                                USING ERRCODE = '55000';
+                        END IF;
+                    END IF;
+                    RETURN NEW;
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_payroll_adjustment_immutability ON payroll_adjustments;
+            CREATE TRIGGER trg_payroll_adjustment_immutability
+            BEFORE UPDATE OR DELETE ON payroll_adjustments
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_payroll_adjustment_immutability();
+        """)
+
+        logger.info("PostgreSQL schema initialization, mail, notifications, SMS, WhatsApp, Chat & SOX 404 / ISO 27001 triggers completed.")
 

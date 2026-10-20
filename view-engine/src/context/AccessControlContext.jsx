@@ -281,7 +281,16 @@ export function AccessControlProvider({ children }) {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ permissions: updatedRolePerms }),
-      }).catch((e) => console.warn('Failed to persist permissions to backend:', e));
+      })
+        .then(async (res) => {
+          if (res.status === 409) {
+            const errData = await res.json();
+            window.dispatchEvent(new CustomEvent('larea-sod-conflict', { detail: errData.detail }));
+            // Revert optimistic permission update
+            setRolePermissions((latest) => ({ ...latest, [roleId]: currentRolePerms }));
+          }
+        })
+        .catch((e) => console.warn('Failed to persist permissions to backend:', e));
 
       return {
         ...prev,
@@ -308,7 +317,16 @@ export function AccessControlProvider({ children }) {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ permissions: updatedRolePerms }),
-      }).catch((e) => console.warn('Failed to persist permissions to backend:', e));
+      })
+        .then(async (res) => {
+          if (res.status === 409) {
+            const errData = await res.json();
+            window.dispatchEvent(new CustomEvent('larea-sod-conflict', { detail: errData.detail }));
+            // Revert optimistic permission update
+            setRolePermissions((latest) => ({ ...latest, [roleId]: currentRolePerms }));
+          }
+        })
+        .catch((e) => console.warn('Failed to persist permissions to backend:', e));
 
       return {
         ...prev,

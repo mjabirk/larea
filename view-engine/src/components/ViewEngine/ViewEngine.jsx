@@ -272,6 +272,88 @@ export function ViewEngine({
     showNotification('Changes saved successfully');
   };
 
+  // Form actions (SOX 404 dual-control submit, approve, reject)
+  const handleFormAction = async (actName, rec) => {
+    const token = typeof window !== 'undefined'
+      ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
+      : null;
+    const headers = token
+      ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      : { 'Content-Type': 'application/json' };
+
+    if (actName === 'submit' || actName === 'btn_submit') {
+      try {
+        const res = await fetch(`/api/v1/attendance/${rec.id}/submit`, {
+          method: 'POST',
+          headers,
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+          setDraftRecord(updated);
+          showNotification('Record submitted for dual-control checker approval.');
+          return;
+        } else {
+          const err = await res.json().catch(() => ({}));
+          showNotification(err.detail || 'Failed to submit record for approval', 'warning');
+        }
+      } catch (e) {
+        console.warn('Fallback local transition for submit:', e);
+      }
+    } else if (actName === 'approve' || actName === 'btn_verify') {
+      try {
+        const res = await fetch(`/api/v1/attendance/${rec.id}/approve`, {
+          method: 'POST',
+          headers,
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+          setDraftRecord(updated);
+          showNotification('Record approved by independent checker.');
+          return;
+        } else {
+          const err = await res.json().catch(() => ({}));
+          const errMsg = err.detail || 'Approval rejected by dual-control policy.';
+          showNotification(errMsg, 'warning');
+          return;
+        }
+      } catch (e) {
+        console.warn('Fallback local transition for approve:', e);
+      }
+    } else if (actName === 'reject' || actName === 'btn_reject') {
+      try {
+        const res = await fetch(`/api/v1/attendance/${rec.id}/reject`, {
+          method: 'POST',
+          headers,
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+          setDraftRecord(updated);
+          showNotification('Record rejected in dual-control review.', 'warning');
+          return;
+        } else {
+          const err = await res.json().catch(() => ({}));
+          showNotification(err.detail || 'Failed to reject record', 'warning');
+        }
+      } catch (e) {
+        console.warn('Fallback local transition for reject:', e);
+      }
+    }
+
+    // Default state update for other transitions (e.g. sync, reset)
+    setRecords((prev) => prev.map((r) => (r.id === rec.id ? rec : r)));
+    setDraftRecord(rec);
+    if (tenancy?.updateAttendanceRecord) {
+      tenancy.updateAttendanceRecord(rec.id, rec);
+    }
+    if (onRecordUpdated) {
+      onRecordUpdated(rec);
+    }
+    showNotification(`Status updated: ${rec.status}`);
+  };
+
   // Discard changes and return smoothly to previously active view
   const handleDiscard = () => {
     setIsDirty(false);
@@ -483,12 +565,7 @@ export function ViewEngine({
               setDraftRecord(updated);
               setIsDirty(true);
             }}
-            onFormAction={(actName, rec) => {
-              setRecords((prev) =>
-                prev.map((r) => (r.id === rec.id ? rec : r))
-              );
-              showNotification(`Status updated: ${rec.status}`);
-            }}
+            onFormAction={handleFormAction}
           />
         )}
 

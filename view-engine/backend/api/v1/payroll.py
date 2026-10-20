@@ -5,9 +5,10 @@ import re
 import logging
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from backend.core.database import get_db_pool
 from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, check_permission
+from backend.core.audit import record_audit_log
 
 logger = logging.getLogger("payroll")
 
@@ -640,7 +641,7 @@ async def update_payslip(
             if existing["batch_status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot edit payslips in a {existing['batch_status']} payroll batch. Batch must be draft."
+                    detail=f"SOX 404 / ISO 27001 Violation: Cannot edit payslips in a {existing['batch_status']} payroll batch. Sealed financial records are strictly immutable. Batch must be draft."
                 )
 
             batch_id = existing["batch_id"]
@@ -745,15 +746,18 @@ async def lock_payroll_batch(
                   AND employee_id IN (SELECT employee_id FROM payslips WHERE batch_id = $2::uuid);
             """, ym, b_uuid)
 
-            await conn.execute("""
-                INSERT INTO audit_logs (
-                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
-                ) VALUES (
-                    $1::uuid, 'payroll_batches', $2, 'LOCK', $3, $4, $5, $6
-                );
-            """, str(uuid.uuid4()), str(b_uuid), user_id, author_name,
-                f"Locked and sealed payroll batch {batch['batch_code']} ({ym}) with {batch['total_employees']} payslips.",
-                client_ip
+            t_id = str(batch["organization_id"]) if batch["organization_id"] else "default_tenant"
+            await record_audit_log(
+                conn=conn,
+                tenant_id=t_id,
+                entity_type="payroll_batches",
+                entity_id=str(b_uuid),
+                action="LOCK",
+                changed_by_user_id=user_id,
+                changed_by_name=author_name,
+                note=f"Locked and sealed payroll batch {batch['batch_code']} ({ym}) with {batch['total_employees']} payslips.",
+                ip_address=client_ip,
+                changes={"status": "locked", "total_employees": batch["total_employees"], "total_net_salary": float(batch["total_net_salary"] or 0)}
             )
 
             updated_batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", b_uuid)
@@ -844,15 +848,18 @@ async def delete_payroll_batch(
 
             await conn.execute("DELETE FROM payroll_batches WHERE id = $1;", b_uuid)
 
-            await conn.execute("""
-                INSERT INTO audit_logs (
-                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
-                ) VALUES (
-                    $1::uuid, 'payroll_batches', $2, 'DELETE', $3, $4, $5, $6
-                );
-            """, str(uuid.uuid4()), str(b_uuid), user_id, author_name,
-                f"Deleted draft payroll batch {batch['batch_code']} ({batch['salary_year_month']}).",
-                client_ip
+            t_id = str(batch["organization_id"]) if batch["organization_id"] else "default_tenant"
+            await record_audit_log(
+                conn=conn,
+                tenant_id=t_id,
+                entity_type="payroll_batches",
+                entity_id=str(b_uuid),
+                action="DELETE",
+                changed_by_user_id=user_id,
+                changed_by_name=author_name,
+                note=f"Deleted draft payroll batch {batch['batch_code']} ({batch['salary_year_month']}).",
+                ip_address=client_ip,
+                changes={"status": "deleted", "batch_code": batch["batch_code"]}
             )
 
         return {
@@ -1021,6 +1028,257 @@ async def export_qatar_wps_sif(
             "X-WPS-Total-Salaries": f"{total_net:.2f}",
         },
     )
+
+
+class BatchPostPayload(BaseModel):
+    notes: Optional[str] = None
+
+
+class BatchReversalPayload(BaseModel):
+    reversal_reason: str = Field(..., description="Auditable accounting justification for reversing a sealed payroll batch")
+
+
+@router.post("/batches/{batch_id}/post")
+async def post_payroll_batch(
+    batch_id: str,
+    payload: BatchPostPayload = BatchPostPayload(),
+    request: Request = None,
+    session: Dict[str, Any] = Depends(get_current_user_session),
+):
+    """
+    SOX 404 / ISO 27001 Formal Payroll Batch Posting State Transition.
+    Transitions a locked or exported payroll batch to 'posted' status,
+    sealing the accounting ledger permanently.
+    """
+    require_permission(session, "payroll.manage")
+    pool = get_db_pool()
+    try:
+        b_uuid = uuid.UUID(batch_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid batch UUID.")
+
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1 FOR UPDATE;", b_uuid)
+            if not batch:
+                raise HTTPException(status_code=404, detail="Payroll batch not found.")
+
+            if batch["status"] == "posted":
+                raise HTTPException(status_code=400, detail=f"Payroll batch {batch['batch_code']} is already posted.")
+
+            if batch["status"] not in ("locked", "exported"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Only locked or exported payroll batches can be posted. Current status: '{batch['status']}'."
+                )
+
+            user_id, author_name = await resolve_audit_author(conn, session)
+            t_id = str(batch["organization_id"]) if batch["organization_id"] else "default_tenant"
+
+            await conn.execute("""
+                UPDATE payroll_batches SET
+                    status = 'posted',
+                    posted_at = CURRENT_TIMESTAMP,
+                    posted_by = $2,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $1;
+            """, b_uuid, author_name)
+
+            await record_audit_log(
+                conn=conn,
+                tenant_id=t_id,
+                entity_type="payroll_batches",
+                entity_id=str(b_uuid),
+                action="POST",
+                changed_by_user_id=user_id,
+                changed_by_name=author_name,
+                note=f"Posted and sealed payroll batch {batch['batch_code']} ({batch['salary_year_month']}) for financial accounting.",
+                ip_address=client_ip,
+                changes={"status": "posted", "posted_by": author_name, "notes": payload.notes}
+            )
+
+            updated = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", b_uuid)
+
+    try:
+        from backend.core.communication_engine import execute_automation_trigger
+        await execute_automation_trigger(
+            event_type="payroll_batch_posted",
+            record_model="payroll.batch",
+            record_id=str(b_uuid),
+            record_data={
+                "batch_code": batch["batch_code"],
+                "month": batch["salary_year_month"],
+                "total_employees": batch["total_employees"],
+                "total_net_salary": f"{float(batch['total_net_salary'] or 0):,.2f}"
+            },
+            author_name=author_name
+        )
+    except Exception as e:
+        logger.warning(f"Failed to execute trigger for payroll_batch_posted: {e}")
+
+    return {
+        "status": "success",
+        "message": f"Payroll batch {batch['batch_code']} posted and sealed successfully.",
+        "batch": serialize_row(dict(updated))
+    }
+
+
+@router.post("/batches/{batch_id}/reverse")
+async def reverse_payroll_batch(
+    batch_id: str,
+    payload: BatchReversalPayload,
+    request: Request = None,
+    session: Dict[str, Any] = Depends(get_current_user_session),
+):
+    """
+    SOX 404 / ISO 27001 Formal Payroll Batch Reversal State Transition.
+    Transitions original batch to 'reversed' without mutating prior figures,
+    and creates a linked reversal batch with offsetting negative figures.
+    """
+    require_permission(session, "payroll.manage")
+    clean_reason = (payload.reversal_reason or "").strip()
+    if not clean_reason:
+        raise HTTPException(status_code=400, detail="An auditable reversal_reason is required by SOX 404 compliance.")
+
+    pool = get_db_pool()
+    try:
+        b_uuid = uuid.UUID(batch_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid batch UUID.")
+
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1 FOR UPDATE;", b_uuid)
+            if not batch:
+                raise HTTPException(status_code=404, detail="Payroll batch not found.")
+
+            if batch["status"] not in ("posted", "locked", "exported"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Only posted, locked, or exported batches can be reversed. Current status is '{batch['status']}'."
+                )
+
+            user_id, author_name = await resolve_audit_author(conn, session)
+            t_id = str(batch["organization_id"]) if batch["organization_id"] else "default_tenant"
+
+            # 1. Transition original batch to 'reversed' (financial totals remain untouched)
+            await conn.execute("""
+                UPDATE payroll_batches SET
+                    status = 'reversed',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $1;
+            """, b_uuid)
+
+            # 2. Generate unique reversal batch code
+            base_code = batch["batch_code"].replace("-REV", "")
+            seq = (await conn.fetchval(
+                "SELECT COUNT(*) FROM payroll_batches WHERE batch_code LIKE $1;", f"{base_code}-REV%"
+            ) or 0) + 1
+            rev_code = f"{base_code}-REV" if seq == 1 else f"{base_code}-REV{seq}"
+
+            rev_id = uuid.uuid4()
+            neg_base = -float(batch["total_base_salary"] or 0)
+            neg_allowances = -float(batch["total_allowances"] or 0)
+            neg_deductions = -float(batch["total_deductions"] or 0)
+            neg_ot = -float(batch["total_overtime_pay"] or 0)
+            neg_net = -float(batch["total_net_salary"] or 0)
+
+            # 3. Create linked accounting reversal batch
+            await conn.execute("""
+                INSERT INTO payroll_batches (
+                    id, batch_code, title, salary_year_month, status,
+                    total_employees, total_base_salary, total_allowances,
+                    total_deductions, total_overtime_pay, total_net_salary,
+                    currency, organization_id, created_by_name, locked_at,
+                    posted_at, posted_by, reversal_of_id, reversal_reason
+                ) VALUES (
+                    $1, $2, $3, $4, 'posted',
+                    $5, $6, $7,
+                    $8, $9, $10,
+                    $11, $12, $13, CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP, $14, $15, $16
+                );
+            """,
+                rev_id, rev_code, f"Accounting Reversal of {batch['title']}", batch["salary_year_month"],
+                batch["total_employees"], neg_base, neg_allowances,
+                neg_deductions, neg_ot, neg_net,
+                batch["currency"], batch["organization_id"], author_name,
+                author_name, b_uuid, clean_reason
+            )
+
+            # 4. Clone payslips with offsetting reversal figures
+            orig_payslips = await conn.fetch("SELECT * FROM payslips WHERE batch_id = $1;", b_uuid)
+            for p in orig_payslips:
+                await conn.execute("""
+                    INSERT INTO payslips (
+                        id, batch_id, employee_id, employee_number, employee_name,
+                        department, job_title, national_id_number, visa_number,
+                        bank_name, bank_swift, bank_iban, working_days,
+                        verified_attendance_hours, overtime_hours, base_salary,
+                        housing_allowance, transport_allowance, other_allowances,
+                        overtime_pay, deductions, net_salary, bonus_pay, task_benefit_pay,
+                        loan_deduction, penalty_deduction, other_deductions,
+                        adjustments_breakdown, wps_status, notes
+                    ) VALUES (
+                        $1, $2, $3, $4, $5,
+                        $6, $7, $8, $9,
+                        $10, $11, $12, $13,
+                        $14, $15, $16,
+                        $17, $18, $19,
+                        $20, $21, $22, $23, $24,
+                        $25, $26, $27,
+                        $28, 'reversed', $29
+                    );
+                """,
+                    uuid.uuid4(), rev_id, p["employee_id"], p["employee_number"], p["employee_name"],
+                    p["department"], p["job_title"], p["national_id_number"], p["visa_number"],
+                    p["bank_name"], p["bank_swift"], p["bank_iban"], -(p["working_days"] or 0),
+                    -(float(p["verified_attendance_hours"] or 0)), -(float(p["overtime_hours"] or 0)), -(float(p["base_salary"] or 0)),
+                    -(float(p["housing_allowance"] or 0)), -(float(p["transport_allowance"] or 0)), -(float(p["other_allowances"] or 0)),
+                    -(float(p["overtime_pay"] or 0)), -(float(p["deductions"] or 0)), -(float(p["net_salary"] or 0)),
+                    -(float(p.get("bonus_pay") or 0)), -(float(p.get("task_benefit_pay") or 0)),
+                    -(float(p.get("loan_deduction") or 0)), -(float(p.get("penalty_deduction") or 0)), -(float(p.get("other_deductions") or 0)),
+                    p["adjustments_breakdown"], f"Offsetting reversal for payslip {p['id']}. Reason: {clean_reason}"
+                )
+
+            # 5. Cryptographically chained audit logs
+            await record_audit_log(
+                conn=conn,
+                tenant_id=t_id,
+                entity_type="payroll_batches",
+                entity_id=str(b_uuid),
+                action="REVERSE",
+                changed_by_user_id=user_id,
+                changed_by_name=author_name,
+                note=f"Reversed payroll batch {batch['batch_code']} ({batch['salary_year_month']}). Reversal batch: {rev_code}. Reason: {clean_reason}",
+                ip_address=client_ip,
+                changes={"status": "reversed", "reversal_batch_id": str(rev_id), "reason": clean_reason}
+            )
+
+            await record_audit_log(
+                conn=conn,
+                tenant_id=t_id,
+                entity_type="payroll_batches",
+                entity_id=str(rev_id),
+                action="REVERSAL_CREATED",
+                changed_by_user_id=user_id,
+                changed_by_name=author_name,
+                note=f"Issued accounting reversal batch {rev_code} offsetting {batch['batch_code']}. Reason: {clean_reason}",
+                ip_address=client_ip,
+                changes={"reversal_of": str(b_uuid), "total_net_salary": neg_net, "reason": clean_reason}
+            )
+
+            reversal_batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", rev_id)
+
+    return {
+        "status": "success",
+        "message": f"Payroll batch {batch['batch_code']} successfully reversed. Created offsetting batch {rev_code}.",
+        "reversal_batch": serialize_row(dict(reversal_batch))
+    }
 
 
 # ==============================================================================
@@ -1344,18 +1602,21 @@ async def create_payroll_adjustment(
                 id, code, employee_id, employee_number, employee_name, department,
                 salary_year_month, rule_id, adjustment_type, category_subtype, title,
                 calculation_basis, multiplier_pct, quantity, unit_label, unit_rate,
-                computed_amount, approval_status, submitted_by_name, notes, organization_id
+                computed_amount, approval_status, submitted_by_name, notes, organization_id,
+                created_by, submitted_by
             ) VALUES (
                 $1, $2, $3, $4, $5, $6,
                 $7, $8, $9, $10, $11,
                 $12, $13, $14, $15, $16,
-                $17, 'pending_supervisor', $18, $19, $20
+                $17, 'pending_supervisor', $18, $19, $20,
+                $21, $21
             );
         """,
             new_id, code, e_uuid, emp["employee_number"], emp["full_name"], emp["department_id"],
             ym, clean_rule_id, adj_type, category_subtype, title,
             calc_basis, mult_pct, quantity, unit_label, unit_rate,
-            computed_amount, author_name, payload.notes, org_id
+            computed_amount, author_name, payload.notes, org_id,
+            user_id
         )
 
         row = await conn.fetchrow("SELECT * FROM payroll_adjustments WHERE id = $1;", new_id)
@@ -1411,6 +1672,18 @@ async def approve_payroll_adjustment(
             if current_status == "rejected":
                 raise HTTPException(status_code=400, detail="Cannot approve a rejected adjustment. Please re-submit.")
 
+            # SOX 404 Maker-Checker Dual Control Hard Guard
+            if adj.get("created_by") and user_id and str(user_id) == str(adj["created_by"]):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="SOX 404 Maker-Checker Violation: You cannot approve a payroll adjustment that you created. Dual control requires an independent checker."
+                )
+            if adj.get("submitted_by") and user_id and str(user_id) == str(adj["submitted_by"]):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="SOX 404 Maker-Checker Violation: You cannot approve a payroll adjustment that you submitted for approval. Dual control requires an independent checker."
+                )
+
             new_status = current_status
             if current_status == "pending_supervisor":
                 if fast_track and has_payroll_manage:
@@ -1422,9 +1695,11 @@ async def approve_payroll_adjustment(
                             level1_approved_at = CURRENT_TIMESTAMP,
                             level2_approved_by = $2,
                             level2_approved_at = CURRENT_TIMESTAMP,
+                            approved_by = $3,
+                            approved_at = CURRENT_TIMESTAMP,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = $1;
-                    """, a_uuid, f"{author_name} (Fast-Track)")
+                    """, a_uuid, f"{author_name} (Fast-Track)", user_id)
                 else:
                     new_status = "pending_hr"
                     await conn.execute("""
@@ -1446,9 +1721,11 @@ async def approve_payroll_adjustment(
                         approval_status = 'approved',
                         level2_approved_by = $2,
                         level2_approved_at = CURRENT_TIMESTAMP,
+                        approved_by = $3,
+                        approved_at = CURRENT_TIMESTAMP,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = $1;
-                """, a_uuid, author_name)
+                """, a_uuid, author_name, user_id)
 
             # If now approved, synchronize directly into any existing draft payslip
             if new_status == "approved":

@@ -8,7 +8,7 @@ import re
 import secrets
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, Depends, HTTPException, Header, Request, status, Response
+from fastapi import FastAPI, Depends, HTTPException, Header, Request, status, Response, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -39,6 +39,11 @@ from backend.core.auth_suite import (
     WindowsSSOEngine,
     TwoFactorAuthService,
     DatabaseRLSHelper
+)
+from backend.core.sod import (
+    validate_sod_compliance,
+    raise_if_sod_violation,
+    SOD_CONFLICT_RULES
 )
 
 @asynccontextmanager
@@ -649,6 +654,31 @@ async def update_admin_sso_settings(
     return {"status": "success", "settings": masked}
 
 
+@app.get("/api/v1/system/audit-logs/verify")
+async def verify_audit_logs_chain_endpoint(
+    tenant_id: Optional[str] = Query(None, description="Optional tenant identifier to filter cryptographic chain verification"),
+    session: Dict[str, Any] = Depends(get_current_user_session),
+):
+    """
+    SOX 404 / ISO 27001 Cryptographic Hash Chain Verification Endpoint.
+    Recalculates the SHA-256 hash chain for each tenant in audit_logs to verify
+    ledger integrity, detect deleted records, and identify data tampering.
+    Requires administrator privileges.
+    """
+    if not (session.get("is_superadmin") or check_permission(session, "settings.manage") or check_permission(session, "audit.verify")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Administrator privileges required to audit cryptographic chain integrity."
+        )
+
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        from backend.core.audit import verify_audit_chain
+        report = await verify_audit_chain(conn, tenant_id=tenant_id)
+        return report
+
+
+
 @app.get("/api/v1/auth/sso/entra/authorize")
 async def sso_entra_authorize(
     request: Request,
@@ -1252,6 +1282,13 @@ async def create_user(
                 detail="Privilege escalation denied: Only an existing Superadmin can provision a Superadmin user."
             )
 
+        # SOX 404 Segregation of Duties Check on User-Role Assignment
+        if not is_super and role_id:
+            target_role = await conn.fetchrow("SELECT code, name, permissions FROM roles WHERE id = $1", role_id)
+            if target_role and target_role["permissions"]:
+                r_perms = json.loads(target_role["permissions"]) if isinstance(target_role["permissions"], str) else target_role["permissions"]
+                raise_if_sod_violation(r_perms, role_code=target_role["code"], context_label=f"User Role Assignment '{target_role['name']}'")
+
         new_id = uuid.uuid4()
         initial_pwd = req.initial_password or "InitPass@2026"
         complexity_err = validate_password_complexity(initial_pwd)
@@ -1359,6 +1396,13 @@ async def update_user(
             status_val = req.status or existing["status"]
             cidrs = req.allowed_cidrs or existing["allowed_cidrs"]
 
+        # SOX 404 Segregation of Duties Check on User Role Update
+        if not is_super and role_id:
+            target_role = await conn.fetchrow("SELECT code, name, permissions FROM roles WHERE id = $1", role_id)
+            if target_role and target_role["permissions"]:
+                r_perms = json.loads(target_role["permissions"]) if isinstance(target_role["permissions"], str) else target_role["permissions"]
+                raise_if_sod_violation(r_perms, role_code=target_role["code"], context_label=f"User Role Update '{target_role['name']}'")
+
         new_upn = req.windows_upn.strip().lower() if req.windows_upn is not None else existing.get("windows_upn")
         new_sam = req.ad_sam_account.strip() if req.ad_sam_account is not None else existing.get("ad_sam_account")
         new_provider = req.auth_provider if req.auth_provider is not None else (existing.get("auth_provider") or "local")
@@ -1453,8 +1497,17 @@ async def delete_user(
     return {"status": "success", "message": "User deleted."}
 
 # ==============================================================================
-# 4. IAM ROLES CRUD ENDPOINTS (PostgreSQL Direct with Menu Access)
+# 4. IAM ROLES CRUD ENDPOINTS (PostgreSQL Direct with Menu Access & SoD Matrix)
 # ==============================================================================
+@app.get("/api/v1/iam/sod/matrix")
+async def get_sod_matrix(session: Dict[str, Any] = Depends(get_current_user_session)):
+    """Returns the declarative Segregation of Duties (SoD) Conflict Matrix for SOX 404 compliance."""
+    return {
+        "framework": "SOX Section 404 / ISO 27001",
+        "rules": SOD_CONFLICT_RULES,
+        "total": len(SOD_CONFLICT_RULES),
+    }
+
 @app.get("/api/v1/iam/roles")
 async def list_roles(session: Dict[str, Any] = Depends(get_current_user_session)):
     """Lists roles and permissions matrix from PostgreSQL."""
@@ -1508,13 +1561,27 @@ async def create_role(
         "users": {"create": False, "read": False, "update": False, "delete": False},
     }
     menu_access = req.menu_access or ["attendances"]
-    
+
+    # SOX 404 Segregation of Duties (SoD) Conflict Validation
+    raise_if_sod_violation(perms, role_code=code, context_label=f"Role '{clean_name}'")
+
+    creator_uid = None
+    try:
+        uid_str = session.get("id") or session.get("user_id")
+        if uid_str:
+            creator_uid = uuid.UUID(str(uid_str))
+    except Exception:
+        pass
+
     async with pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO roles (id, name, code, description, badge_color, is_system, permissions, menu_access)
-            VALUES ($1, $2, $3, $4, $5, false, $6::jsonb, $7::jsonb)
+            INSERT INTO roles (
+                id, name, code, description, badge_color, is_system,
+                permissions, menu_access, created_by, approval_status
+            )
+            VALUES ($1, $2, $3, $4, $5, false, $6::jsonb, $7::jsonb, $8, 'approved')
         """, role_id, clean_name, code, req.description or "Custom user-defined security role.",
-           req.badge_color or "amber", json.dumps(perms), json.dumps(menu_access))
+           req.badge_color or "amber", json.dumps(perms), json.dumps(menu_access), creator_uid)
            
     return {
         "id": role_id,
@@ -1541,7 +1608,13 @@ async def update_role(
         existing = await conn.fetchrow("SELECT * FROM roles WHERE id = $1", role_id)
         if not existing:
             raise HTTPException(status_code=404, detail="Role not found.")
-            
+
+        # SOX 404 Segregation of Duties (SoD) Conflict Validation
+        if req.permissions is not None:
+            raw_code = str(existing["code"] or "").upper()
+            if existing["id"] != "role_superadmin" and raw_code not in ("SUPERADMIN", "ROLE_SUPERADMIN"):
+                raise_if_sod_violation(req.permissions, role_code=existing["code"], context_label=f"Role '{existing['name']}'")
+
         perms_json = json.dumps(req.permissions) if req.permissions is not None else existing["permissions"]
         menu_json = json.dumps(req.menu_access) if req.menu_access is not None else existing["menu_access"]
         
@@ -1885,7 +1958,10 @@ async def save_system_setting(
 # ==============================================================================
 REGISTERED_VIEW_MODELS = {
     "attendance_logs",
+    "attendance",
     "shift_rosters",
+    "contracts",
+    "employee_contracts",
     "users",
     "roles",
     "organizations",
@@ -1909,16 +1985,31 @@ async def get_view_schema(model: str):
         
     from pathlib import Path
     base_dir = (Path(__file__).parent.parent / "public").resolve()
-    schema_path = (base_dir / "view_schema.json").resolve()
     
-    # Strictly ensure resolved path does not traverse out of base_dir
-    if not str(schema_path).startswith(str(base_dir)):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden schema path traversal detected."
-        )
-        
-    if not schema_path.exists():
+    # Priority: public/schemas/{clean_model}.json -> alias mappings -> public/view_schema.json
+    candidates = [
+        base_dir / "schemas" / f"{clean_model}.json",
+        base_dir / f"{clean_model}.json",
+    ]
+    if clean_model in ("attendance", "attendance_logs"):
+        candidates.insert(0, base_dir / "schemas" / "attendance.json")
+    elif clean_model in ("contracts", "employee_contracts"):
+        candidates.insert(0, base_dir / "schemas" / "contracts.json")
+    candidates.append(base_dir / "view_schema.json")
+
+    schema_path = None
+    for cand in candidates:
+        cand_resolved = cand.resolve()
+        if not str(cand_resolved).startswith(str(base_dir)):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden schema path traversal detected."
+            )
+        if cand_resolved.exists():
+            schema_path = cand_resolved
+            break
+
+    if not schema_path or not schema_path.exists():
         raise HTTPException(status_code=404, detail="Schema file not found.")
         
     with open(schema_path, "r", encoding="utf-8") as f:

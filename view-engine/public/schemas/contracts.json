@@ -1,0 +1,61 @@
+{
+  "model": "employee_contracts",
+  "title": "Employee Contracts & Compensation",
+  "security_controls": {
+    "maker_checker": true,
+    "dual_control_enforced": true,
+    "sod_rule": "SOD_CONTRACT_MAKER_VS_CHECKER"
+  },
+  "fields": {
+    "id": { "type": "integer", "label": "ID", "readonly": true },
+    "contract_reference": { "type": "string", "label": "Contract Ref", "required": true },
+    "title": { "type": "string", "label": "Contract Title", "required": true },
+    "employee_id": { "type": "integer", "label": "Employee ID", "required": true },
+    "start_date": { "type": "date", "label": "Start Date", "required": true },
+    "end_date": { "type": "date", "label": "End Date" },
+    "wage_base": { "type": "float", "label": "Base Salary", "required": true },
+    "currency": { "type": "string", "label": "Currency", "default": "QAR" },
+    "status": {
+      "type": "selection",
+      "label": "Status",
+      "options": [
+        { "value": "draft", "label": "Draft" },
+        { "value": "pending_approval", "label": "Pending Approval" },
+        { "value": "active", "label": "Active (Approved)" },
+        { "value": "archived", "label": "Archived" },
+        { "value": "rejected", "label": "Rejected" }
+      ]
+    },
+    "approval_status": {
+      "type": "selection",
+      "label": "Approval Status",
+      "readonly": true,
+      "options": [
+        { "value": "draft", "label": "Draft" },
+        { "value": "pending_approval", "label": "Pending Approval" },
+        { "value": "approved", "label": "Approved" },
+        { "value": "rejected", "label": "Rejected" }
+      ]
+    },
+    "created_by": { "type": "integer", "label": "Created By (Maker)", "readonly": true },
+    "submitted_by": { "type": "integer", "label": "Submitted By", "readonly": true },
+    "approved_by": { "type": "integer", "label": "Approved By (Checker)", "readonly": true },
+    "approved_at": { "type": "datetime", "label": "Approved At", "readonly": true },
+    "terms_notes": { "type": "text", "label": "Terms & Conditions" }
+  },
+  "views": {
+    "list": {
+      "columns": ["contract_reference", "title", "start_date", "end_date", "wage_base", "status", "approved_by"]
+    },
+    "form": {
+      "statusbar": {
+        "field": "status",
+        "buttons": [
+          { "id": "btn_contract_submit", "label": "Submit for Approval", "action": "submit", "target": "pending_approval", "style": "warning", "visible_when": "record.status === 'draft'" },
+          { "id": "btn_contract_approve", "label": "Approve & Activate", "action": "approve", "target": "active", "style": "primary", "visible_when": "record.status === 'pending_approval' || record.status === 'draft'", "requires_dual_control": true },
+          { "id": "btn_contract_reject", "label": "Reject", "action": "reject", "target": "rejected", "style": "danger", "visible_when": "record.status === 'pending_approval'", "requires_dual_control": true }
+        ]
+      }
+    }
+  }
+}
