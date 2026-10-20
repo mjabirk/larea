@@ -49,6 +49,7 @@ import { AccessControlProvider, useAccessControl } from './context/AccessControl
 import { APP_MODULES, getModuleById, getMenuById } from './registry/moduleRegistry';
 import { useClickOutside } from './hooks/useClickOutside';
 import { VIEW_SCHEMA, MOCK_RECORDS } from './schema/view_schema';
+import { SHIFT_ROSTER_VIEW_SCHEMA } from './schema/attendanceSchema';
 import { LegalPolicyModal } from './components/legal/LegalPolicyModal';
 import { BusinessVerificationModal } from './components/legal/BusinessVerificationModal';
 import { CookieConsentBanner } from './components/legal/CookieConsentBanner';
@@ -217,6 +218,124 @@ function MainAppShell() {
     }
     return null;
   });
+
+  // Shift Rosters State and API Persistence (/api/v1/rosters)
+  const [rosterRecords, setRosterRecords] = useState([]);
+  const [isLoadingRosters, setIsLoadingRosters] = useState(false);
+
+  const fetchRosters = React.useCallback(async () => {
+    try {
+      setIsLoadingRosters(true);
+      const token = typeof window !== 'undefined'
+        ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
+        : null;
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      const res = await fetch('/api/v1/rosters?limit=500', { headers });
+      if (res.ok) {
+        const data = await res.json();
+        const list = data.rosters || data.records || [];
+        setRosterRecords(list);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch shift rosters from backend:', err);
+    } finally {
+      setIsLoadingRosters(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (activeMenuId === 'rosters' && session?.token) {
+      fetchRosters();
+    }
+  }, [activeMenuId, session?.token, fetchRosters]);
+
+  const handleCreateRoster = React.useCallback(async (record) => {
+    try {
+      const token = typeof window !== 'undefined'
+        ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
+        : null;
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      };
+      const res = await fetch('/api/v1/rosters', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          employee_id: record.employee_id,
+          employee_name: record.employee_name,
+          department: record.department,
+          shift_name: record.shift_name,
+          start_time: record.start_time || record.check_in,
+          end_time: record.end_time || record.check_out,
+          duration_hours: record.duration_hours,
+          location: record.location,
+          status: record.status || 'scheduled',
+          notes: record.notes
+        })
+      });
+      if (res.ok) {
+        const created = await res.json();
+        setRosterRecords((prev) => [created, ...prev.filter((r) => r.id !== record.id)]);
+        return created;
+      }
+    } catch (err) {
+      console.error('Failed to persist created shift roster:', err);
+    }
+  }, []);
+
+  const handleUpdateRoster = React.useCallback(async (record) => {
+    try {
+      const token = typeof window !== 'undefined'
+        ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
+        : null;
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      };
+      const res = await fetch(`/api/v1/rosters/${record.id}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          employee_id: record.employee_id,
+          employee_name: record.employee_name,
+          department: record.department,
+          shift_name: record.shift_name,
+          start_time: record.start_time || record.check_in,
+          end_time: record.end_time || record.check_out,
+          duration_hours: record.duration_hours,
+          location: record.location,
+          status: record.status,
+          notes: record.notes
+        })
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setRosterRecords((prev) => prev.map((r) => (r.id === record.id ? updated : r)));
+        return updated;
+      }
+    } catch (err) {
+      console.error('Failed to update shift roster:', err);
+    }
+  }, []);
+
+  const handleDeleteRoster = React.useCallback(async (rosterId) => {
+    try {
+      const token = typeof window !== 'undefined'
+        ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
+        : null;
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      const res = await fetch(`/api/v1/rosters/${rosterId}`, {
+        method: 'DELETE',
+        headers
+      });
+      if (res.ok) {
+        setRosterRecords((prev) => prev.filter((r) => r.id !== rosterId));
+      }
+    } catch (err) {
+      console.error('Failed to delete shift roster:', err);
+    }
+  }, []);
 
   // Re-hydrate selectedUserForForm if users list is populated or updated
   React.useEffect(() => {
@@ -871,19 +990,11 @@ function MainAppShell() {
                   <ViewEngine
                     key="hr-rosters"
                     initialView="gantt"
-                    schema={{
-                      ...VIEW_SCHEMA,
-                      title: "Shift Rosters & Department Schedules",
-                      default_view: "gantt",
-                      newButtonLabel: "+ Assign Shift",
-                      filterChips: [
-                        { id: 'all', label: 'All' },
-                        { id: 'draft', label: 'Draft' },
-                        { id: 'published', label: 'Published' },
-                        { id: 'confirmed', label: 'Confirmed' },
-                      ],
-                    }}
-                    initialData={attendanceRecords || []}
+                    schema={SHIFT_ROSTER_VIEW_SCHEMA}
+                    initialData={rosterRecords || []}
+                    onRecordCreated={handleCreateRoster}
+                    onRecordUpdated={handleUpdateRoster}
+                    onRecordDeleted={handleDeleteRoster}
                   />
                 </div>
               )}

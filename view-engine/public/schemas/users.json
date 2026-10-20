@@ -1,0 +1,44 @@
+{
+  "model": "users",
+  "title": "System Users & Accounts",
+  "default_view": "list",
+  "newButtonLabel": "+ Invite User",
+  "header_actions": [
+    { "id": "act_create", "label": "Invite User", "action": "create", "type": "create" },
+    { "id": "act_delete", "label": "Delete User", "action": "delete", "type": "delete" }
+  ],
+  "fields": {
+    "id": { "type": "uuid", "label": "ID", "readonly": true },
+    "username": { "type": "string", "label": "Username", "required": true },
+    "email": { "type": "string", "label": "Email Address", "required": true },
+    "full_name": { "type": "string", "label": "Full Name", "required": true },
+    "role": { "type": "string", "label": "Role" },
+    "role_id": { "type": "string", "label": "Role ID" },
+    "status": {
+      "type": "selection",
+      "label": "Status",
+      "options": [
+        { "value": "active", "label": "Active" },
+        { "value": "inactive", "label": "Inactive" },
+        { "value": "suspended", "label": "Suspended" },
+        { "value": "pending_deletion", "label": "Pending Deletion" }
+      ]
+    },
+    "organization_id": { "type": "uuid", "label": "Organization ID", "readonly": true },
+    "created_at": { "type": "datetime", "label": "Created At", "readonly": true }
+  },
+  "views": {
+    "list": {
+      "columns": ["username", "full_name", "email", "role", "status"]
+    },
+    "form": {
+      "statusbar": {
+        "field": "status",
+        "buttons": [
+          { "id": "btn_activate", "label": "Activate User", "action": "activate", "target": "active", "style": "primary" },
+          { "id": "btn_suspend", "label": "Suspend User", "action": "suspend", "target": "suspended", "style": "danger" }
+        ]
+      }
+    }
+  }
+}

@@ -13,40 +13,12 @@ import {
   Award,
 } from 'lucide-react';
 import { BUSINESS_DETAILS } from './legalPolicies';
+import { useModalEscape } from '../../hooks/useModalEscape';
 
 export function BusinessVerificationModal({ isOpen, onClose }) {
   const modalRef = useRef(null);
 
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        onClose();
-        return;
-      }
-
-      if (e.key === 'Tab' && modalRef.current) {
-        const focusable = modalRef.current.querySelectorAll(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        );
-        if (focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  useModalEscape(onClose, isOpen, modalRef);
 
   if (!isOpen) return null;
 
@@ -82,7 +54,7 @@ export function BusinessVerificationModal({ isOpen, onClose }) {
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
             aria-label="Close Business Details Modal"
           >
             <X className="w-4 h-4" />
@@ -185,7 +157,7 @@ export function BusinessVerificationModal({ isOpen, onClose }) {
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-900 text-white font-semibold cursor-pointer transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-900 text-white font-semibold cursor-pointer transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
           >
             Close
           </button>

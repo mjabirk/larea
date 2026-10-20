@@ -610,9 +610,13 @@ async def send_email(
                     purge_mode = "days"
                     purge_days = tmpl_row["purge_days"] or 30
 
+        # Dynamically query primary or tenant organization for branding
+        org_row = await conn.fetchrow("SELECT * FROM organizations ORDER BY created_at ASC LIMIT 1;")
+        dynamic_company_name = org_row["legal_name"] if org_row and org_row.get("legal_name") else "Enterprise Organization"
+
         # Build interpolation context from live DB records
         context: Dict[str, Any] = {
-            "company_name": "Apex Global Enterprises Q.P.S.C.",
+            "company_name": dynamic_company_name,
             "today": now.strftime("%Y-%m-%d"),
             "current_year": str(now.year),
         }
@@ -714,7 +718,15 @@ async def send_email(
 
         # If system report requested (Payslip PDF)
         if attach_report and payslip_record:
-            pdf_meta = await asyncio.to_thread(generate_payslip_pdf_report, payslip_record, batch_record)
+            org_info_dict = dict(org_row) if org_row else {}
+            wps_val = await conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:qatar_wps_config';")
+            if wps_val:
+                try:
+                    wps_cfg = json.loads(wps_val) if isinstance(wps_val, str) else dict(wps_val)
+                    org_info_dict["employer_eid"] = wps_cfg.get("employer_eid")
+                except Exception:
+                    pass
+            pdf_meta = await asyncio.to_thread(generate_payslip_pdf_report, payslip_record, batch_record, org_info_dict)
             att_id = uuid.uuid4()
             await conn.execute("""
                 INSERT INTO mail_attachments (

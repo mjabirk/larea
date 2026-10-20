@@ -238,6 +238,18 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
     }
   }, [employee]);
 
+  // Unsaved changes beforeunload listener
+  useEffect(() => {
+    if (!isDirty) return;
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
+
   const handleChange = (field, value) => {
     setIsDirty(true);
     onDirtyChange?.(true);
@@ -266,6 +278,9 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
   };
 
   const handleDiscard = () => {
+    if (isDirty && !window.confirm('You have unsaved changes. Discard all changes?')) {
+      return;
+    }
     if (employee) {
       setFormData({
         employee_number: employee.employee_number || '',
@@ -387,6 +402,24 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      {showHeader && (
+        <div className="lg:col-span-12 flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+          <button
+            type="button"
+            onClick={() => {
+              if (isDirty && !window.confirm('You have unsaved changes. Discard and return to employee list?')) {
+                return;
+              }
+              onBack?.();
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-700 transition cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Back to list</span>
+          </button>
+        </div>
+      )}
+
       {/* ========================================================================= */}
       {/* MAIN FORM TABS & DETAILS: 8 Columns on Desktop (lg:col-span-8)           */}
       {/* ========================================================================= */}

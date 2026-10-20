@@ -16,6 +16,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { LEGAL_POLICIES, BUSINESS_DETAILS } from './legalPolicies';
+import { useModalEscape } from '../../hooks/useModalEscape';
 
 export function LegalPolicyModal({ isOpen, onClose, initialPolicy = 'privacy' }) {
   const [activePolicyId, setActivePolicyId] = useState(initialPolicy);
@@ -28,37 +29,8 @@ export function LegalPolicyModal({ isOpen, onClose, initialPolicy = 'privacy' })
     }
   }, [initialPolicy]);
 
-  // Keyboard navigation & accessible focus trapping
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        onClose();
-        return;
-      }
-
-      if (e.key === 'Tab' && modalRef.current) {
-        const focusable = modalRef.current.querySelectorAll(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        );
-        if (focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  // Keyboard navigation & accessible focus trapping via useModalEscape
+  useModalEscape(onClose, isOpen, modalRef);
 
   if (!isOpen) return null;
 
@@ -113,7 +85,7 @@ export function LegalPolicyModal({ isOpen, onClose, initialPolicy = 'privacy' })
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
             aria-label="Close Statutory Document Viewer"
           >
             <X className="w-5 h-5" />
@@ -136,7 +108,7 @@ export function LegalPolicyModal({ isOpen, onClose, initialPolicy = 'privacy' })
                   key={tab.id}
                   type="button"
                   onClick={() => setActivePolicyId(tab.id)}
-                  className={`px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${isActive
+                  className={`px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${isActive
                       ? 'bg-blue-600 text-white shadow-xs'
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-700/50'
                     }`}
@@ -153,7 +125,7 @@ export function LegalPolicyModal({ isOpen, onClose, initialPolicy = 'privacy' })
             <button
               type="button"
               onClick={handlePrint}
-              className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
               title="Print Statutory Policy"
               aria-label="Print Current Policy"
             >
@@ -172,7 +144,7 @@ export function LegalPolicyModal({ isOpen, onClose, initialPolicy = 'privacy' })
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={`Search within ${currentPolicy.title}...`}
-              className="w-full pl-9 pr-7 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              className="w-full pl-9 pr-7 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
               aria-label={`Search inside ${currentPolicy.title}`}
             />
             {searchQuery && (
@@ -272,7 +244,7 @@ export function LegalPolicyModal({ isOpen, onClose, initialPolicy = 'privacy' })
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold cursor-pointer transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold cursor-pointer transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
           >
             Acknowledge & Close
           </button>

@@ -1,0 +1,32 @@
+{
+  "model": "roles",
+  "title": "Roles & Permissions Matrix",
+  "default_view": "list",
+  "newButtonLabel": "+ Create Role",
+  "header_actions": [
+    { "id": "act_create", "label": "Create Role", "action": "create", "type": "create" },
+    { "id": "act_delete", "label": "Delete Role", "action": "delete", "type": "delete" }
+  ],
+  "fields": {
+    "id": { "type": "string", "label": "Role Identifier", "required": true },
+    "name": { "type": "string", "label": "Role Name", "required": true },
+    "code": { "type": "string", "label": "Role Code" },
+    "description": { "type": "string", "label": "Description" },
+    "badge_color": { "type": "string", "label": "Color" },
+    "is_system": { "type": "boolean", "label": "System Protected", "readonly": true },
+    "created_at": { "type": "datetime", "label": "Created At", "readonly": true }
+  },
+  "views": {
+    "list": {
+      "columns": ["code", "name", "description", "badge_color", "is_system"]
+    },
+    "form": {
+      "statusbar": {
+        "field": "is_system",
+        "buttons": [
+          { "id": "btn_save", "label": "Save Role", "action": "save", "style": "primary" }
+        ]
+      }
+    }
+  }
+}

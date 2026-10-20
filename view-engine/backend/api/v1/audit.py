@@ -5,11 +5,35 @@ from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
 from pydantic import BaseModel
 
-from backend.core.database import get_db_pool
-from backend.core.dependencies import get_current_user_session, get_client_ip, check_permission
+from backend.core.database import get_db_pool, log_audit_event
+from backend.core.dependencies import get_current_user_session, get_client_ip, check_permission, require_permission
 from backend.core.audit import AuditLog, record_audit_log, verify_audit_chain
 
 router = APIRouter(prefix="/api/v1/audit-logs", tags=["Audit & Chatter Engine"])
+
+ENTITY_READ_PERMISSIONS: Dict[str, str] = {
+    "employees": "employees.read",
+    "employee": "employees.read",
+    "contracts": "hr.contracts_read",
+    "contract": "hr.contracts_read",
+    "employee_contracts": "hr.contracts_read",
+    "attendance": "attendance.read",
+    "attendance_logs": "attendance.read",
+    "payslips": "hr.salary_read",
+    "payslip": "hr.salary_read",
+    "payroll_batches": "hr.salary_read",
+    "payroll_batch": "hr.salary_read",
+    "leaves": "leaves.read",
+    "leave": "leaves.read",
+    "leave_requests": "leaves.read",
+}
+
+
+def verify_entity_permission(entity_type: str, session: Dict[str, Any]) -> None:
+    norm = str(entity_type).lower().strip().replace("hr.", "").replace("payroll.", "")
+    perm = ENTITY_READ_PERMISSIONS.get(norm) or ENTITY_READ_PERMISSIONS.get(f"{norm}s")
+    if perm:
+        require_permission(session, perm)
 
 
 class LogNoteRequest(BaseModel):
@@ -59,6 +83,7 @@ async def get_audit_trail(
     session: Dict[str, Any] = Depends(get_current_user_session),
 ):
     """Retrieve full chronological audit trail and internal notes for an entity."""
+    verify_entity_permission(entity_type, session)
     pool = get_db_pool()
     async with pool.acquire() as conn:
         variants = list({
@@ -106,6 +131,7 @@ async def log_internal_note(
     session: Dict[str, Any] = Depends(get_current_user_session),
 ):
     """Log an internal operational discussion note into the record chatter stream with cryptographic hash chaining."""
+    verify_entity_permission(entity_type, session)
     clean_note = payload.note.strip()
     if not clean_note:
         raise HTTPException(status_code=400, detail="Note content cannot be empty.")

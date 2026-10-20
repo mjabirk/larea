@@ -1,0 +1,40 @@
+{
+  "model": "branches",
+  "title": "Organization Branches & Sites",
+  "default_view": "list",
+  "newButtonLabel": "+ New Branch",
+  "header_actions": [
+    { "id": "act_create", "label": "New Branch", "action": "create", "type": "create" },
+    { "id": "act_delete", "label": "Delete Branch", "action": "delete", "type": "delete" }
+  ],
+  "fields": {
+    "id": { "type": "uuid", "label": "ID", "readonly": true },
+    "code": { "type": "string", "label": "Branch Code", "required": true },
+    "name": { "type": "string", "label": "Branch Name", "required": true },
+    "city": { "type": "string", "label": "City" },
+    "address": { "type": "string", "label": "Physical Address" },
+    "status": {
+      "type": "selection",
+      "label": "Status",
+      "options": [
+        { "value": "active", "label": "Active" },
+        { "value": "inactive", "label": "Inactive" }
+      ]
+    },
+    "organization_id": { "type": "uuid", "label": "Organization ID", "readonly": true },
+    "created_at": { "type": "datetime", "label": "Created At", "readonly": true }
+  },
+  "views": {
+    "list": {
+      "columns": ["code", "name", "city", "address", "status"]
+    },
+    "form": {
+      "statusbar": {
+        "field": "status",
+        "buttons": [
+          { "id": "btn_activate", "label": "Activate", "action": "activate", "target": "active", "style": "primary" }
+        ]
+      }
+    }
+  }
+}

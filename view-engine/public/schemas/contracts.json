@@ -6,6 +6,12 @@
     "dual_control_enforced": true,
     "sod_rule": "SOD_CONTRACT_MAKER_VS_CHECKER"
   },
+  "default_view": "list",
+  "newButtonLabel": "+ New Contract",
+  "header_actions": [
+    { "id": "act_create", "label": "New Contract", "action": "create", "type": "create" },
+    { "id": "act_delete", "label": "Delete Contract", "action": "delete", "type": "delete" }
+  ],
   "fields": {
     "id": { "type": "integer", "label": "ID", "readonly": true },
     "contract_reference": { "type": "string", "label": "Contract Ref", "required": true },

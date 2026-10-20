@@ -31,7 +31,8 @@ from backend.core.database import (
     hash_password,
     hash_password_async,
     verify_password,
-    verify_password_async
+    verify_password_async,
+    log_audit_event
 )
 from backend.core.auth_suite import (
     APIKeyEngine,
@@ -65,7 +66,7 @@ app = FastAPI(
 # Enable CORS for React frontend (Vite dev server)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=settings.CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -87,6 +88,7 @@ from backend.api.v1.employees import router as employees_router
 from backend.api.v1.audit import router as audit_router
 from backend.api.v1.contracts import router as contracts_router
 from backend.api.v1.attendance import router as attendance_router
+from backend.api.v1.rosters import router as rosters_router
 from backend.api.v1.payroll import router as payroll_router
 from backend.api.v1.leaves_eosb import router as leaves_eosb_router
 from backend.api.v1.zkteco import router as zkteco_router
@@ -100,6 +102,7 @@ app.include_router(employees_router)
 app.include_router(audit_router)
 app.include_router(contracts_router)
 app.include_router(attendance_router)
+app.include_router(rosters_router)
 app.include_router(payroll_router)
 app.include_router(leaves_eosb_router)
 app.include_router(zkteco_router)
@@ -243,7 +246,9 @@ from backend.core.dependencies import (
     get_client_ip,
     get_current_user_session,
     require_permission,
-    check_permission
+    check_permission,
+    can_read_salary,
+    verify_record_tenant,
 )
 
 # Redis-based Atomic Rate Limiting Helpers (DoS Protection & Brute Force Prevention)
@@ -1051,9 +1056,20 @@ async def verify_2fa(req: Verify2FARequest, request: Request, response: Response
         "user": user_data
     }
 
+class Confirm2FAPayload(BaseModel):
+    totp_code: str
+
+class Disable2FAPayload(BaseModel):
+    totp_code: Optional[str] = None
+    password: Optional[str] = None
+
 @app.post("/api/v1/auth/2fa/setup")
 async def setup_2fa(session: Dict[str, Any] = Depends(get_current_user_session)):
-    """Enrolls 2FA for the active user, generating a secret and QR code URI."""
+    """
+    Step 1 of Two-Step 2FA Enrollment:
+    Generates a secret and QR code URI, stores secret in Redis (with 600s TTL)
+    and saves secret in users with is_2fa_enabled = false until verified.
+    """
     user_id = session["user_id"]
     try:
         parsed_uuid = uuid.UUID(user_id)
@@ -1064,37 +1080,160 @@ async def setup_2fa(session: Dict[str, Any] = Depends(get_current_user_session))
     uri = TwoFactorAuthService.get_totp_uri(session.get("username", "user"), secret)
     qr_base64 = TwoFactorAuthService.generate_qr_code_base64(uri)
     
+    # Store pending secret in Redis with 600s TTL
+    redis = get_redis_client()
+    if redis:
+        try:
+            await redis.setex(f"2fa_setup_pending:{user_id}", 600, secret)
+        except Exception as e:
+            logger.warning(f"Failed to cache pending 2FA secret in Redis: {e}")
+
     pool = get_db_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
-            UPDATE users SET totp_secret = $1, is_2fa_enabled = true, updated_at = CURRENT_TIMESTAMP
+            UPDATE users SET totp_secret = $1, is_2fa_enabled = false, updated_at = CURRENT_TIMESTAMP
             WHERE id = $2
         """, secret, parsed_uuid)
         
     return {
-        "status": "success",
+        "status": "pending_confirmation",
         "secret": secret,
         "provisioning_uri": uri,
         "qr_code_base64": qr_base64
     }
 
-@app.post("/api/v1/auth/2fa/disable")
-async def disable_2fa(session: Dict[str, Any] = Depends(get_current_user_session)):
-    """Disables 2FA for the active authenticated user."""
+@app.post("/api/v1/auth/2fa/confirm-setup")
+async def confirm_2fa_setup(
+    req: Confirm2FAPayload,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """
+    Step 2 of Two-Step 2FA Enrollment:
+    Accepts totp_code, verifies it via TwoFactorAuthService.verify_totp_code(secret, req.totp_code),
+    and only then sets is_2fa_enabled = true in users.
+    """
     user_id = session["user_id"]
     try:
         parsed_uuid = uuid.UUID(user_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid user ID format.")
 
+    code = (req.totp_code or "").strip()
+    if not code or len(code) != 6 or not code.isdigit():
+        raise HTTPException(status_code=400, detail="A valid 6-digit TOTP verification code is required.")
+
+    secret = None
+    redis = get_redis_client()
+    if redis:
+        try:
+            secret = await redis.get(f"2fa_setup_pending:{user_id}")
+        except Exception:
+            pass
+
+    pool = get_db_pool()
+    if not secret:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT totp_secret FROM users WHERE id = $1",
+                parsed_uuid
+            )
+            if row and row["totp_secret"]:
+                secret = row["totp_secret"]
+
+    if not secret:
+        raise HTTPException(
+            status_code=400,
+            detail="No pending 2FA setup found or setup session expired. Please initiate 2FA setup again."
+        )
+
+    # Verify the 6-digit code via TwoFactorAuthService.verify_totp_code(secret, req.totp_code)
+    if not TwoFactorAuthService.verify_totp_code(secret, code):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid 6-digit verification code. Please check your authenticator app and try again."
+        )
+
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE users SET totp_secret = $1, is_2fa_enabled = true, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+        """, secret, parsed_uuid)
+
+    if redis:
+        try:
+            await redis.delete(f"2fa_setup_pending:{user_id}")
+        except Exception:
+            pass
+
+    return {
+        "status": "success",
+        "is_2fa_enabled": True,
+        "message": "Two-factor authentication successfully verified and enabled."
+    }
+
+@app.post("/api/v1/auth/2fa/disable")
+async def disable_2fa(
+    req: Disable2FAPayload = Disable2FAPayload(),
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """
+    Disables 2FA for the active authenticated user.
+    Requires a valid totp_code or current account password before disabling.
+    """
+    user_id = session["user_id"]
+    try:
+        parsed_uuid = uuid.UUID(user_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid user ID format.")
+
+    if not req.totp_code and not req.password:
+        raise HTTPException(
+            status_code=400,
+            detail="A valid 6-digit TOTP code or current account password is required to disable 2FA."
+        )
+
     pool = get_db_pool()
     async with pool.acquire() as conn:
+        user_row = await conn.fetchrow(
+            "SELECT id, password_hash, totp_secret, is_2fa_enabled FROM users WHERE id = $1",
+            parsed_uuid
+        )
+        if not user_row:
+            raise HTTPException(status_code=404, detail="User account not found.")
+
+        is_verified = False
+        if req.totp_code and user_row["totp_secret"]:
+            clean_code = req.totp_code.strip()
+            if TwoFactorAuthService.verify_totp_code(user_row["totp_secret"], clean_code):
+                is_verified = True
+
+        if not is_verified and req.password and user_row["password_hash"]:
+            if await verify_password_async(req.password, user_row["password_hash"]):
+                is_verified = True
+
+        if not is_verified:
+            raise HTTPException(
+                status_code=401,
+                detail="Verification failed. Invalid TOTP code or incorrect password."
+            )
+
         await conn.execute("""
             UPDATE users SET totp_secret = NULL, is_2fa_enabled = false, updated_at = CURRENT_TIMESTAMP
             WHERE id = $1
         """, parsed_uuid)
 
-    return {"status": "success", "is_2fa_enabled": False}
+    redis = get_redis_client()
+    if redis:
+        try:
+            await redis.delete(f"2fa_setup_pending:{user_id}")
+        except Exception:
+            pass
+
+    return {
+        "status": "success",
+        "is_2fa_enabled": False,
+        "message": "Two-factor authentication has been disabled."
+    }
 
 @app.get("/api/v1/auth/me")
 async def get_current_user_profile(session: Dict[str, Any] = Depends(get_current_user_session)):
@@ -1174,23 +1313,42 @@ async def list_users(session: Dict[str, Any] = Depends(get_current_user_session)
 
     pool = get_db_pool()
     is_admin = bool(session.get("is_superadmin")) or check_permission(session, "users.manage")
+    is_superadmin = bool(session.get("is_superadmin"))
+    org_id = session.get("organization_id")
 
     async with pool.acquire() as conn:
         if is_admin:
-            rows = await conn.fetch("""
-                SELECT u.id, u.email, u.full_name, u.status, u.is_superadmin, u.role_id,
-                       r.name as role_name, u.organization_id, o.legal_name as organization_name,
-                       u.branch_id, b.name as branch_name, b.code as branch_code,
-                       u.department, u.allowed_cidrs, u.date_of_birth, u.age,
-                       u.guardian_name, u.guardian_email, u.auth_provider, u.windows_upn,
-                       u.ad_sam_account, u.auto_sso_enabled, u.is_2fa_enabled,
-                       u.created_at, u.updated_at
-                FROM users u
-                LEFT JOIN roles r ON u.role_id = r.id
-                LEFT JOIN organizations o ON u.organization_id = o.id
-                LEFT JOIN branches b ON u.branch_id = b.id
-                ORDER BY u.created_at DESC
-            """)
+            if not is_superadmin and org_id:
+                rows = await conn.fetch("""
+                    SELECT u.id, u.email, u.full_name, u.status, u.is_superadmin, u.role_id,
+                           r.name as role_name, u.organization_id, o.legal_name as organization_name,
+                           u.branch_id, b.name as branch_name, b.code as branch_code,
+                           u.department, u.allowed_cidrs, u.date_of_birth, u.age,
+                           u.guardian_name, u.guardian_email, u.auth_provider, u.windows_upn,
+                           u.ad_sam_account, u.auto_sso_enabled, u.is_2fa_enabled,
+                           u.created_at, u.updated_at
+                    FROM users u
+                    LEFT JOIN roles r ON u.role_id = r.id
+                    LEFT JOIN organizations o ON u.organization_id = o.id
+                    LEFT JOIN branches b ON u.branch_id = b.id
+                    WHERE u.organization_id = $1::uuid
+                    ORDER BY u.created_at DESC
+                """, uuid.UUID(str(org_id)))
+            else:
+                rows = await conn.fetch("""
+                    SELECT u.id, u.email, u.full_name, u.status, u.is_superadmin, u.role_id,
+                           r.name as role_name, u.organization_id, o.legal_name as organization_name,
+                           u.branch_id, b.name as branch_name, b.code as branch_code,
+                           u.department, u.allowed_cidrs, u.date_of_birth, u.age,
+                           u.guardian_name, u.guardian_email, u.auth_provider, u.windows_upn,
+                           u.ad_sam_account, u.auto_sso_enabled, u.is_2fa_enabled,
+                           u.created_at, u.updated_at
+                    FROM users u
+                    LEFT JOIN roles r ON u.role_id = r.id
+                    LEFT JOIN organizations o ON u.organization_id = o.id
+                    LEFT JOIN branches b ON u.branch_id = b.id
+                    ORDER BY u.created_at DESC
+                """)
         else:
             # Standard user: only return their own user record so profile modals still work without leaking user directory
             try:
@@ -1205,12 +1363,12 @@ async def list_users(session: Dict[str, Any] = Depends(get_current_user_session)
                        u.guardian_name, u.guardian_email, u.auth_provider, u.windows_upn,
                        u.ad_sam_account, u.auto_sso_enabled, u.is_2fa_enabled,
                        u.created_at, u.updated_at
-                FROM users u
-                LEFT JOIN roles r ON u.role_id = r.id
-                LEFT JOIN organizations o ON u.organization_id = o.id
-                LEFT JOIN branches b ON u.branch_id = b.id
-                WHERE u.id = $1
-                ORDER BY u.created_at DESC
+                    FROM users u
+                    LEFT JOIN roles r ON u.role_id = r.id
+                    LEFT JOIN organizations o ON u.organization_id = o.id
+                    LEFT JOIN branches b ON u.branch_id = b.id
+                    WHERE u.id = $1
+                    ORDER BY u.created_at DESC
             """, curr_uid)
         
         users_list = []
@@ -1248,6 +1406,7 @@ async def list_users(session: Dict[str, Any] = Depends(get_current_user_session)
 @app.post("/api/v1/iam/users")
 async def create_user(
     req: CreateUserRequest,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Provisions a new identity directly in PostgreSQL with a bcrypt password."""
@@ -1256,6 +1415,7 @@ async def create_user(
     clean_email = req.email.strip().lower()
     clean_upn = req.windows_upn.strip().lower() if req.windows_upn else None
     clean_sam = req.ad_sam_account.strip() if req.ad_sam_account else None
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
     
     async with pool.acquire() as conn:
         existing = await conn.fetchval(
@@ -1264,9 +1424,13 @@ async def create_user(
         if existing:
             raise HTTPException(status_code=400, detail="A user with this email address already exists.")
             
-        # Fallback org & branch if not specified
-        org_id = uuid.UUID(req.organization_id) if req.organization_id else await conn.fetchval("SELECT id FROM organizations LIMIT 1")
-        branch_id = uuid.UUID(req.branch_id) if req.branch_id else await conn.fetchval("SELECT id FROM branches LIMIT 1")
+        # Fallback org & branch if not specified; enforce tenant boundary for non-superadmins
+        if not session.get("is_superadmin") and session.get("organization_id"):
+            org_id = uuid.UUID(str(session["organization_id"]))
+        else:
+            org_id = uuid.UUID(req.organization_id) if req.organization_id else await conn.fetchval("SELECT id FROM organizations LIMIT 1")
+
+        branch_id = uuid.UUID(req.branch_id) if req.branch_id else await conn.fetchval("SELECT id FROM branches WHERE organization_id = $1 LIMIT 1", org_id) or await conn.fetchval("SELECT id FROM branches LIMIT 1")
         
         # Map role if given as friendly name
         role_id = req.role_id or "role_standard"
@@ -1309,6 +1473,23 @@ async def create_user(
            req.date_of_birth, req.age, req.guardian_name, req.guardian_email,
            req.auth_provider or "local", clean_upn, clean_sam, bool(req.auto_sso_enabled))
         
+        await log_audit_event(
+            conn=conn,
+            entity_type="users",
+            entity_id=new_id,
+            action="CREATE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Created user {clean_email} ({req.full_name}) with role {role_id}.",
+            changes={
+                "email": clean_email,
+                "full_name": req.full_name,
+                "role_id": role_id,
+                "status": req.status or "active",
+                "department": req.department
+            }
+        )
+
         # Fetch created row
         r = await conn.fetchrow("""
             SELECT u.*, r.name as role_name, o.legal_name as organization_name, b.name as branch_name, b.code as branch_code
@@ -1345,6 +1526,7 @@ async def create_user(
 async def update_user(
     user_id: str,
     req: UpdateUserRequest,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Updates user record in PostgreSQL."""
@@ -1361,10 +1543,13 @@ async def update_user(
     if not (is_superadmin or can_manage or is_self):
         raise HTTPException(status_code=403, detail="Access denied: Cannot update other users.")
         
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
     async with pool.acquire() as conn:
         existing = await conn.fetchrow("SELECT * FROM users WHERE id = $1", u_id)
         if not existing:
             raise HTTPException(status_code=404, detail="User not found.")
+        verify_record_tenant(existing["organization_id"], session)
 
         # Validate idle_timeout_minutes against corporate security policy ceiling
         policies = await get_system_security_policies()
@@ -1432,6 +1617,23 @@ async def update_user(
            req.department, cidrs, req.date_of_birth, req.age,
            req.guardian_name, req.guardian_email, new_idle,
            new_upn, new_sam, new_provider, new_auto_sso)
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="users",
+            entity_id=u_id,
+            action="UPDATE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Updated user profile for {existing['email']} ({req.full_name or existing['full_name']}).",
+            changes={
+                "full_name": req.full_name,
+                "email": req.email,
+                "status": status_val,
+                "role_id": role_id,
+                "department": req.department
+            }
+        )
            
         return {"status": "success", "message": "User updated successfully."}
 
@@ -1439,6 +1641,7 @@ async def update_user(
 async def reset_user_password(
     user_id: str,
     req: ResetPasswordRequest,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Sets a new bcrypt-hashed password in PostgreSQL."""
@@ -1459,6 +1662,7 @@ async def reset_user_password(
     if complexity_err:
         raise HTTPException(status_code=400, detail=complexity_err)
         
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
     hashed_pwd = await hash_password_async(req.password)
     async with pool.acquire() as conn:
         if not is_superadmin and not is_self and can_manage:
@@ -1472,12 +1676,24 @@ async def reset_user_password(
         )
         if updated == "UPDATE 0":
             raise HTTPException(status_code=404, detail="User not found.")
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="users",
+            entity_id=u_id,
+            action="RESET_PASSWORD",
+            session=session,
+            client_ip=client_ip,
+            note=f"Password was reset for user ID {u_id}.",
+            changes={"password_reset": True}
+        )
             
     return {"status": "success", "message": "Password updated successfully."}
 
 @app.delete("/api/v1/iam/users/{user_id}")
 async def delete_user(
     user_id: str,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Deletes user from PostgreSQL."""
@@ -1488,11 +1704,27 @@ async def delete_user(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid user UUID.")
         
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
     async with pool.acquire() as conn:
-        is_super = await conn.fetchval("SELECT is_superadmin FROM users WHERE id = $1", u_id)
-        if is_super:
+        target = await conn.fetchrow("SELECT is_superadmin, organization_id, email FROM users WHERE id = $1", u_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found.")
+        if target["is_superadmin"]:
             raise HTTPException(status_code=400, detail="Cannot delete Root Superadmin.")
+        verify_record_tenant(target["organization_id"], session)
         await conn.execute("DELETE FROM users WHERE id = $1", u_id)
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="users",
+            entity_id=u_id,
+            action="DELETE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Deleted user {target['email']} ({u_id}).",
+            changes={"deleted_user_id": str(u_id), "email": target["email"]}
+        )
         
     return {"status": "success", "message": "User deleted."}
 
@@ -1542,6 +1774,7 @@ async def list_roles(session: Dict[str, Any] = Depends(get_current_user_session)
 @app.post("/api/v1/iam/roles")
 async def create_role(
     req: CreateRoleRequest,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Creates a custom security role in PostgreSQL."""
@@ -1573,6 +1806,8 @@ async def create_role(
     except Exception:
         pass
 
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
     async with pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO roles (
@@ -1582,6 +1817,17 @@ async def create_role(
             VALUES ($1, $2, $3, $4, $5, false, $6::jsonb, $7::jsonb, $8, 'approved')
         """, role_id, clean_name, code, req.description or "Custom user-defined security role.",
            req.badge_color or "amber", json.dumps(perms), json.dumps(menu_access), creator_uid)
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="roles",
+            entity_id=role_id,
+            action="CREATE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Created custom security role '{clean_name}' ({code}).",
+            changes={"name": clean_name, "code": code, "permissions": perms, "menu_access": menu_access}
+        )
            
     return {
         "id": role_id,
@@ -1599,11 +1845,14 @@ async def create_role(
 async def update_role(
     role_id: str,
     req: UpdateRoleRequest,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Dynamically updates role permissions and menu_access in PostgreSQL."""
     require_permission(session, "roles.manage")
     pool = get_db_pool()
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
     async with pool.acquire() as conn:
         existing = await conn.fetchrow("SELECT * FROM roles WHERE id = $1", role_id)
         if not existing:
@@ -1628,6 +1877,17 @@ async def update_role(
             WHERE id = $1
         """, role_id, req.name, req.description, req.badge_color, perms_json, menu_json)
 
+        await log_audit_event(
+            conn=conn,
+            entity_type="roles",
+            entity_id=role_id,
+            action="UPDATE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Updated permissions matrix for role '{existing['name']}' ({role_id}).",
+            changes={"name": req.name, "description": req.description, "permissions": req.permissions, "menu_access": req.menu_access}
+        )
+
         updated_row = await conn.fetchrow("SELECT * FROM roles WHERE id = $1", role_id)
         
     return {
@@ -1648,13 +1908,16 @@ async def update_role(
 @app.delete("/api/v1/iam/roles/{role_id}")
 async def delete_role(
     role_id: str,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Deletes custom role from PostgreSQL (system roles are protected)."""
     require_permission(session, "roles.manage")
     pool = get_db_pool()
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
     async with pool.acquire() as conn:
-        role = await conn.fetchrow("SELECT is_system FROM roles WHERE id = $1", role_id)
+        role = await conn.fetchrow("SELECT is_system, name, code FROM roles WHERE id = $1", role_id)
         if not role:
             raise HTTPException(status_code=404, detail="Role not found.")
         if role["is_system"]:
@@ -1665,6 +1928,17 @@ async def delete_role(
             raise HTTPException(status_code=400, detail=f"Cannot delete role: {assigned_count} users currently assigned.")
             
         await conn.execute("DELETE FROM roles WHERE id = $1", role_id)
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="roles",
+            entity_id=role_id,
+            action="DELETE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Deleted custom role '{role['name']}' ({role_id}).",
+            changes={"deleted_role_id": role_id, "name": role["name"], "code": role["code"]}
+        )
         
     return {"status": "success", "message": "Role deleted."}
 
@@ -1681,28 +1955,56 @@ async def list_api_keys(session: Dict[str, Any] = Depends(get_current_user_sessi
 @app.post("/api/v1/iam/api-keys")
 async def create_api_key(
     req: CreateAPIKeyRequest,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Creates a new API key in PostgreSQL and populates Redis cache."""
     require_permission(session, "hardware.manage")
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
     created = await APIKeyEngine.create_api_key(
         owner=req.owner,
         role=req.role or "service_daemon",
         allowed_cidrs=req.allowed_cidrs,
         scopes=req.scopes
     )
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        await log_audit_event(
+            conn=conn,
+            entity_type="api_keys",
+            entity_id=created.get("id") or created.get("key_id") or req.owner,
+            action="CREATE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Generated persistent API key for owner '{req.owner}' with role '{req.role}'.",
+            changes={"owner": req.owner, "role": req.role, "scopes": req.scopes}
+        )
     return {"status": "success", "api_key": created}
 
 @app.delete("/api/v1/iam/api-keys/{key_id}")
 async def revoke_api_key(
     key_id: str,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Revokes API key from PostgreSQL and purges Redis cache."""
     require_permission(session, "hardware.manage")
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
     success = await APIKeyEngine.revoke_api_key(key_id)
     if not success:
         raise HTTPException(status_code=404, detail="API key not found.")
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        await log_audit_event(
+            conn=conn,
+            entity_type="api_keys",
+            entity_id=key_id,
+            action="REVOKE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Revoked API key {key_id}.",
+            changes={"key_id": key_id}
+        )
     return {"status": "success", "message": "API key revoked."}
 
 
@@ -1711,11 +2013,19 @@ async def revoke_api_key(
 # ==============================================================================
 @app.get("/api/v1/iam/tenancy")
 async def get_tenancy_data(session: Dict[str, Any] = Depends(get_current_user_session)):
-    """Returns organizations and branches from PostgreSQL."""
+    """Returns organizations and branches from PostgreSQL scoped to tenant for non-superadmins."""
     pool = get_db_pool()
+    is_superadmin = bool(session.get("is_superadmin"))
+    org_id = session.get("organization_id")
+
     async with pool.acquire() as conn:
-        org_rows = await conn.fetch("SELECT * FROM organizations ORDER BY created_at ASC")
-        branch_rows = await conn.fetch("SELECT * FROM branches ORDER BY created_at ASC")
+        if not is_superadmin and org_id:
+            org_uuid = uuid.UUID(str(org_id))
+            org_rows = await conn.fetch("SELECT * FROM organizations WHERE id = $1 ORDER BY created_at ASC", org_uuid)
+            branch_rows = await conn.fetch("SELECT * FROM branches WHERE organization_id = $1 ORDER BY created_at ASC", org_uuid)
+        else:
+            org_rows = await conn.fetch("SELECT * FROM organizations ORDER BY created_at ASC")
+            branch_rows = await conn.fetch("SELECT * FROM branches ORDER BY created_at ASC")
         
         orgs = [
             {
@@ -1764,6 +2074,7 @@ class SystemSettingPayload(BaseModel):
 async def update_organization(
     org_id: str,
     req: UpdateOrganizationRequest,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Updates organization legal name, Qatar CR/Tax ID, currency, and timezone."""
@@ -1773,6 +2084,8 @@ async def update_organization(
         o_uuid = uuid.UUID(org_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid organization UUID.")
+
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
 
     async with pool.acquire() as conn:
         await conn.execute("""
@@ -1787,6 +2100,24 @@ async def update_organization(
         row = await conn.fetchrow("SELECT * FROM organizations WHERE id = $1", o_uuid)
         if not row:
             raise HTTPException(status_code=404, detail="Organization not found.")
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="organizations",
+            entity_id=o_uuid,
+            action="UPDATE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Updated organization legal name to '{req.legal_name.strip()}', tax ID '{req.tax_id}'.",
+            changes={
+                "legal_name": req.legal_name.strip(),
+                "tax_id": req.tax_id,
+                "base_currency": req.base_currency,
+                "default_timezone": req.default_timezone,
+                "default_locale": req.default_locale
+            }
+        )
+
         return {
             "id": str(row["id"]),
             "legal_name": row["legal_name"],
@@ -1799,11 +2130,14 @@ async def update_organization(
 @app.post("/api/v1/iam/branches")
 async def create_branch(
     req: BranchPayload,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Creates a new operating branch in PostgreSQL."""
     require_permission(session, "org.manage")
     pool = get_db_pool()
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
     async with pool.acquire() as conn:
         org_uuid = (
             uuid.UUID(req.organization_id)
@@ -1816,6 +2150,24 @@ async def create_branch(
             INSERT INTO branches (id, organization_id, name, code, city, ip_allowlist)
             VALUES ($1, $2, $3, $4, $5, $6::jsonb)
         """, new_id, org_uuid, req.name.strip(), req.code.strip().upper(), req.city or "Doha", json.dumps(cidrs))
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="branches",
+            entity_id=new_id,
+            action="CREATE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Created operating branch '{req.name.strip()}' ({req.code.strip().upper()}).",
+            changes={
+                "organization_id": str(org_uuid),
+                "name": req.name.strip(),
+                "code": req.code.strip().upper(),
+                "city": req.city or "Doha",
+                "ip_allowlist": cidrs
+            }
+        )
+
         return {
             "id": str(new_id),
             "organization_id": str(org_uuid),
@@ -1829,6 +2181,7 @@ async def create_branch(
 async def update_branch(
     branch_id: str,
     req: BranchPayload,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Updates an operating branch and its CIDR IP allowlist."""
@@ -1839,18 +2192,38 @@ async def update_branch(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid branch UUID.")
 
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
     cidrs = req.ip_allowlist or ["127.0.0.1/32"]
+
     async with pool.acquire() as conn:
         await conn.execute("""
             UPDATE branches
             SET name = $2, code = $3, city = $4, ip_allowlist = $5::jsonb
             WHERE id = $1
         """, b_uuid, req.name.strip(), req.code.strip().upper(), req.city or "Doha", json.dumps(cidrs))
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="branches",
+            entity_id=b_uuid,
+            action="UPDATE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Updated operating branch {b_uuid} ({req.name.strip()}).",
+            changes={
+                "name": req.name.strip(),
+                "code": req.code.strip().upper(),
+                "city": req.city or "Doha",
+                "ip_allowlist": cidrs
+            }
+        )
+
         return {"status": "success", "id": str(b_uuid)}
 
 @app.delete("/api/v1/iam/branches/{branch_id}")
 async def delete_branch(
     branch_id: str,
+    request: Request,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Deletes an operating branch if more than 1 branch exists."""
@@ -1861,11 +2234,27 @@ async def delete_branch(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid branch UUID.")
 
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
     async with pool.acquire() as conn:
         count = await conn.fetchval("SELECT count(*) FROM branches")
         if count <= 1:
             raise HTTPException(status_code=400, detail="Cannot delete the primary operating branch.")
+            
+        branch_info = await conn.fetchrow("SELECT name, code FROM branches WHERE id = $1", b_uuid)
         await conn.execute("DELETE FROM branches WHERE id = $1", b_uuid)
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="branches",
+            entity_id=b_uuid,
+            action="DELETE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Deleted operating branch {branch_info['name'] if branch_info else ''} ({b_uuid}).",
+            changes={"deleted_branch_id": str(b_uuid)}
+        )
+
         return {"status": "success", "deleted_id": str(b_uuid)}
 
 @app.get("/api/v1/settings/security-policies")
@@ -1957,6 +2346,8 @@ async def save_system_setting(
 # 6. SERVER-DRIVEN UI METADATA ENDPOINT
 # ==============================================================================
 REGISTERED_VIEW_MODELS = {
+    "employees",
+    "employee",
     "attendance_logs",
     "attendance",
     "shift_rosters",
@@ -1970,11 +2361,42 @@ REGISTERED_VIEW_MODELS = {
     "payroll_batches",
 }
 
+SALARY_FIELDS = {
+    "base_salary",
+    "wage_base",
+    "total_base_salary",
+    "total_net_salary",
+    "net_salary",
+}
+
+WRITE_ACTION_TYPES = {"create", "new", "add", "update", "edit", "write"}
+DELETE_ACTION_TYPES = {"delete", "destroy", "remove", "purge"}
+
+MODEL_CANONICAL_MAP = {
+    "attendance": "attendance",
+    "attendance_logs": "attendance",
+    "contracts": "contracts",
+    "employee_contracts": "contracts",
+    "employee": "employees",
+    "employees": "employees",
+    "shift_rosters": "shift_rosters",
+    "users": "users",
+    "roles": "roles",
+    "organizations": "organizations",
+    "branches": "branches",
+    "terminals": "terminals",
+    "payroll_batches": "payroll_batches",
+}
+
 @app.get("/api/v1/meta/views/{model}")
-async def get_view_schema(model: str):
+async def get_view_schema(
+    model: str,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
     """
-    Returns the declarative View Schema for the requested model.
-    Applies strict model allowlist check and filesystem path traversal defense.
+    Returns the declarative View Schema for the requested model with RBAC filtering.
+    Applies strict model allowlist check, filesystem path traversal defense,
+    salary/monetary field masking if unauthorized, and strips write/delete header actions.
     """
     clean_model = (model or "").strip().lower()
     if clean_model not in REGISTERED_VIEW_MODELS:
@@ -1985,17 +2407,14 @@ async def get_view_schema(model: str):
         
     from pathlib import Path
     base_dir = (Path(__file__).parent.parent / "public").resolve()
+    canonical_model = MODEL_CANONICAL_MAP.get(clean_model, clean_model)
     
-    # Priority: public/schemas/{clean_model}.json -> alias mappings -> public/view_schema.json
     candidates = [
+        base_dir / "schemas" / f"{canonical_model}.json",
         base_dir / "schemas" / f"{clean_model}.json",
+        base_dir / f"{canonical_model}.json",
         base_dir / f"{clean_model}.json",
     ]
-    if clean_model in ("attendance", "attendance_logs"):
-        candidates.insert(0, base_dir / "schemas" / "attendance.json")
-    elif clean_model in ("contracts", "employee_contracts"):
-        candidates.insert(0, base_dir / "schemas" / "contracts.json")
-    candidates.append(base_dir / "view_schema.json")
 
     schema_path = None
     for cand in candidates:
@@ -2005,16 +2424,93 @@ async def get_view_schema(model: str):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Forbidden schema path traversal detected."
             )
-        if cand_resolved.exists():
+        if cand_resolved.exists() and cand_resolved.is_file():
             schema_path = cand_resolved
             break
 
     if not schema_path or not schema_path.exists():
-        raise HTTPException(status_code=404, detail="Schema file not found.")
+        raise HTTPException(status_code=404, detail=f"Schema definition not found for model: {clean_model}")
         
     with open(schema_path, "r", encoding="utf-8") as f:
         schema = json.load(f)
-        
+
+    # 1. Server-side RBAC Filtering: Salary and Monetary Fields
+    has_salary_read = can_read_salary(session)
+    if not has_salary_read:
+        # Mark hidden: true on salary fields in schema fields dictionary
+        if "fields" in schema and isinstance(schema["fields"], dict):
+            for fname, fdef in schema["fields"].items():
+                if fname.lower() in SALARY_FIELDS and isinstance(fdef, dict):
+                    fdef["hidden"] = True
+
+        # Strip salary fields from list view columns
+        if "views" in schema and isinstance(schema["views"], dict):
+            views = schema["views"]
+            if "list" in views and isinstance(views["list"], dict):
+                cols = views["list"].get("columns", [])
+                if isinstance(cols, list):
+                    views["list"]["columns"] = [
+                        c for c in cols if (c.lower() if isinstance(c, str) else "") not in SALARY_FIELDS
+                    ]
+            if "form" in views and isinstance(views["form"], dict):
+                sections = views["form"].get("sections", [])
+                if isinstance(sections, list):
+                    for sec in sections:
+                        if isinstance(sec, dict) and "fields" in sec and isinstance(sec["fields"], list):
+                            sec["fields"] = [
+                                f for f in sec["fields"]
+                                if not (isinstance(f, dict) and f.get("name", "").lower() in SALARY_FIELDS)
+                                and not (isinstance(f, str) and f.lower() in SALARY_FIELDS)
+                            ]
+
+    # 2. Server-side RBAC Filtering: Header Action Buttons & Mutation Permissions
+    can_write = bool(
+        session.get("is_superadmin")
+        or check_permission(session, f"{clean_model}.write")
+        or check_permission(session, f"{canonical_model}.write")
+    )
+    can_delete = bool(
+        session.get("is_superadmin")
+        or check_permission(session, f"{clean_model}.delete")
+        or check_permission(session, f"{canonical_model}.delete")
+    )
+
+    if not can_write:
+        schema.pop("newButtonLabel", None)
+        schema["can_create"] = False
+        schema["can_update"] = False
+
+    if not can_delete:
+        schema["can_delete"] = False
+
+    if "header_actions" in schema and isinstance(schema["header_actions"], list):
+        filtered_actions = []
+        for act in schema["header_actions"]:
+            if not isinstance(act, dict):
+                continue
+            act_type = str(act.get("type") or "").strip().lower()
+            act_action = str(act.get("action") or "").strip().lower()
+            act_id = str(act.get("id") or "").strip().lower()
+
+            is_write_act = bool(
+                act_type in WRITE_ACTION_TYPES
+                or act_action in WRITE_ACTION_TYPES
+                or any(w in act_id for w in ("create", "add", "new", "edit", "update"))
+            )
+            is_delete_act = bool(
+                act_type in DELETE_ACTION_TYPES
+                or act_action in DELETE_ACTION_TYPES
+                or "delete" in act_id
+                or "destroy" in act_id
+            )
+
+            if is_write_act and not can_write:
+                continue
+            if is_delete_act and not can_delete:
+                continue
+            filtered_actions.append(act)
+        schema["header_actions"] = filtered_actions
+
     return schema
 
 # ==============================================================================
@@ -2048,9 +2544,111 @@ VERIFIED_BUSINESS_DETAILS = {
 _gdpr_deletion_registry: Dict[str, Dict[str, Any]] = {}
 
 @app.get("/api/v1/compliance/business-details")
-async def get_business_details():
-    """Returns verified corporate and statutory business details."""
-    return VERIFIED_BUSINESS_DETAILS
+async def get_business_details(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None)
+):
+    """
+    Returns verified corporate and statutory business details.
+    Queries primary organization (or current tenant organization) from `organizations`
+    and `system_metadata` (`cfg:qatar_wps_config` / `cfg:business_details`),
+    falling back to `VERIFIED_BUSINESS_DETAILS` only if no organization record exists yet.
+    """
+    clean_auth = authorization if isinstance(authorization, str) else None
+    clean_api_key = x_api_key if isinstance(x_api_key, str) else None
+
+    session = None
+    try:
+        session = await get_current_user_session(request, clean_auth, clean_api_key)
+    except Exception:
+        session = None
+
+    tenant_org_id = session.get("organization_id") if session else None
+
+    pool = get_db_pool()
+    if not pool:
+        return dict(VERIFIED_BUSINESS_DETAILS)
+
+    async with pool.acquire() as conn:
+        org_row = None
+        if tenant_org_id:
+            try:
+                org_row = await conn.fetchrow(
+                    "SELECT * FROM organizations WHERE id = $1::uuid;",
+                    str(tenant_org_id)
+                )
+            except Exception:
+                org_row = None
+
+        if not org_row:
+            try:
+                org_row = await conn.fetchrow(
+                    "SELECT * FROM organizations ORDER BY created_at ASC LIMIT 1;"
+                )
+            except Exception:
+                org_row = None
+
+        wps_raw = None
+        biz_raw = None
+        try:
+            wps_raw = await conn.fetchval(
+                "SELECT value FROM system_metadata WHERE key = 'cfg:qatar_wps_config';"
+            )
+            biz_raw = await conn.fetchval(
+                "SELECT value FROM system_metadata WHERE key = 'cfg:business_details';"
+            )
+        except Exception:
+            pass
+
+    wps_cfg: Dict[str, Any] = {}
+    if wps_raw:
+        try:
+            wps_cfg = json.loads(wps_raw) if isinstance(wps_raw, str) else dict(wps_raw)
+        except Exception:
+            pass
+
+    biz_cfg: Dict[str, Any] = {}
+    if biz_raw:
+        try:
+            biz_cfg = json.loads(biz_raw) if isinstance(biz_raw, str) else dict(biz_raw)
+        except Exception:
+            pass
+
+    # If no organization record exists and no metadata exists, fall back to default
+    if not org_row and not biz_cfg and not wps_cfg:
+        return dict(VERIFIED_BUSINESS_DETAILS)
+
+    details = dict(VERIFIED_BUSINESS_DETAILS)
+
+    # 1. Overlay system_metadata overrides if configured
+    if biz_cfg:
+        details.update(biz_cfg)
+
+    # 2. Overlay organization database fields
+    if org_row:
+        org_dict = dict(org_row)
+        if org_dict.get("legal_name"):
+            details["legal_entity_name"] = org_dict["legal_name"]
+        if org_dict.get("tax_id"):
+            details["tax_id"] = org_dict["tax_id"]
+            if not biz_cfg.get("cr_number"):
+                details["cr_number"] = org_dict["tax_id"]
+        if org_dict.get("id"):
+            details["organization_id"] = str(org_dict["id"])
+        if org_dict.get("base_currency"):
+            details["base_currency"] = org_dict["base_currency"]
+        if org_dict.get("default_timezone"):
+            details["default_timezone"] = org_dict["default_timezone"]
+
+    # 3. Overlay WPS configuration fields
+    if wps_cfg.get("employer_eid"):
+        details["wps_establishment_id"] = str(wps_cfg["employer_eid"])
+        details["moi_establishment_id"] = str(wps_cfg["employer_eid"])
+    if wps_cfg.get("company_name"):
+        details["legal_entity_name"] = wps_cfg["company_name"]
+
+    return details
 
 @app.post("/api/v1/compliance/gdpr/delete-request")
 async def request_data_deletion(

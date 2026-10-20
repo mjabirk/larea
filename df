@@ -1,0 +1,1818 @@
+[1mdiff --git a/view-engine/.gitignore b/view-engine/.gitignore[m
+[1mindex 8e37abb..3245f18 100644[m
+[1m--- a/view-engine/.gitignore[m
+[1m+++ b/view-engine/.gitignore[m
+[36m@@ -8,7 +8,7 @@[m [mpnpm-debug.log*[m
+ lerna-debug.log*[m
+ [m
+ node_modules[m
+[31m-dist[m
+[32m+[m[32mdist/[m
+ dist-ssr[m
+ *.local[m
+ [m
+[36m@@ -24,9 +24,11 @@[m [mdist-ssr[m
+ *.sw?[m
+ .venv*[m
+ venv[m
+[31m-__pycache__[m
+[32m+[m[32m__pycache__/[m
+[32m+[m[32m*.pyc[m
+ *.py[cod][m
+ .env[m
+[32m+[m[32mnul[m
+ [m
+ # Storage[m
+[31m-storage[m
+\ No newline at end of file[m
+[32m+[m[32mstorage/[m
+\ No newline at end of file[m
+[1mdiff --git a/view-engine/backend/api/v1/attendance.py b/view-engine/backend/api/v1/attendance.py[m
+[1mindex 98d3f81..8e1c625 100755[m
+[1m--- a/view-engine/backend/api/v1/attendance.py[m
+[1m+++ b/view-engine/backend/api/v1/attendance.py[m
+[36m@@ -1,11 +1,18 @@[m
+ import uuid[m
+ import datetime[m
+ from typing import Optional, Dict, Any, List[m
+[31m-from fastapi import APIRouter, HTTPException, status, Request, Depends, Query[m
+[32m+[m[32mfrom fastapi import APIRouter, HTTPException, status, Request, Depends, Query, BackgroundTasks[m
+ from pydantic import BaseModel[m
+ from backend.core.database import get_db_pool[m
+[31m-from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, check_permission[m
+[32m+[m[32mfrom backend.core.dependencies import ([m
+[32m+[m[32m    get_current_user_session,[m
+[32m+[m[32m    get_client_ip,[m
+[32m+[m[32m    require_permission,[m
+[32m+[m[32m    check_permission,[m
+[32m+[m[32m    verify_record_tenant,[m
+[32m+[m[32m)[m
+ from backend.core.audit import record_audit_log[m
+[32m+[m[32mfrom backend.core.sequences import uuid7, get_next_attendance_code[m
+ [m
+ router = APIRouter(prefix="/api/v1/attendance", tags=["Attendance Logs"])[m
+ [m
+[36m@@ -51,6 +58,27 @@[m [mclass AttendanceUpdatePayload(BaseModel):[m
+     status: Optional[str] = None[m
+     notes: Optional[str] = None[m
+ [m
+[32m+[m[32mclass BulkAttendanceItem(BaseModel):[m
+[32m+[m[32m    employee_id: Optional[str] = None[m
+[32m+[m[32m    employee_number: Optional[str] = None[m
+[32m+[m[32m    employee_name: Optional[str] = None[m
+[32m+[m[32m    department: Optional[str] = None[m
+[32m+[m[32m    terminal_id: Optional[str] = "Bulk Sync Terminal"[m
+[32m+[m[32m    check_in: str[m
+[32m+[m[32m    check_out: Optional[str] = None[m
+[32m+[m[32m    duration_hours: Optional[float] = 0.0[m
+[32m+[m[32m    status: Optional[str] = "present"[m
+[32m+[m[32m    notes: Optional[str] = None[m
+[32m+[m
+[32m+[m[32mclass BulkAttendanceSyncPayload(BaseModel):[m
+[32m+[m[32m    items: List[BulkAttendanceItem][m
+[32m+[m
+[32m+[m[32mclass BulkStatusPayload(BaseModel):[m
+[32m+[m[32m    log_ids: List[str][m
+[32m+[m[32m    status: Optional[str] = None[m
+[32m+[m[32m    approval_status: Optional[str] = None[m
+[32m+[m[32m    notes: Optional[str] = None[m
+[32m+[m
+ @router.get("")[m
+ async def list_attendance_logs([m
+     q: Optional[str] = Query(None),[m
+[36m@@ -153,13 +181,9 @@[m [masync def create_attendance_log([m
+         inherited_dept = payload.department or emp["department_id"] or "Operations"[m
+         emp_name = payload.employee_name or emp["full_name"][m
+ [m
+[31m-        # Generate collision-safe attendance code[m
+[31m-        max_seq = await conn.fetchval("""[m
+[31m-            SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ATT-[0-9]{4}-([0-9]+)') AS INT)), 1000)[m
+[31m-            FROM attendance_logs[m
+[31m-            WHERE code ~ '^ATT-[0-9]{4}-[0-9]+$';[m
+[31m-        """) or 1000[m
+[31m-        code = f"ATT-2026-{max_seq + 1}"[m
+[32m+[m[32m        # Generate lock-free atomic attendance code & UUIDv7[m
+[32m+[m[32m        code = await get_next_attendance_code(conn)[m
+[32m+[m[32m        new_id = uuid7()[m
+ [m
+         t_in = parse_iso(payload.check_in)[m
+         if not t_in:[m
+[36m@@ -174,7 +198,6 @@[m [masync def create_attendance_log([m
+ [m
+         client_ip = get_client_ip(request) if request else "127.0.0.1"[m
+         author_name = session.get("full_name") or session.get("username") or "Authorized User"[m
+[31m-        new_id = uuid.uuid4()[m
+ [m
+         await conn.execute("""[m
+             INSERT INTO attendance_logs ([m
+[36m@@ -201,6 +224,243 @@[m [masync def create_attendance_log([m
+         """, new_id)[m
+         return serialize_row(dict(row))[m
+ [m
+[32m+[m
+[32m+[m[32masync def _background_bulk_attendance_audit([m
+[32m+[m[32m    log_ids: List[str],[m
+[32m+[m[32m    tenant_id: str,[m
+[32m+[m[32m    user_id: Optional[uuid.UUID],[m
+[32m+[m[32m    user_name: str,[m
+[32m+[m[32m    client_ip: str,[m
+[32m+[m[32m    action: str,[m
+[32m+[m[32m    note: str,[m
+[32m+[m[32m    changes: Dict[str, Any][m
+[32m+[m[32m):[m
+[32m+[m[32m    """Background task to record audit logs without holding client HTTP response or DB transaction."""[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        pool = get_db_pool()[m
+[32m+[m[32m        async with pool.acquire() as conn:[m
+[32m+[m[32m            for lid in log_ids:[m
+[32m+[m[32m                await record_audit_log([m
+[32m+[m[32m                    conn=conn,[m
+[32m+[m[32m                    tenant_id=tenant_id,[m
+[32m+[m[32m                    entity_type="attendance_logs",[m
+[32m+[m[32m                    entity_id=lid,[m
+[32m+[m[32m                    action=action,[m
+[32m+[m[32m                    changed_by_user_id=user_id,[m
+[32m+[m[32m                    changed_by_name=user_name,[m
+[32m+[m[32m                    note=note,[m
+[32m+[m[32m                    ip_address=client_ip,[m
+[32m+[m[32m                    changes=changes[m
+[32m+[m[32m                )[m
+[32m+[m[32m    except Exception:[m
+[32m+[m[32m        pass[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@router.post("/bulk-sync")[m
+[32m+[m[32masync def bulk_sync_attendance([m
+[32m+[m[32m    payload: BulkAttendanceSyncPayload,[m
+[32m+[m[32m    request: Request,[m
+[32m+[m[32m    background_tasks: BackgroundTasks,[m
+[32m+[m[32m    session: Dict[str, Any] = Depends(get_current_user_session),[m
+[32m+[m[32m):[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Bulk high-concurrency ingestion of attendance logs.[m
+[32m+[m[32m    Performs batched employee resolution and executes a single bulk SQL insert via executemany.[m
+[32m+[m[32m    Generates collision-free atomic sequences and RFC 9562 UUIDv7 IDs.[m
+[32m+[m[32m    """[m
+[32m+[m[32m    require_permission(session, "attendance.write")[m
+[32m+[m[32m    if not payload.items:[m
+[32m+[m[32m        return {"inserted": 0, "records": []}[m
+[32m+[m
+[32m+[m[32m    pool = get_db_pool()[m
+[32m+[m[32m    client_ip = get_client_ip(request) if request else "127.0.0.1"[m
+[32m+[m[32m    author_name = session.get("full_name") or session.get("username") or "Authorized User"[m
+[32m+[m[32m    user_id = None[m
+[32m+[m[32m    uid_str = session.get("id") or session.get("user_id")[m
+[32m+[m[32m    if uid_str:[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            user_id = uuid.UUID(str(uid_str))[m
+[32m+[m[32m        except Exception:[m
+[32m+[m[32m            pass[m
+[32m+[m
+[32m+[m[32m    # Extract distinct employee IDs and employee numbers[m
+[32m+[m[32m    emp_uuids = [][m
+[32m+[m[32m    emp_numbers = [][m
+[32m+[m[32m    for it in payload.items:[m
+[32m+[m[32m        if it.employee_id:[m
+[32m+[m[32m            try:[m
+[32m+[m[32m                emp_uuids.append(uuid.UUID(it.employee_id))[m
+[32m+[m[32m            except Exception:[m
+[32m+[m[32m                pass[m
+[32m+[m[32m        if it.employee_number:[m
+[32m+[m[32m            emp_numbers.append(it.employee_number.strip())[m
+[32m+[m
+[32m+[m[32m    async with pool.acquire() as conn:[m
+[32m+[m[32m        if user_id:[m
+[32m+[m[32m            user_exists = await conn.fetchval("SELECT 1 FROM users WHERE id = $1;", user_id)[m
+[32m+[m[32m            if not user_exists:[m
+[32m+[m[32m                user_id = None[m
+[32m+[m
+[32m+[m[32m        # Single batched employee lookup query[m
+[32m+[m[32m        employees = await conn.fetch("""[m
+[32m+[m[32m            SELECT id, employee_number, full_name, department_id, organization_id[m
+[32m+[m[32m            FROM employees[m
+[32m+[m[32m            WHERE id = ANY($1::uuid[]) OR employee_number = ANY($2::text[]);[m
+[32m+[m[32m        """, emp_uuids, emp_numbers)[m
+[32m+[m
+[32m+[m[32m        emp_map_by_id = {str(e["id"]): e for e in employees}[m
+[32m+[m[32m        emp_map_by_num = {e["employee_number"]: e for e in employees if e["employee_number"]}[m
+[32m+[m
+[32m+[m[32m        now = datetime.datetime.now(datetime.timezone.utc)[m
+[32m+[m[32m        insert_rows = [][m
+[32m+[m[32m        created_records = [][m
+[32m+[m[32m        unmatched_count = 0[m
+[32m+[m
+[32m+[m[32m        for it in payload.items:[m
+[32m+[m[32m            emp = None[m
+[32m+[m[32m            if it.employee_id and str(it.employee_id) in emp_map_by_id:[m
+[32m+[m[32m                emp = emp_map_by_id[str(it.employee_id)][m
+[32m+[m[32m            elif it.employee_number and it.employee_number in emp_map_by_num:[m
+[32m+[m[32m                emp = emp_map_by_num[it.employee_number][m
+[32m+[m
+[32m+[m[32m            if not emp:[m
+[32m+[m[32m                unmatched_count += 1[m
+[32m+[m[32m                continue[m
+[32m+[m
+[32m+[m[32m            t_in = parse_iso(it.check_in) or now[m
+[32m+[m[32m            t_out = parse_iso(it.check_out)[m
+[32m+[m[32m            hours = it.duration_hours or 0.0[m
+[32m+[m[32m            if t_in and t_out and t_out > t_in:[m
+[32m+[m[32m                hours = round((t_out - t_in).total_seconds() / 3600.0, 1)[m
+[32m+[m
+[32m+[m[32m            code = await get_next_attendance_code(conn)[m
+[32m+[m[32m            new_id = uuid7()[m
+[32m+[m[32m            dept = it.department or emp["department_id"] or "Operations"[m
+[32m+[m[32m            name = it.employee_name or emp["full_name"][m
+[32m+[m
+[32m+[m[32m            insert_rows.append(([m
+[32m+[m[32m                new_id, code, emp["id"], name, dept,[m
+[32m+[m[32m                it.terminal_id or "Bulk Sync Terminal",[m
+[32m+[m[32m                t_in, t_out, hours, it.status or "present", it.notes,[m
+[32m+[m[32m                client_ip, "Bulk Sync API", author_name, emp["organization_id"],[m
+[32m+[m[32m                user_id, "draft", now, now[m
+[32m+[m[32m            ))[m
+[32m+[m
+[32m+[m[32m            created_records.append({[m
+[32m+[m[32m                "id": str(new_id),[m
+[32m+[m[32m                "code": code,[m
+[32m+[m[32m                "employee_id": str(emp["id"]),[m
+[32m+[m[32m                "employee_name": name,[m
+[32m+[m[32m                "check_in": t_in.isoformat(),[m
+[32m+[m[32m                "check_out": t_out.isoformat() if t_out else None,[m
+[32m+[m[32m                "duration_hours": hours,[m
+[32m+[m[32m                "status": it.status or "present"[m
+[32m+[m[32m            })[m
+[32m+[m
+[32m+[m[32m        if insert_rows:[m
+[32m+[m[32m            await conn.executemany("""[m
+[32m+[m[32m                INSERT INTO attendance_logs ([m
+[32m+[m[32m                    id, code, employee_id, employee_name, department, terminal_id,[m
+[32m+[m[32m                    check_in, check_out, duration_hours, status, notes, machine_ip,[m
+[32m+[m[32m                    ingestion_source, last_modified_by, organization_id,[m
+[32m+[m[32m                    created_by, approval_status, created_at, updated_at[m
+[32m+[m[32m                ) VALUES ([m
+[32m+[m[32m                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19[m
+[32m+[m[32m                );[m
+[32m+[m[32m            """, insert_rows)[m
+[32m+[m
+[32m+[m[32m        # Offload background audit recording[m
+[32m+[m[32m        org_id = str(employees[0]["organization_id"]) if employees else "default_tenant"[m
+[32m+[m[32m        if created_records:[m
+[32m+[m[32m            background_tasks.add_task([m
+[32m+[m[32m                _background_bulk_attendance_audit,[m
+[32m+[m[32m                log_ids=[r["id"] for r in created_records],[m
+[32m+[m[32m                tenant_id=org_id,[m
+[32m+[m[32m                user_id=user_id,[m
+[32m+[m[32m                user_name=author_name,[m
+[32m+[m[32m                client_ip=client_ip,[m
+[32m+[m[32m                action="BULK_SYNC",[m
+[32m+[m[32m                note=f"Bulk imported {len(created_records)} attendance logs.",[m
+[32m+[m[32m                changes={"count": len(created_records)}[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        return {[m
+[32m+[m[32m            "success": True,[m
+[32m+[m[32m            "inserted": len(created_records),[m
+[32m+[m[32m            "unmatched": unmatched_count,[m
+[32m+[m[32m            "records": created_records[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@router.post("/bulk-status")[m
+[32m+[m[32masync def bulk_update_attendance_status([m
+[32m+[m[32m    payload: BulkStatusPayload,[m
+[32m+[m[32m    request: Request,[m
+[32m+[m[32m    background_tasks: BackgroundTasks,[m
+[32m+[m[32m    session: Dict[str, Any] = Depends(get_current_user_session),[m
+[32m+[m[32m):[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Bulk updates status or approval_status for multiple attendance records in a single query.[m
+[32m+[m[32m    Offloads non-critical audit log writes to background tasks.[m
+[32m+[m[32m    """[m
+[32m+[m[32m    require_permission(session, "attendance.write")[m
+[32m+[m[32m    if not payload.log_ids:[m
+[32m+[m[32m        return {"updated": 0, "records": []}[m
+[32m+[m
+[32m+[m[32m    pool = get_db_pool()[m
+[32m+[m[32m    client_ip = get_client_ip(request) if request else "127.0.0.1"[m
+[32m+[m[32m    author_name = session.get("full_name") or session.get("username") or "Authorized User"[m
+[32m+[m[32m    user_id = None[m
+[32m+[m[32m    uid_str = session.get("id") or session.get("user_id")[m
+[32m+[m[32m    if uid_str:[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            user_id = uuid.UUID(str(uid_str))[m
+[32m+[m[32m        except Exception:[m
+[32m+[m[32m            pass[m
+[32m+[m
+[32m+[m[32m    valid_uuids = [][m
+[32m+[m[32m    for lid in payload.log_ids:[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            valid_uuids.append(uuid.UUID(lid))[m
+[32m+[m[32m        except Exception:[m
+[32m+[m[32m            pass[m
+[32m+[m
+[32m+[m[32m    if not valid_uuids:[m
+[32m+[m[32m        raise HTTPException(status_code=400, detail="No valid log UUIDs provided.")[m
+[32m+[m
+[32m+[m[32m    async with pool.acquire() as conn:[m
+[32m+[m[32m        updated_rows = await conn.fetch("""[m
+[32m+[m[32m            UPDATE attendance_logs[m
+[32m+[m[32m            SET status = COALESCE($1, status),[m
+[32m+[m[32m                approval_status = COALESCE($2, approval_status),[m
+[32m+[m[32m                notes = COALESCE($3, notes),[m
+[32m+[m[32m                last_modified_by = $4,[m
+[32m+[m[32m                updated_at = CURRENT_TIMESTAMP[m
+[32m+[m[32m            WHERE id = ANY($5::uuid[])[m
+[32m+[m[32m            RETURNING id, code, organization_id, status, approval_status;[m
+[32m+[m[32m        """, payload.status, payload.approval_status, payload.notes, author_name, valid_uuids)[m
+[32m+[m
+[32m+[m[32m        if updated_rows:[m
+[32m+[m[32m            org_id = str(updated_rows[0]["organization_id"]) if updated_rows[0]["organization_id"] else "default_tenant"[m
+[32m+[m[32m            background_tasks.add_task([m
+[32m+[m[32m                _background_bulk_attendance_audit,[m
+[32m+[m[32m                log_ids=[str(r["id"]) for r in updated_rows],[m
+[32m+[m[32m                tenant_id=org_id,[m
+[32m+[m[32m                user_id=user_id,[m
+[32m+[m[32m                user_name=author_name,[m
+[32m+[m[32m                client_ip=client_ip,[m
+[32m+[m[32m                action="BULK_STATUS_UPDATE",[m
+[32m+[m[32m                note=f"Bulk updated {len(updated_rows)} logs to status='{payload.status}', approval_status='{payload.approval_status}'.",[m
+[32m+[m[32m                changes={"status": payload.status, "approval_status": payload.approval_status}[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        return {[m
+[32m+[m[32m            "success": True,[m
+[32m+[m[32m            "updated": len(updated_rows),[m
+[32m+[m[32m            "records": [{"id": str(r["id"]), "code": r["code"], "status": r["status"], "approval_status": r["approval_status"]} for r in updated_rows][m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m
+ @router.put("/{log_id}")[m
+ async def update_attendance_log([m
+     log_id: str,[m
+[36m@@ -228,6 +488,7 @@[m [masync def update_attendance_log([m
+         existing = await conn.fetchrow("SELECT * FROM attendance_logs WHERE id = $1;", l_uuid)[m
+         if not existing:[m
+             raise HTTPException(status_code=404, detail="Attendance log not found.")[m
+[32m+[m[32m        verify_record_tenant(existing["organization_id"], session)[m
+ [m
+         emp_uuid = uuid.UUID(payload.employee_id) if payload.employee_id else existing["employee_id"][m
+         emp_name = payload.employee_name or existing["employee_name"][m
+[36m@@ -380,6 +641,7 @@[m [masync def approve_attendance_log([m
+         existing = await conn.fetchrow("SELECT * FROM attendance_logs WHERE id = $1;", l_uuid)[m
+         if not existing:[m
+             raise HTTPException(status_code=404, detail="Attendance log not found.")[m
+[32m+[m[32m        verify_record_tenant(existing["organization_id"], session)[m
+ [m
+         # Hard Maker-Checker Rule[m
+         if existing["created_by"] and user_id and str(user_id) == str(existing["created_by"]):[m
+[36m@@ -451,6 +713,7 @@[m [masync def reject_attendance_log([m
+         existing = await conn.fetchrow("SELECT * FROM attendance_logs WHERE id = $1;", l_uuid)[m
+         if not existing:[m
+             raise HTTPException(status_code=404, detail="Attendance log not found.")[m
+[32m+[m[32m        verify_record_tenant(existing["organization_id"], session)[m
+ [m
+         if existing["approval_status"] == "approved":[m
+             raise HTTPException(status_code=400, detail="Cannot reject an approved attendance log.")[m
+[36m@@ -494,7 +757,10 @@[m [masync def delete_attendance_log([m
+         raise HTTPException(status_code=400, detail="Invalid log UUID.")[m
+ [m
+     async with pool.acquire() as conn:[m
+[31m-        res = await conn.execute("DELETE FROM attendance_logs WHERE id = $1;", l_uuid)[m
+[31m-        if res == "DELETE 0":[m
+[32m+[m[32m        existing = await conn.fetchrow("SELECT organization_id FROM attendance_logs WHERE id = $1;", l_uuid)[m
+[32m+[m[32m        if not existing:[m
+             raise HTTPException(status_code=404, detail="Attendance log not found.")[m
+[32m+[m[32m        verify_record_tenant(existing["organization_id"], session)[m
+[32m+[m
+[32m+[m[32m        await conn.execute("DELETE FROM attendance_logs WHERE id = $1;", l_uuid)[m
+         return {"success": True, "deleted_id": str(l_uuid)}[m
+[1mdiff --git a/view-engine/backend/api/v1/audit.py b/view-engine/backend/api/v1/audit.py[m
+[1mindex 46500d9..3fae72f 100755[m
+[1m--- a/view-engine/backend/api/v1/audit.py[m
+[1m+++ b/view-engine/backend/api/v1/audit.py[m
+[36m@@ -6,11 +6,35 @@[m [mfrom fastapi import APIRouter, HTTPException, status, Request, Depends, Query[m
+ from pydantic import BaseModel[m
+ [m
+ from backend.core.database import get_db_pool[m
+[31m-from backend.core.dependencies import get_current_user_session, get_client_ip, check_permission[m
+[32m+[m[32mfrom backend.core.dependencies import get_current_user_session, get_client_ip, check_permission, require_permission[m
+ from backend.core.audit import AuditLog, record_audit_log, verify_audit_chain[m
+ [m
+ router = APIRouter(prefix="/api/v1/audit-logs", tags=["Audit & Chatter Engine"])[m
+ [m
+[32m+[m[32mENTITY_READ_PERMISSIONS: Dict[str, str] = {[m
+[32m+[m[32m    "employees": "employees.read",[m
+[32m+[m[32m    "employee": "employees.read",[m
+[32m+[m[32m    "contracts": "hr.contracts_read",[m
+[32m+[m[32m    "contract": "hr.contracts_read",[m
+[32m+[m[32m    "employee_contracts": "hr.contracts_read",[m
+[32m+[m[32m    "attendance": "attendance.read",[m
+[32m+[m[32m    "attendance_logs": "attendance.read",[m
+[32m+[m[32m    "payslips": "hr.salary_read",[m
+[32m+[m[32m    "payslip": "hr.salary_read",[m
+[32m+[m[32m    "payroll_batches": "hr.salary_read",[m
+[32m+[m[32m    "payroll_batch": "hr.salary_read",[m
+[32m+[m[32m    "leaves": "leaves.read",[m
+[32m+[m[32m    "leave": "leaves.read",[m
+[32m+[m[32m    "leave_requests": "leaves.read",[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef verify_entity_permission(entity_type: str, session: Dict[str, Any]) -> None:[m
+[32m+[m[32m    norm = str(entity_type).lower().strip().replace("hr.", "").replace("payroll.", "")[m
+[32m+[m[32m    perm = ENTITY_READ_PERMISSIONS.get(norm) or ENTITY_READ_PERMISSIONS.get(f"{norm}s")[m
+[32m+[m[32m    if perm:[m
+[32m+[m[32m        require_permission(session, perm)[m
+[32m+[m
+ [m
+ class LogNoteRequest(BaseModel):[m
+     note: str[m
+[36m@@ -59,6 +83,7 @@[m [masync def get_audit_trail([m
+     session: Dict[str, Any] = Depends(get_current_user_session),[m
+ ):[m
+     """Retrieve full chronological audit trail and internal notes for an entity."""[m
+[32m+[m[32m    verify_entity_permission(entity_type, session)[m
+     pool = get_db_pool()[m
+     async with pool.acquire() as conn:[m
+         variants = list({[m
+[36m@@ -106,6 +131,7 @@[m [masync def log_internal_note([m
+     session: Dict[str, Any] = Depends(get_current_user_session),[m
+ ):[m
+     """Log an internal operational discussion note into the record chatter stream with cryptographic hash chaining."""[m
+[32m+[m[32m    verify_entity_permission(entity_type, session)[m
+     clean_note = payload.note.strip()[m
+     if not clean_note:[m
+         raise HTTPException(status_code=400, detail="Note content cannot be empty.")[m
+[1mdiff --git a/view-engine/backend/api/v1/communication.py b/view-engine/backend/api/v1/communication.py[m
+[1mindex 9b51059..63b7260 100755[m
+[1m--- a/view-engine/backend/api/v1/communication.py[m
+[1m+++ b/view-engine/backend/api/v1/communication.py[m
+[36m@@ -9,6 +9,7 @@[m [mfrom pydantic import BaseModel[m
+ [m
+ from backend.core.database import get_db_pool[m
+ from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission[m
+[32m+[m[32mfrom backend.core.sequences import uuid7[m
+ from backend.core.mail_engine import encrypt_mail_password, decrypt_mail_password, generate_payslip_pdf_report[m
+ from backend.core.communication_engine import ([m
+     sanitize_e164_phone,[m
+[36m@@ -495,7 +496,7 @@[m [masync def send_communication_message([m
+ [m
+     pool = get_db_pool()[m
+     now = datetime.datetime.now(datetime.timezone.utc)[m
+[31m-    comm_log_id = uuid.uuid4()[m
+[32m+[m[32m    comm_log_id = uuid7()[m
+     sender_name = session.get("username") or session.get("full_name") or "Authorized User"[m
+     client_ip = get_client_ip(request) if request and hasattr(request, "client") and request.client else "127.0.0.1"[m
+ [m
+[36m@@ -591,7 +592,7 @@[m [masync def send_communication_message([m
+ [m
+         # Record in audit_logs (Chatter)[m
+         if payload.record_model and payload.record_id:[m
+[31m-            chat_id = uuid.uuid4()[m
+[32m+[m[32m            chat_id = uuid7()[m
+             entity_type = payload.record_model.replace("payroll.", "").replace("hr.", "")[m
+             action_code = "WHATSAPP" if channel == "whatsapp" else "SMS"[m
+ [m
+[1mdiff --git a/view-engine/backend/api/v1/contracts.py b/view-engine/backend/api/v1/contracts.py[m
+[1mindex da2b2ee..4c6105d 100755[m
+[1m--- a/view-engine/backend/api/v1/contracts.py[m
+[1m+++ b/view-engine/backend/api/v1/contracts.py[m
+[36m@@ -5,8 +5,15 @@[m [mfrom typing import Optional, Dict, Any, List[m
+ from fastapi import APIRouter, HTTPException, status, Request, Depends, Query[m
+ from pydantic import BaseModel, Field[m
+ from backend.core.database import get_db_pool[m
+[31m-from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission[m
+[32m+[m[32mfrom backend.core.dependencies import ([m
+[32m+[m[32m    get_current_user_session,[m
+[32m+[m[32m    get_client_ip,[m
+[32m+[m[32m    require_permission,[m
+[32m+[m[32m    check_permission,[m
+[32m+[m[32m    verify_record_tenant,[m
+[32m+[m[32m)[m
+ from backend.core.audit import record_audit_log[m
+[32m+[m[32mfrom backend.core.sequences import uuid7, get_next_contract_reference[m
+ [m
+ router = APIRouter(tags=["Employee Contracts & Benefits"])[m
+ [m
+[36m@@ -30,52 +37,6 @@[m [mdef serialize_row(r: Dict[str, Any]) -> Dict[str, Any]:[m
+             d[k] = float(v)[m
+     return d[m
+ [m
+[31m-def check_permission(session: Dict[str, Any], permission_key: str) -> bool:[m
+[31m-    """Evaluate whether the authenticated session holds a specific atomic permission."""[m
+[31m-    if not session:[m
+[31m-        return False[m
+[31m-    if session.get("is_superadmin"):[m
+[31m-        return True[m
+[31m-[m
+[31m-    # 1. Direct security_groups list[m
+[31m-    sec_groups = session.get("security_groups", [])[m
+[31m-    if "*" in sec_groups or permission_key in sec_groups:[m
+[31m-        return True[m
+[31m-[m
+[31m-    # 2. Permissions dictionary or array[m
+[31m-    perms = session.get("permissions", {})[m
+[31m-    if isinstance(perms, list):[m
+[31m-        if "*" in perms or permission_key in perms:[m
+[31m-            return True[m
+[31m-    elif isinstance(perms, dict):[m
+[31m-        if perms.get(permission_key) is True or perms.get(permission_key) == 1:[m
+[31m-            return True[m
+[31m-        if permission_key in perms.get("security_groups", []):[m
+[31m-            return True[m
+[31m-        # Entity-level mapping fallback[m
+[31m-        if permission_key == "hr.contracts_read":[m
+[31m-            if perms.get("employee_contracts", {}).get("read") or perms.get("contracts", {}).get("read"):[m
+[31m-                return True[m
+[31m-        elif permission_key == "hr.contracts_manage":[m
+[31m-            if (perms.get("employee_contracts", {}).get("create") or perms.get("employee_contracts", {}).get("update") or[m
+[31m-                perms.get("contracts", {}).get("create") or perms.get("contracts", {}).get("update") or perms.get("contracts", {}).get("manage")):[m
+[31m-                return True[m
+[31m-        elif permission_key == "hr.salary_read":[m
+[31m-            if perms.get("employee_contracts", {}).get("salary_read") or perms.get("salary", {}).get("read"):[m
+[31m-                return True[m
+[31m-        elif permission_key == "hr.salary_manage":[m
+[31m-            if perms.get("employee_contracts", {}).get("salary_manage") or perms.get("salary", {}).get("manage") or perms.get("salary", {}).get("write"):[m
+[31m-                return True[m
+[31m-[m
+[31m-    return False[m
+[31m-[m
+[31m-def require_permission(session: Dict[str, Any], permission_key: str):[m
+[31m-    """Raise HTTP 403 Forbidden if user lacks required permission."""[m
+[31m-    if not check_permission(session, permission_key):[m
+[31m-        raise HTTPException([m
+[31m-            status_code=status.HTTP_403_FORBIDDEN,[m
+[31m-            detail=f"Access denied: Missing required security group '{permission_key}'."[m
+[31m-        )[m
+ [m
+ def mask_contract_payload(c_dict: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:[m
+     """[m
+[36m@@ -474,6 +435,11 @@[m [masync def get_employee_contracts([m
+         raise HTTPException(status_code=400, detail="Invalid employee UUID.")[m
+ [m
+     async with pool.acquire() as conn:[m
+[32m+[m[32m        emp = await conn.fetchrow("SELECT organization_id FROM employees WHERE id = $1;", emp_uuid)[m
+[32m+[m[32m        if not emp:[m
+[32m+[m[32m            raise HTTPException(status_code=404, detail="Employee not found.")[m
+[32m+[m[32m        verify_record_tenant(emp["organization_id"], session)[m
+[32m+[m
+         contracts_rows = await conn.fetch("""[m
+             SELECT id, employee_id, contract_reference, title, start_date, end_date,[m
+                    wage_base, currency, status, notice_period_days, trial_period_days,[m
+[36m@@ -485,19 +451,27 @@[m [masync def get_employee_contracts([m
+         """, emp_uuid)[m
+ [m
+         contracts = [][m
+[31m-        for c in contracts_rows:[m
+[31m-            c_dict = serialize_row(dict(c))[m
+[31m-            c_id = c["id"][m
+[31m-[m
+[31m-            benefit_rows = await conn.fetch("""[m
+[32m+[m[32m        contract_ids = [c["id"] for c in contracts_rows][m
+[32m+[m[32m        all_benefits = [][m
+[32m+[m[32m        if contract_ids:[m
+[32m+[m[32m            all_benefits = await conn.fetch("""[m
+                 SELECT b.id, b.contract_id, b.rule_id, b.calculation_type, b.amount_value,[m
+                        b.computed_monthly_total, b.created_at,[m
+                        r.name AS rule_name, r.category AS rule_category, r.wps_code, r.percentage_rate AS default_rate[m
+                 FROM contract_benefit_lines b[m
+                 JOIN salary_rules r ON b.rule_id = r.id[m
+[31m-                WHERE b.contract_id = $1[m
+[32m+[m[32m                WHERE b.contract_id = ANY($1::uuid[])[m
+                 ORDER BY r.category ASC, r.name ASC;[m
+[31m-            """, c_id)[m
+[32m+[m[32m            """, contract_ids)[m
+[32m+[m
+[32m+[m[32m        benefits_by_contract: Dict[uuid.UUID, List[Any]] = {}[m
+[32m+[m[32m        for b in all_benefits:[m
+[32m+[m[32m            benefits_by_contract.setdefault(b["contract_id"], []).append(b)[m
+[32m+[m
+[32m+[m[32m        for c in contracts_rows:[m
+[32m+[m[32m            c_dict = serialize_row(dict(c))[m
+[32m+[m[32m            c_id = c["id"][m
+[32m+[m[32m            benefit_rows = benefits_by_contract.get(c_id, [])[m
+ [m
+             c_dict["benefit_lines"] = [serialize_row(dict(b)) for b in benefit_rows][m
+ [m
+[36m@@ -562,27 +536,15 @@[m [masync def create_employee_contract([m
+             emp = await conn.fetchrow("SELECT id, full_name, employee_number, organization_id FROM employees WHERE id = $1;", emp_uuid)[m
+             if not emp:[m
+                 raise HTTPException(status_code=404, detail="Employee not found.")[m
+[32m+[m[32m            verify_record_tenant(emp["organization_id"], session)[m
+ [m
+[31m-            # Generate collision-safe contract reference if missing[m
+[32m+[m[32m            # Generate collision-safe atomic contract reference if missing[m
+             if not payload.contract_reference:[m
+[31m-                current_year = datetime.datetime.now().year[m
+[31m-                emp_short = (emp["employee_number"] or "EMP").replace("EMP-", "")[m
+[31m-                seq = (await conn.fetchval([m
+[31m-                    "SELECT COUNT(*) FROM employee_contracts WHERE employee_id = $1;", emp_uuid[m
+[31m-                ) or 0) + 1[m
+[31m-                while True:[m
+[31m-                    candidate = f"CNT-{current_year}-{emp_short}-{seq}"[m
+[31m-                    taken = await conn.fetchval([m
+[31m-                        "SELECT 1 FROM employee_contracts WHERE contract_reference = $1;", candidate[m
+[31m-                    )[m
+[31m-                    if not taken:[m
+[31m-                        ref = candidate[m
+[31m-                        break[m
+[31m-                    seq += 1[m
+[32m+[m[32m                ref = await get_next_contract_reference(conn, emp_uuid, emp["employee_number"])[m
+             else:[m
+                 ref = payload.contract_reference.strip().upper()[m
+ [m
+[31m-            new_contract_id = uuid.uuid4()[m
+[32m+[m[32m            new_contract_id = uuid7()[m
+             start_d = parse_date(payload.start_date)[m
+             end_d = parse_date(payload.end_date)[m
+             wage_base = float(payload.wage_base)[m
+[36m@@ -702,6 +664,7 @@[m [masync def update_contract([m
+         existing = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", c_uuid)[m
+         if not existing:[m
+             raise HTTPException(status_code=404, detail="Contract not found.")[m
+[32m+[m[32m        verify_record_tenant(existing["organization_id"], session)[m
+ [m
+         # SOX 404 / ISO 27001 Immutability Guard[m
+         if existing["status"] in ("active", "approved", "posted"):[m
+[36m@@ -723,77 +686,78 @@[m [masync def update_contract([m
+         hours = payload.working_hours_per_week if payload.working_hours_per_week is not None else float(existing["working_hours_per_week"])[m
+         notes = payload.terms_notes if payload.terms_notes is not None else existing["terms_notes"][m
+ [m
+[31m-        if status_val == "active" and existing["status"] != "active":[m
+[31m-            await conn.execute("""[m
+[31m-                UPDATE employee_contracts[m
+[31m-                SET status = 'expired', updated_at = CURRENT_TIMESTAMP[m
+[31m-                WHERE employee_id = $1 AND id != $2 AND status = 'active';[m
+[31m-            """, emp_uuid, c_uuid)[m
+[31m-[m
+[31m-        await conn.execute("""[m
+[31m-            UPDATE employee_contracts[m
+[31m-            SET contract_reference = $1, title = $2, start_date = $3, end_date = $4,[m
+[31m-                wage_base = $5, currency = $6, status = $7, notice_period_days = $8,[m
+[31m-                trial_period_days = $9, working_hours_per_week = $10, terms_notes = $11,[m
+[31m-                updated_at = CURRENT_TIMESTAMP[m
+[31m-            WHERE id = $12;[m
+[31m-        """, ref, title, start_d, end_d, wage_base, currency, status_val, notice_days, trial_days, hours, notes, c_uuid)[m
+[31m-[m
+[31m-        # Update benefit lines if payload provided them[m
+[31m-        if payload.benefit_lines is not None:[m
+[31m-            emp_grade_id = await conn.fetchval("SELECT grade_id FROM employees WHERE id = $1;", emp_uuid)[m
+[31m-            await conn.execute("DELETE FROM contract_benefit_lines WHERE contract_id = $1;", c_uuid)[m
+[31m-            for line in payload.benefit_lines:[m
+[31m-                rule = await conn.fetchrow("SELECT id, name, category, calculation_type, default_amount, percentage_rate FROM salary_rules WHERE id = $1;", line.rule_id)[m
+[31m-                calc_type = line.calculation_type or (rule["calculation_type"] if rule else "fixed_amount")[m
+[31m-                amt_val = float(line.amount_value)[m
+[31m-[m
+[31m-                if calc_type == "grade_based" or (rule and rule["calculation_type"] == "grade_based"):[m
+[31m-                    calc_type = "grade_based"[m
+[31m-                    grade_rate = None[m
+[31m-                    if emp_grade_id:[m
+[31m-                        grade_rate = await conn.fetchval([m
+[31m-                            "SELECT amount FROM salary_rule_grade_rates WHERE rule_id = $1 AND grade_id = $2;",[m
+[31m-                            line.rule_id, emp_grade_id[m
+[31m-                        )[m
+[31m-                    if grade_rate is not None:[m
+[31m-                        amt_val = float(grade_rate)[m
+[31m-                    elif amt_val <= 0 and rule:[m
+[31m-                        amt_val = float(rule["default_amount"] or 0.0)[m
+[31m-                    computed = round(amt_val, 2)[m
+[31m-                elif calc_type == "percentage_of_base":[m
+[31m-                    computed = round((wage_base * amt_val) / 100.0, 2)[m
+[31m-                else:[m
+[31m-                    computed = round(amt_val, 2)[m
+[31m-[m
+[32m+[m[32m        async with conn.transaction():[m
+[32m+[m[32m            if status_val == "active" and existing["status"] != "active":[m
+                 await conn.execute("""[m
+[31m-                    INSERT INTO contract_benefit_lines ([m
+[31m-                        id, contract_id, rule_id, calculation_type, amount_value, computed_monthly_total[m
+[31m-                    ) VALUES ($1, $2, $3, $4, $5, $6);[m
+[31m-                """, uuid.uuid4(), c_uuid, line.rule_id, calc_type, amt_val, computed)[m
+[32m+[m[32m                    UPDATE employee_contracts[m
+[32m+[m[32m                    SET status = 'expired', updated_at = CURRENT_TIMESTAMP[m
+[32m+[m[32m                    WHERE employee_id = $1 AND id != $2 AND status = 'active';[m
+[32m+[m[32m                """, emp_uuid, c_uuid)[m
+ [m
+[31m-        # Sync employee base salary if active[m
+[31m-        if status_val == "active":[m
+             await conn.execute("""[m
+[31m-                UPDATE employees[m
+[31m-                SET base_salary = $1, currency = $2, updated_at = CURRENT_TIMESTAMP[m
+[31m-                WHERE id = $3;[m
+[31m-            """, wage_base, currency, emp_uuid)[m
+[32m+[m[32m                UPDATE employee_contracts[m
+[32m+[m[32m                SET contract_reference = $1, title = $2, start_date = $3, end_date = $4,[m
+[32m+[m[32m                    wage_base = $5, currency = $6, status = $7, notice_period_days = $8,[m
+[32m+[m[32m                    trial_period_days = $9, working_hours_per_week = $10, terms_notes = $11,[m
+[32m+[m[32m                    updated_at = CURRENT_TIMESTAMP[m
+[32m+[m[32m                WHERE id = $12;[m
+[32m+[m[32m            """, ref, title, start_d, end_d, wage_base, currency, status_val, notice_days, trial_days, hours, notes, c_uuid)[m
+[32m+[m
+[32m+[m[32m            # Update benefit lines if payload provided them[m
+[32m+[m[32m            if payload.benefit_lines is not None:[m
+[32m+[m[32m                emp_grade_id = await conn.fetchval("SELECT grade_id FROM employees WHERE id = $1;", emp_uuid)[m
+[32m+[m[32m                await conn.execute("DELETE FROM contract_benefit_lines WHERE contract_id = $1;", c_uuid)[m
+[32m+[m[32m                for line in payload.benefit_lines:[m
+[32m+[m[32m                    rule = await conn.fetchrow("SELECT id, name, category, calculation_type, default_amount, percentage_rate FROM salary_rules WHERE id = $1;", line.rule_id)[m
+[32m+[m[32m                    calc_type = line.calculation_type or (rule["calculation_type"] if rule else "fixed_amount")[m
+[32m+[m[32m                    amt_val = float(line.amount_value)[m
+[32m+[m
+[32m+[m[32m                    if calc_type == "grade_based" or (rule and rule["calculation_type"] == "grade_based"):[m
+[32m+[m[32m                        calc_type = "grade_based"[m
+[32m+[m[32m                        grade_rate = None[m
+[32m+[m[32m                        if emp_grade_id:[m
+[32m+[m[32m                            grade_rate = await conn.fetchval([m
+[32m+[m[32m                                "SELECT amount FROM salary_rule_grade_rates WHERE rule_id = $1 AND grade_id = $2;",[m
+[32m+[m[32m                                line.rule_id, emp_grade_id[m
+[32m+[m[32m                            )[m
+[32m+[m[32m                        if grade_rate is not None:[m
+[32m+[m[32m                            amt_val = float(grade_rate)[m
+[32m+[m[32m                        elif amt_val <= 0 and rule:[m
+[32m+[m[32m                            amt_val = float(rule["default_amount"] or 0.0)[m
+[32m+[m[32m                        computed = round(amt_val, 2)[m
+[32m+[m[32m                    elif calc_type == "percentage_of_base":[m
+[32m+[m[32m                        computed = round((wage_base * amt_val) / 100.0, 2)[m
+[32m+[m[32m                    else:[m
+[32m+[m[32m                        computed = round(amt_val, 2)[m
+[32m+[m
+[32m+[m[32m                    await conn.execute("""[m
+[32m+[m[32m                        INSERT INTO contract_benefit_lines ([m
+[32m+[m[32m                            id, contract_id, rule_id, calculation_type, amount_value, computed_monthly_total[m
+[32m+[m[32m                        ) VALUES ($1, $2, $3, $4, $5, $6);[m
+[32m+[m[32m                    """, uuid.uuid4(), c_uuid, line.rule_id, calc_type, amt_val, computed)[m
+[32m+[m
+[32m+[m[32m            # Sync employee base salary if active[m
+[32m+[m[32m            if status_val == "active":[m
+[32m+[m[32m                await conn.execute("""[m
+[32m+[m[32m                    UPDATE employees[m
+[32m+[m[32m                    SET base_salary = $1, currency = $2, updated_at = CURRENT_TIMESTAMP[m
+[32m+[m[32m                    WHERE id = $3;[m
+[32m+[m[32m                """, wage_base, currency, emp_uuid)[m
+ [m
+[31m-        # Audit trail logging[m
+[31m-        client_ip = get_client_ip(request)[m
+[31m-        audit_note = f"Updated contract {ref}."[m
+[31m-        if wage_or_package_altered:[m
+[31m-            audit_note += f" Compensation modified: base={wage_base} {currency}."[m
+[31m-        await log_contract_audit([m
+[31m-            conn=conn,[m
+[31m-            contract_id=str(c_uuid),[m
+[31m-            action="UPDATE",[m
+[31m-            note=audit_note,[m
+[31m-            session=session,[m
+[31m-            client_ip=client_ip,[m
+[31m-            changes={"wage_base": wage_base, "status": status_val}[m
+[31m-        )[m
+[32m+[m[32m            # Audit trail logging[m
+[32m+[m[32m            client_ip = get_client_ip(request)[m
+[32m+[m[32m            audit_note = f"Updated contract {ref}."[m
+[32m+[m[32m            if wage_or_package_altered:[m
+[32m+[m[32m                audit_note += f" Compensation modified: base={wage_base} {currency}."[m
+[32m+[m[32m            await log_contract_audit([m
+[32m+[m[32m                conn=conn,[m
+[32m+[m[32m                contract_id=str(c_uuid),[m
+[32m+[m[32m                action="UPDATE",[m
+[32m+[m[32m                note=audit_note,[m
+[32m+[m[32m                session=session,[m
+[32m+[m[32m                client_ip=client_ip,[m
+[32m+[m[32m                changes={"wage_base": wage_base, "status": status_val}[m
+[32m+[m[32m            )[m
+ [m
+         updated = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", c_uuid)[m
+         return mask_contract_payload(serialize_row(dict(updated)), session)[m
+[36m@@ -820,6 +784,7 @@[m [masync def activate_contract([m
+         contract = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", c_uuid)[m
+         if not contract:[m
+             raise HTTPException(status_code=404, detail="Contract not found.")[m
+[32m+[m[32m        verify_record_tenant(contract["organization_id"], session)[m
+ [m
+         user_id = None[m
+         uid_str = session.get("id") or session.get("user_id")[m
+[36m@@ -843,42 +808,43 @@[m [masync def activate_contract([m
+ [m
+         emp_uuid = contract["employee_id"][m
+ [m
+[31m-        # 1. Demote previous active contracts for this employee[m
+[31m-        await conn.execute("""[m
+[31m-            UPDATE employee_contracts[m
+[31m-            SET status = 'expired', updated_at = CURRENT_TIMESTAMP[m
+[31m-            WHERE employee_id = $1 AND id != $2 AND status = 'active';[m
+[31m-        """, emp_uuid, c_uuid)[m
+[32m+[m[32m        async with conn.transaction():[m
+[32m+[m[32m            # 1. Demote previous active contracts for this employee[m
+[32m+[m[32m            await conn.execute("""[m
+[32m+[m[32m                UPDATE employee_contracts[m
+[32m+[m[32m                SET status = 'expired', updated_at = CURRENT_TIMESTAMP[m
+[32m+[m[32m                WHERE employee_id = $1 AND id != $2 AND status = 'active';[m
+[32m+[m[32m            """, emp_uuid, c_uuid)[m
+ [m
+[31m-        # 2. Set this contract to active and approved[m
+[31m-        await conn.execute("""[m
+[31m-            UPDATE employee_contracts[m
+[31m-            SET status = 'active',[m
+[31m-                approval_status = 'approved',[m
+[31m-                approved_by = $2,[m
+[31m-                approved_at = CURRENT_TIMESTAMP,[m
+[31m-                updated_at = CURRENT_TIMESTAMP[m
+[31m-            WHERE id = $1;[m
+[31m-        """, c_uuid, user_id)[m
+[32m+[m[32m            # 2. Set this contract to active and approved[m
+[32m+[m[32m            await conn.execute("""[m
+[32m+[m[32m                UPDATE employee_contracts[m
+[32m+[m[32m                SET status = 'active',[m
+[32m+[m[32m                    approval_status = 'approved',[m
+[32m+[m[32m                    approved_by = $2,[m
+[32m+[m[32m                    approved_at = CURRENT_TIMESTAMP,[m
+[32m+[m[32m                    updated_at = CURRENT_TIMESTAMP[m
+[32m+[m[32m                WHERE id = $1;[m
+[32m+[m[32m            """, c_uuid, user_id)[m
+ [m
+[31m-        # 3. Synchronize employee record base salary and currency[m
+[31m-        await conn.execute("""[m
+[31m-            UPDATE employees[m
+[31m-            SET base_salary = $1, currency = $2, updated_at = CURRENT_TIMESTAMP[m
+[31m-            WHERE id = $3;[m
+[31m-        """, float(contract["wage_base"]), contract["currency"], emp_uuid)[m
+[32m+[m[32m            # 3. Synchronize employee record base salary and currency[m
+[32m+[m[32m            await conn.execute("""[m
+[32m+[m[32m                UPDATE employees[m
+[32m+[m[32m                SET base_salary = $1, currency = $2, updated_at = CURRENT_TIMESTAMP[m
+[32m+[m[32m                WHERE id = $3;[m
+[32m+[m[32m            """, float(contract["wage_base"]), contract["currency"], emp_uuid)[m
+ [m
+[31m-        # Audit trail logging[m
+[31m-        client_ip = get_client_ip(request)[m
+[31m-        await log_contract_audit([m
+[31m-            conn=conn,[m
+[31m-            contract_id=str(c_uuid),[m
+[31m-            action="ACTIVATE",[m
+[31m-            note=f"Activated and approved contract {contract['contract_reference']} under SOX 404 Dual Control.",[m
+[31m-            session=session,[m
+[31m-            client_ip=client_ip,[m
+[31m-            changes={"status": "active", "approval_status": "approved", "approved_by": str(user_id) if user_id else None}[m
+[31m-        )[m
+[32m+[m[32m            # Audit trail logging[m
+[32m+[m[32m            client_ip = get_client_ip(request)[m
+[32m+[m[32m            await log_contract_audit([m
+[32m+[m[32m                conn=conn,[m
+[32m+[m[32m                contract_id=str(c_uuid),[m
+[32m+[m[32m                action="ACTIVATE",[m
+[32m+[m[32m                note=f"Activated and approved contract {contract['contract_reference']} under SOX 404 Dual Control.",[m
+[32m+[m[32m                session=session,[m
+[32m+[m[32m                client_ip=client_ip,[m
+[32m+[m[32m                changes={"status": "active", "approval_status": "approved", "approved_by": str(user_id) if user_id else None}[m
+[32m+[m[32m            )[m
+ [m
+         activated = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", c_uuid)[m
+         return mask_contract_payload(serialize_row(dict(activated)), session)[m
+[36m@@ -913,6 +879,7 @@[m [masync def submit_contract_for_approval([m
+         contract = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", c_uuid)[m
+         if not contract:[m
+             raise HTTPException(status_code=404, detail="Contract not found.")[m
+[32m+[m[32m        verify_record_tenant(contract["organization_id"], session)[m
+ [m
+         if contract["status"] == "active" or contract["approval_status"] == "approved":[m
+             raise HTTPException(status_code=400, detail="Contract is already approved and active.")[m
+[36m@@ -981,6 +948,7 @@[m [masync def reject_contract([m
+         contract = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", c_uuid)[m
+         if not contract:[m
+             raise HTTPException(status_code=404, detail="Contract not found.")[m
+[32m+[m[32m        verify_record_tenant(contract["organization_id"], session)[m
+ [m
+         if contract["approval_status"] == "approved":[m
+             raise HTTPException(status_code=400, detail="Cannot reject an approved contract.")[m
+[36m@@ -1029,6 +997,7 @@[m [masync def add_contract_benefit([m
+         contract = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", c_uuid)[m
+         if not contract:[m
+             raise HTTPException(status_code=404, detail="Contract not found.")[m
+[32m+[m[32m        verify_record_tenant(contract["organization_id"], session)[m
+ [m
+         # SOX 404 / ISO 27001 Immutability Guard[m
+         if contract["status"] in ("active", "approved", "posted"):[m
+[36m@@ -1064,23 +1033,24 @@[m [masync def add_contract_benefit([m
+             computed = round(amt_val, 2)[m
+ [m
+         line_id = uuid.uuid4()[m
+[31m-        await conn.execute("""[m
+[31m-            INSERT INTO contract_benefit_lines ([m
+[31m-                id, contract_id, rule_id, calculation_type, amount_value, computed_monthly_total[m
+[31m-            ) VALUES ($1, $2, $3, $4, $5, $6);[m
+[31m-        """, line_id, c_uuid, line.rule_id, calc_type, amt_val, computed)[m
+[32m+[m[32m        async with conn.transaction():[m
+[32m+[m[32m            await conn.execute("""[m
+[32m+[m[32m                INSERT INTO contract_benefit_lines ([m
+[32m+[m[32m                    id, contract_id, rule_id, calculation_type, amount_value, computed_monthly_total[m
+[32m+[m[32m                ) VALUES ($1, $2, $3, $4, $5, $6);[m
+[32m+[m[32m            """, line_id, c_uuid, line.rule_id, calc_type, amt_val, computed)[m
+ [m
+[31m-        # Audit trail logging[m
+[31m-        client_ip = get_client_ip(request)[m
+[31m-        await log_contract_audit([m
+[31m-            conn=conn,[m
+[31m-            contract_id=str(c_uuid),[m
+[31m-            action="BENEFIT_ADD",[m
+[31m-            note=f"Attached benefit rule {line.rule_id} ({calc_type}: {amt_val}) to contract {contract['contract_reference']}.",[m
+[31m-            session=session,[m
+[31m-            client_ip=client_ip,[m
+[31m-            changes={"rule_id": line.rule_id, "amount_value": amt_val, "computed_total": computed}[m
+[31m-        )[m
+[32m+[m[32m            # Audit trail logging[m
+[32m+[m[32m            client_ip = get_client_ip(request)[m
+[32m+[m[32m            await log_contract_audit([m
+[32m+[m[32m                conn=conn,[m
+[32m+[m[32m                contract_id=str(c_uuid),[m
+[32m+[m[32m                action="BENEFIT_ADD",[m
+[32m+[m[32m                note=f"Attached benefit rule {line.rule_id} ({calc_type}: {amt_val}) to contract {contract['contract_reference']}.",[m
+[32m+[m[32m                session=session,[m
+[32m+[m[32m                client_ip=client_ip,[m
+[32m+[m[32m                changes={"rule_id": line.rule_id, "amount_value": amt_val, "computed_total": computed}[m
+[32m+[m[32m            )[m
+ [m
+         created = await conn.fetchrow("""[m
+             SELECT b.*, r.name AS rule_name, r.category AS rule_category, r.wps_code[m
+[36m@@ -1111,7 +1081,11 @@[m [masync def delete_contract_benefit([m
+         raise HTTPException(status_code=400, detail="Invalid UUID.")[m
+ [m
+     async with pool.acquire() as conn:[m
+[31m-        c_status = await conn.fetchval("SELECT status FROM employee_contracts WHERE id = $1;", c_uuid)[m
+[32m+[m[32m        contract = await conn.fetchrow("SELECT status, organization_id FROM employee_contracts WHERE id = $1;", c_uuid)[m
+[32m+[m[32m        if not contract:[m
+[32m+[m[32m            raise HTTPException(status_code=404, detail="Contract not found.")[m
+[32m+[m[32m        verify_record_tenant(contract["organization_id"], session)[m
+[32m+[m[32m        c_status = contract["status"][m
+         if c_status in ("active", "approved", "posted"):[m
+             raise HTTPException([m
+                 status_code=400,[m
+[36m@@ -1120,21 +1094,23 @@[m [masync def delete_contract_benefit([m
+ [m
+         # Check rule details for audit trail[m
+         b_row = await conn.fetchrow("SELECT rule_id, amount_value FROM contract_benefit_lines WHERE id = $1 AND contract_id = $2;", b_uuid, c_uuid)[m
+[31m-        res = await conn.execute("DELETE FROM contract_benefit_lines WHERE id = $1 AND contract_id = $2;", b_uuid, c_uuid)[m
+[31m-        if res == "DELETE 0":[m
+[31m-            raise HTTPException(status_code=404, detail="Benefit line not found.")[m
+ [m
+[31m-        # Audit trail logging[m
+[31m-        client_ip = get_client_ip(request)[m
+[31m-        rule_name = b_row["rule_id"] if b_row else str(b_uuid)[m
+[31m-        await log_contract_audit([m
+[31m-            conn=conn,[m
+[31m-            contract_id=str(c_uuid),[m
+[31m-            action="BENEFIT_REMOVE",[m
+[31m-            note=f"Removed benefit rule {rule_name} from contract.",[m
+[31m-            session=session,[m
+[31m-            client_ip=client_ip[m
+[31m-        )[m
+[32m+[m[32m        async with conn.transaction():[m
+[32m+[m[32m            res = await conn.execute("DELETE FROM contract_benefit_lines WHERE id = $1 AND contract_id = $2;", b_uuid, c_uuid)[m
+[32m+[m[32m            if res == "DELETE 0":[m
+[32m+[m[32m                raise HTTPException(status_code=404, detail="Benefit line not found.")[m
+[32m+[m
+[32m+[m[32m            # Audit trail logging[m
+[32m+[m[32m            client_ip = get_client_ip(request)[m
+[32m+[m[32m            rule_name = b_row["rule_id"] if b_row else str(b_uuid)[m
+[32m+[m[32m            await log_contract_audit([m
+[32m+[m[32m                conn=conn,[m
+[32m+[m[32m                contract_id=str(c_uuid),[m
+[32m+[m[32m                action="BENEFIT_REMOVE",[m
+[32m+[m[32m                note=f"Removed benefit rule {rule_name} from contract.",[m
+[32m+[m[32m                session=session,[m
+[32m+[m[32m                client_ip=client_ip[m
+[32m+[m[32m            )[m
+ [m
+         return {"success": True, "deleted_id": str(b_uuid)}[m
+ [m
+[36m@@ -1160,6 +1136,7 @@[m [masync def delete_contract([m
+         contract = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", c_uuid)[m
+         if not contract:[m
+             raise HTTPException(status_code=404, detail="Contract not found.")[m
+[32m+[m[32m        verify_record_tenant(contract["organization_id"], session)[m
+ [m
+         if contract["status"] in ("active", "approved", "posted"):[m
+             raise HTTPException([m
+[36m@@ -1208,9 +1185,10 @@[m [masync def amend_contract([m
+ [m
+     async with pool.acquire() as conn:[m
+         async with conn.transaction():[m
+[31m-            existing = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1 FOR UPDATE;", c_uuid)[m
+[32m+[m[32m            existing = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", c_uuid)[m
+             if not existing:[m
+                 raise HTTPException(status_code=404, detail="Contract not found.")[m
+[32m+[m[32m            verify_record_tenant(existing["organization_id"], session)[m
+ [m
+             if existing["status"] not in ("active", "approved"):[m
+                 raise HTTPException([m
+[36m@@ -1227,7 +1205,7 @@[m [masync def amend_contract([m
+             base_ref = existing["contract_reference"].split("-AMD")[0][m
+             new_ref = f"{base_ref}-AMD{next_rev}"[m
+ [m
+[31m-            new_contract_id = uuid.uuid4()[m
+[32m+[m[32m            new_contract_id = uuid7()[m
+             start_d = parse_date(payload.start_date) if payload.start_date is not None else existing["start_date"][m
+             end_d = parse_date(payload.end_date) if payload.end_date is not None else existing["end_date"][m
+             wage_base = float(payload.wage_base) if payload.wage_base is not None else float(existing["wage_base"])[m
+[36m@@ -1239,11 +1217,13 @@[m [masync def amend_contract([m
+             notes = payload.terms_notes if payload.terms_notes is not None else existing["terms_notes"][m
+ [m
+             # 2. Transition original contract to 'amended' (core terms preserved)[m
+[31m-            await conn.execute("""[m
+[32m+[m[32m            upd_res = await conn.execute("""[m
+                 UPDATE employee_contracts[m
+                 SET status = 'amended', updated_at = CURRENT_TIMESTAMP[m
+[31m-                WHERE id = $1;[m
+[32m+[m[32m                WHERE id = $1 AND status IN ('active', 'approved');[m
+             """, c_uuid)[m
+[32m+[m[32m            if upd_res == "UPDATE 0":[m
+[32m+[m[32m                raise HTTPException(status_code=409, detail="Contract status was concurrently modified.")[m
+ [m
+             # 3. Insert newly issued revision contract[m
+             await conn.execute("""[m
+[36m@@ -1364,6 +1344,7 @@[m [masync def cancel_contract([m
+         contract = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", c_uuid)[m
+         if not contract:[m
+             raise HTTPException(status_code=404, detail="Contract not found.")[m
+[32m+[m[32m        verify_record_tenant(contract["organization_id"], session)[m
+ [m
+         if contract["status"] in ("cancelled", "terminated", "expired"):[m
+             raise HTTPException(status_code=400, detail=f"Contract is already {contract['status']}.")[m
+[1mdiff --git a/view-engine/backend/api/v1/documents.py b/view-engine/backend/api/v1/documents.py[m
+[1mindex f935b19..09804f5 100755[m
+[1m--- a/view-engine/backend/api/v1/documents.py[m
+[1m+++ b/view-engine/backend/api/v1/documents.py[m
+[36m@@ -1,3 +1,5 @@[m
+[32m+[m[32mimport asyncio[m
+[32m+[m[32mimport json[m
+ import os[m
+ import uuid[m
+ import hashlib[m
+[36m@@ -9,7 +11,7 @@[m [mfrom cryptography.hazmat.primitives.ciphers.aead import AESGCM[m
+ [m
+ from backend.core.config import settings[m
+ from backend.core.database import get_db_pool[m
+[31m-from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission[m
+[32m+[m[32mfrom backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, verify_record_tenant[m
+ [m
+ router = APIRouter(prefix="/api/v1/employees", tags=["Employee Documents"])[m
+ [m
+[36m@@ -85,6 +87,11 @@[m [masync def list_employee_documents([m
+         raise HTTPException(status_code=400, detail="Invalid employee UUID.")[m
+ [m
+     async with pool.acquire() as conn:[m
+[32m+[m[32m        emp = await conn.fetchrow("SELECT organization_id FROM employees WHERE id = $1;", emp_uuid)[m
+[32m+[m[32m        if not emp:[m
+[32m+[m[32m            raise HTTPException(status_code=404, detail="Employee not found.")[m
+[32m+[m[32m        verify_record_tenant(emp["organization_id"], session)[m
+[32m+[m
+         rows = await conn.fetch("""[m
+             SELECT id, employee_id, document_type, original_filename, file_size_bytes,[m
+                    mime_type, sha256_checksum, storage_path, is_encrypted, uploaded_by, created_at[m
+[36m@@ -165,48 +172,50 @@[m [masync def upload_employee_document([m
+         """, emp_uuid)[m
+         if not emp_record:[m
+             raise HTTPException(status_code=404, detail="Employee not found.")[m
+[31m-[m
+[32m+[m[32m        verify_record_tenant(emp_record["organization_id"], session)[m
+         tenant_id = str(emp_record["organization_id"]) if emp_record["organization_id"] else "default_tenant"[m
+ [m
+[31m-        # 5. Encrypt data in memory with AES-256-GCM[m
+[31m-        sha256_hash = hashlib.sha256(contents).hexdigest()[m
+[31m-        encrypted_payload = encrypt_data(contents)[m
+[32m+[m[32m    # 5. Encrypt data and write to disk outside DB connection via asyncio.to_thread[m
+[32m+[m[32m    doc_id = uuid.uuid4()[m
+[32m+[m[32m    storage_dir = os.path.join([m
+[32m+[m[32m        "storage", "tenants", tenant_id, "employees", str(emp_uuid)[m
+[32m+[m[32m    )[m
+[32m+[m[32m    storage_filepath = os.path.join(storage_dir, f"{doc_id}.enc")[m
+ [m
+[31m-        # 6. Physical filesystem directory structure[m
+[31m-        doc_id = uuid.uuid4()[m
+[31m-        storage_dir = os.path.join([m
+[31m-            "storage", "tenants", tenant_id, "employees", str(emp_uuid)[m
+[31m-        )[m
+[32m+[m[32m    def _encrypt_and_save():[m
+[32m+[m[32m        sha = hashlib.sha256(contents).hexdigest()[m
+[32m+[m[32m        enc = encrypt_data(contents)[m
+         os.makedirs(storage_dir, exist_ok=True)[m
+[31m-        storage_filepath = os.path.join(storage_dir, f"{doc_id}.enc")[m
+[31m-[m
+         with open(storage_filepath, "wb") as f:[m
+[31m-            f.write(encrypted_payload)[m
+[31m-[m
+[31m-        user_id, author_name = await resolve_audit_author(conn, session)[m
+[31m-        client_ip = get_client_ip(request) if request else "127.0.0.1"[m
+[32m+[m[32m            f.write(enc)[m
+[32m+[m[32m        return sha[m
+ [m
+[31m-        # 7. Write metadata to database[m
+[31m-        await conn.execute("""[m
+[31m-            INSERT INTO employee_documents ([m
+[31m-                id, employee_id, document_type, original_filename, file_size_bytes,[m
+[31m-                mime_type, sha256_checksum, storage_path, is_encrypted, uploaded_by[m
+[31m-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9);[m
+[31m-        """, doc_id, emp_uuid, document_type, filename, file_size, content_type, sha256_hash, storage_filepath, user_id)[m
+[32m+[m[32m    sha256_hash = await asyncio.to_thread(_encrypt_and_save)[m
+ [m
+[31m-        # 8. Record audit log entry[m
+[31m-        await conn.execute("""[m
+[31m-            INSERT INTO audit_logs ([m
+[31m-                id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, changes, ip_address[m
+[31m-            ) VALUES ([m
+[31m-                $1::uuid, 'employees', $2, 'UPDATE', $3, $4,[m
+[31m-                $5, $6::jsonb, $7[m
+[31m-            );[m
+[31m-        """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name,[m
+[31m-            f"Uploaded encrypted {document_type} document: '{filename}' ({file_size // 1024} KB).",[m
+[31m-            json.dumps({"document_upload": {"filename": filename, "type": document_type}}),[m
+[31m-            client_ip[m
+[31m-        )[m
+[32m+[m[32m    # 6. Re-acquire DB connection briefly to write metadata and audit logs[m
+[32m+[m[32m    client_ip = get_client_ip(request) if request else "127.0.0.1"[m
+[32m+[m[32m    async with pool.acquire() as conn:[m
+[32m+[m[32m        user_id, author_name = await resolve_audit_author(conn, session)[m
+[32m+[m[32m        async with conn.transaction():[m
+[32m+[m[32m            await conn.execute("""[m
+[32m+[m[32m                INSERT INTO employee_documents ([m
+[32m+[m[32m                    id, employee_id, document_type, original_filename, file_size_bytes,[m
+[32m+[m[32m                    mime_type, sha256_checksum, storage_path, is_encrypted, uploaded_by[m
+[32m+[m[32m                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9);[m
+[32m+[m[32m            """, doc_id, emp_uuid, document_type, filename, file_size, content_type, sha256_hash, storage_filepath, user_id)[m
+[32m+[m
+[32m+[m[32m            await conn.execute("""[m
+[32m+[m[32m                INSERT INTO audit_logs ([m
+[32m+[m[32m                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, changes, ip_address[m
+[32m+[m[32m                ) VALUES ([m
+[32m+[m[32m                    $1::uuid, 'employees', $2, 'UPDATE', $3, $4,[m
+[32m+[m[32m                    $5, $6::jsonb, $7[m
+[32m+[m[32m                );[m
+[32m+[m[32m            """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name,[m
+[32m+[m[32m                f"Uploaded encrypted {document_type} document: '{filename}' ({file_size // 1024} KB).",[m
+[32m+[m[32m                json.dumps({"document_upload": {"filename": filename, "type": document_type}}),[m
+[32m+[m[32m                client_ip[m
+[32m+[m[32m            )[m
+ [m
+     return {[m
+         "id": str(doc_id),[m
+[36m@@ -240,7 +249,13 @@[m [masync def download_employee_document([m
+     except Exception:[m
+         raise HTTPException(status_code=400, detail="Invalid employee or document UUID.")[m
+ [m
+[32m+[m[32m    # 1. Fetch document metadata inside brief DB connection[m
+     async with pool.acquire() as conn:[m
+[32m+[m[32m        emp = await conn.fetchrow("SELECT organization_id FROM employees WHERE id = $1;", emp_uuid)[m
+[32m+[m[32m        if not emp:[m
+[32m+[m[32m            raise HTTPException(status_code=404, detail="Employee not found.")[m
+[32m+[m[32m        verify_record_tenant(emp["organization_id"], session)[m
+[32m+[m
+         doc = await conn.fetchrow("""[m
+             SELECT id, employee_id, document_type, original_filename,[m
+                    file_size_bytes, mime_type, storage_path, is_encrypted[m
+[36m@@ -251,34 +266,38 @@[m [masync def download_employee_document([m
+         if not doc:[m
+             raise HTTPException(status_code=404, detail="Document metadata record not found.")[m
+ [m
+[31m-        storage_path = doc["storage_path"][m
+[31m-        if not os.path.exists(storage_path):[m
+[31m-            raise HTTPException(status_code=404, detail="Encrypted physical file not found on disk.")[m
+[32m+[m[32m        doc_dict = dict(doc)[m
+[32m+[m
+[32m+[m[32m    # 2. Read and decrypt outside DB connection via asyncio.to_thread[m
+[32m+[m[32m    storage_path = doc_dict["storage_path"][m
+[32m+[m[32m    if not os.path.exists(storage_path):[m
+[32m+[m[32m        raise HTTPException(status_code=404, detail="Encrypted physical file not found on disk.")[m
+ [m
+[32m+[m[32m    def _read_and_decrypt():[m
+         with open(storage_path, "rb") as f:[m
+             encrypted_bytes = f.read()[m
+[32m+[m[32m        if doc_dict["is_encrypted"]:[m
+[32m+[m[32m            return decrypt_data(encrypted_bytes)[m
+[32m+[m[32m        return encrypted_bytes[m
+ [m
+[31m-        try:[m
+[31m-            if doc["is_encrypted"]:[m
+[31m-                decrypted_bytes = decrypt_data(encrypted_bytes)[m
+[31m-            else:[m
+[31m-                decrypted_bytes = encrypted_bytes[m
+[31m-        except Exception as e:[m
+[31m-            raise HTTPException(status_code=500, detail=f"Decryption failed: {str(e)}")[m
+[31m-[m
+[31m-        orig_filename = doc["original_filename"] or "document.pdf"[m
+[31m-        # Sanitize ASCII fallback and encode for UTF-8 RFC 5987 / RFC 6266[m
+[31m-        safe_ascii = orig_filename.replace('"', '').replace('\n', '').replace('\r', '')[m
+[31m-        encoded_filename = urllib.parse.quote(orig_filename)[m
+[31m-        disposition_type = "inline" if inline else "attachment"[m
+[31m-[m
+[31m-        headers = {[m
+[31m-            "Content-Disposition": f'{disposition_type}; filename="{safe_ascii}"; filename*=UTF-8\'\'{encoded_filename}',[m
+[31m-            "X-Vault-Decrypted": "true",[m
+[31m-            "X-Content-Type-Options": "nosniff",[m
+[31m-            "Access-Control-Expose-Headers": "Content-Disposition",[m
+[31m-        }[m
+[31m-        return Response(content=decrypted_bytes, media_type=doc["mime_type"], headers=headers)[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        decrypted_bytes = await asyncio.to_thread(_read_and_decrypt)[m
+[32m+[m[32m    except Exception as e:[m
+[32m+[m[32m        raise HTTPException(status_code=500, detail=f"Decryption failed: {str(e)}")[m
+[32m+[m
+[32m+[m[32m    orig_filename = doc_dict["original_filename"] or "document.pdf"[m
+[32m+[m[32m    # Sanitize ASCII fallback and encode for UTF-8 RFC 5987 / RFC 6266[m
+[32m+[m[32m    safe_ascii = orig_filename.replace('"', '').replace('\n', '').replace('\r', '')[m
+[32m+[m[32m    encoded_filename = urllib.parse.quote(orig_filename)[m
+[32m+[m[32m    disposition_type = "inline" if inline else "attachment"[m
+[32m+[m
+[32m+[m[32m    headers = {[m
+[32m+[m[32m        "Content-Disposition": f'{disposition_type}; filename="{safe_ascii}"; filename*=UTF-8\'\'{encoded_filename}',[m
+[32m+[m[32m        "X-Vault-Decrypted": "true",[m
+[32m+[m[32m        "X-Content-Type-Options": "nosniff",[m
+[32m+[m[32m        "Access-Control-Expose-Headers": "Content-Disposition",[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return Response(content=decrypted_bytes, media_type=doc_dict["mime_type"], headers=headers)[m
+ [m
+ [m
+ @router.delete("/{employee_id}/documents/{document_id}")[m
+[36m@@ -298,6 +317,11 @@[m [masync def delete_employee_document([m
+         raise HTTPException(status_code=400, detail="Invalid employee or document UUID.")[m
+ [m
+     async with pool.acquire() as conn:[m
+[32m+[m[32m        emp = await conn.fetchrow("SELECT organization_id FROM employees WHERE id = $1;", emp_uuid)[m
+[32m+[m[32m        if not emp:[m
+[32m+[m[32m            raise HTTPException(status_code=404, detail="Employee not found.")[m
+[32m+[m[32m        verify_record_tenant(emp["organization_id"], session)[m
+[32m+[m
+         doc = await conn.fetchrow("""[m
+             SELECT id, original_filename, storage_path, document_type[m
+             FROM employee_documents[m
+[1mdiff --git a/view-engine/backend/api/v1/employees.py b/view-engine/backend/api/v1/employees.py[m
+[1mindex 81592ee..3343b1c 100755[m
+[1m--- a/view-engine/backend/api/v1/employees.py[m
+[1m+++ b/view-engine/backend/api/v1/employees.py[m
+[36m@@ -10,6 +10,7 @@[m [mfrom backend.core.dependencies import ([m
+     get_client_ip,[m
+     check_permission,[m
+     require_permission,[m
+[32m+[m[32m    verify_record_tenant,[m
+ )[m
+ from backend.core.chat_engine import handle_employee_department_sync[m
+ [m
+[36m@@ -123,7 +124,8 @@[m [masync def list_employees([m
+     pool = get_db_pool()[m
+     async with pool.acquire() as conn:[m
+         query = """[m
+[31m-            SELECT e.*, g.name as grade_name, g.code as grade_code[m
+[32m+[m[32m            SELECT e.*, g.name as grade_name, g.code as grade_code,[m
+[32m+[m[32m                   COUNT(*) OVER() AS full_count[m
+             FROM employees e[m
+             LEFT JOIN employee_grades g ON e.grade_id = g.id[m
+             WHERE 1=1[m
+[36m@@ -157,8 +159,18 @@[m [masync def list_employees([m
+         params.extend([limit_val, offset_val])[m
+ [m
+         rows = await conn.fetch(query, *params)[m
+[31m-        employees = [mask_employee_salary(serialize_employee(dict(r)), session) for r in rows][m
+[31m-        return {"employees": employees, "total": len(employees)}[m
+[32m+[m[32m        total_count = int(rows[0]["full_count"]) if rows else 0[m
+[32m+[m[32m        employees = [][m
+[32m+[m[32m        for r in rows:[m
+[32m+[m[32m            r_dict = dict(r)[m
+[32m+[m[32m            r_dict.pop("full_count", None)[m
+[32m+[m[32m            employees.append(mask_employee_salary(serialize_employee(r_dict), session))[m
+[32m+[m[32m        return {[m
+[32m+[m[32m            "employees": employees,[m
+[32m+[m[32m            "total": total_count,[m
+[32m+[m[32m            "limit": limit_val,[m
+[32m+[m[32m            "offset": offset_val,[m
+[32m+[m[32m        }[m
+ [m
+ @router.get("/{employee_id}")[m
+ async def get_employee([m
+[36m@@ -182,6 +194,7 @@[m [masync def get_employee([m
+         """, emp_uuid)[m
+         if not row:[m
+             raise HTTPException(status_code=404, detail="Employee not found.")[m
+[32m+[m[32m        verify_record_tenant(row["organization_id"], session)[m
+         return mask_employee_salary(serialize_employee(dict(row)), session)[m
+ [m
+ [m
+[36m@@ -212,50 +225,54 @@[m [masync def create_employee([m
+ [m
+         client_ip = get_client_ip(request) if request else "127.0.0.1"[m
+         branch_uuid = uuid.UUID(payload.branch_id) if payload.branch_id else await conn.fetchval("SELECT id FROM branches LIMIT 1;")[m
+[31m-        org_uuid = uuid.UUID(payload.organization_id) if payload.organization_id else await conn.fetchval("SELECT id FROM organizations LIMIT 1;")[m
+[31m-[m
+[31m-        await conn.execute("""[m
+[31m-            INSERT INTO employees ([m
+[31m-                id, employee_number, first_name, last_name, full_name, display_name_local,[m
+[31m-                gender, date_of_birth, marital_status, nationality, job_title, department_id,[m
+[31m-                branch_id, employment_type, hire_date, probation_end_date, contract_end_date, status,[m
+[31m-                national_id_number, national_id_expiry, passport_number, passport_expiry,[m
+[31m-                visa_number, visa_expiry, work_permit_status, work_email, personal_email,[m
+[31m-                phone_country_code, phone_number, emergency_contact_name, emergency_contact_phone,[m
+[31m-                emergency_contact_relation, base_salary, currency, payment_method, bank_name,[m
+[31m-                bank_iban, bank_swift, organization_id, grade_id[m
+[31m-            ) VALUES ([m
+[31m-                $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,[m
+[31m-                $13::uuid, $14, $15, $16, $17, $18, $19, $20,[m
+[31m-                $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,[m
+[31m-                $32, $33, $34, $35, $36, $37, $38, $39::uuid, $40[m
+[31m-            );[m
+[31m-        """,[m
+[31m-            new_id, emp_number, payload.first_name.strip(), payload.last_name.strip(), full_name,[m
+[31m-            payload.display_name_local, payload.gender, parse_date(payload.date_of_birth), payload.marital_status,[m
+[31m-            payload.nationality, payload.job_title, payload.department_id, branch_uuid,[m
+[31m-            payload.employment_type, parse_date(payload.hire_date), parse_date(payload.probation_end_date),[m
+[31m-            parse_date(payload.contract_end_date), payload.status, payload.national_id_number,[m
+[31m-            parse_date(payload.national_id_expiry), payload.passport_number, parse_date(payload.passport_expiry),[m
+[31m-            payload.visa_number, parse_date(payload.visa_expiry), payload.work_permit_status,[m
+[31m-            payload.work_email, payload.personal_email, payload.phone_country_code,[m
+[31m-            payload.phone_number, payload.emergency_contact_name, payload.emergency_contact_phone,[m
+[31m-            payload.emergency_contact_relation, payload.base_salary, payload.currency,[m
+[31m-            payload.payment_method, payload.bank_name, payload.bank_iban, payload.bank_swift, org_uuid,[m
+[31m-            payload.grade_id.strip() if payload.grade_id and payload.grade_id.strip() else None[m
+[31m-        )[m
+[32m+[m[32m        if not session.get("is_superadmin") and session.get("organization_id"):[m
+[32m+[m[32m            org_uuid = uuid.UUID(str(session["organization_id"]))[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            org_uuid = uuid.UUID(payload.organization_id) if payload.organization_id else await conn.fetchval("SELECT id FROM organizations LIMIT 1;")[m
+ [m
+[31m-        user_id, author_name = await resolve_audit_author(conn, session)[m
+[32m+[m[32m        async with conn.transaction():[m
+[32m+[m[32m            await conn.execute("""[m
+[32m+[m[32m                INSERT INTO employees ([m
+[32m+[m[32m                    id, employee_number, first_name, last_name, full_name, display_name_local,[m
+[32m+[m[32m                    gender, date_of_birth, marital_status, nationality, job_title, department_id,[m
+[32m+[m[32m                    branch_id, employment_type, hire_date, probation_end_date, contract_end_date, status,[m
+[32m+[m[32m                    national_id_number, national_id_expiry, passport_number, passport_expiry,[m
+[32m+[m[32m                    visa_number, visa_expiry, work_permit_status, work_email, personal_email,[m
+[32m+[m[32m                    phone_country_code, phone_number, emergency_contact_name, emergency_contact_phone,[m
+[32m+[m[32m                    emergency_contact_relation, base_salary, currency, payment_method, bank_name,[m
+[32m+[m[32m                    bank_iban, bank_swift, organization_id, grade_id[m
+[32m+[m[32m                ) VALUES ([m
+[32m+[m[32m                    $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,[m
+[32m+[m[32m                    $13::uuid, $14, $15, $16, $17, $18, $19, $20,[m
+[32m+[m[32m                    $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,[m
+[32m+[m[32m                    $32, $33, $34, $35, $36, $37, $38, $39::uuid, $40[m
+[32m+[m[32m                );[m
+[32m+[m[32m            """,[m
+[32m+[m[32m                new_id, emp_number, payload.first_name.strip(), payload.last_name.strip(), full_name,[m
+[32m+[m[32m                payload.display_name_local, payload.gender, parse_date(payload.date_of_birth), payload.marital_status,[m
+[32m+[m[32m                payload.nationality, payload.job_title, payload.department_id, branch_uuid,[m
+[32m+[m[32m                payload.employment_type, parse_date(payload.hire_date), parse_date(payload.probation_end_date),[m
+[32m+[m[32m                parse_date(payload.contract_end_date), payload.status, payload.national_id_number,[m
+[32m+[m[32m                parse_date(payload.national_id_expiry), payload.passport_number, parse_date(payload.passport_expiry),[m
+[32m+[m[32m                payload.visa_number, parse_date(payload.visa_expiry), payload.work_permit_status,[m
+[32m+[m[32m                payload.work_email, payload.personal_email, payload.phone_country_code,[m
+[32m+[m[32m                payload.phone_number, payload.emergency_contact_name, payload.emergency_contact_phone,[m
+[32m+[m[32m                payload.emergency_contact_relation, payload.base_salary, payload.currency,[m
+[32m+[m[32m                payload.payment_method, payload.bank_name, payload.bank_iban, payload.bank_swift, org_uuid,[m
+[32m+[m[32m                payload.grade_id.strip() if payload.grade_id and payload.grade_id.strip() else None[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m            user_id, author_name = await resolve_audit_author(conn, session)[m
+ [m
+[31m-        # Log creation in audit_logs[m
+[31m-        await conn.execute("""[m
+[31m-            INSERT INTO audit_logs ([m
+[31m-                id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address[m
+[31m-            ) VALUES ([m
+[31m-                $1::uuid, 'employees', $2, 'CREATE', $3, $4,[m
+[31m-                $5, $6[m
+[31m-            );[m
+[31m-        """, str(uuid.uuid4()), str(new_id), user_id, author_name, f"Created employee profile for {full_name} ({emp_number}).", client_ip)[m
+[32m+[m[32m            # Log creation in audit_logs[m
+[32m+[m[32m            await conn.execute("""[m
+[32m+[m[32m                INSERT INTO audit_logs ([m
+[32m+[m[32m                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address[m
+[32m+[m[32m                ) VALUES ([m
+[32m+[m[32m                    $1::uuid, 'employees', $2, 'CREATE', $3, $4,[m
+[32m+[m[32m                    $5, $6[m
+[32m+[m[32m                );[m
+[32m+[m[32m            """, str(uuid.uuid4()), str(new_id), user_id, author_name, f"Created employee profile for {full_name} ({emp_number}).", client_ip)[m
+ [m
+         created_row = await conn.fetchrow("""[m
+             SELECT e.*, g.name as grade_name, g.code as grade_code[m
+[36m@@ -301,6 +318,7 @@[m [masync def update_employee([m
+         existing = await conn.fetchrow("SELECT * FROM employees WHERE id = $1;", emp_uuid)[m
+         if not existing:[m
+             raise HTTPException(status_code=404, detail="Employee not found.")[m
+[32m+[m[32m        verify_record_tenant(existing["organization_id"], session)[m
+ [m
+         old_dict = serialize_employee(dict(existing))[m
+         full_name = payload.full_name or f"{payload.first_name.strip()} {payload.last_name.strip()}"[m
+[36m@@ -374,103 +392,95 @@[m [masync def update_employee([m
+         old_grade_id = existing["grade_id"][m
+         new_grade_id = payload.grade_id.strip() if payload.grade_id and payload.grade_id.strip() else None[m
+ [m
+[31m-        # Perform database update[m
+[31m-        await conn.execute("""[m
+[31m-            UPDATE employees SET[m
+[31m-                first_name = $2,[m
+[31m-                last_name = $3,[m
+[31m-                full_name = $4,[m
+[31m-                display_name_local = $5,[m
+[31m-                gender = $6,[m
+[31m-                date_of_birth = $7,[m
+[31m-                marital_status = $8,[m
+[31m-                nationality = $9,[m
+[31m-                job_title = $10,[m
+[31m-                department_id = $11,[m
+[31m-                employment_type = $12,[m
+[31m-                hire_date = $13,[m
+[31m-                probation_end_date = $14,[m
+[31m-                contract_end_date = $15,[m
+[31m-                status = $16,[m
+[31m-                national_id_number = $17,[m
+[31m-                national_id_expiry = $18,[m
+[31m-                passport_number = $19,[m
+[31m-                passport_expiry = $20,[m
+[31m-                visa_number = $21,[m
+[31m-                visa_expiry = $22,[m
+[31m-                work_permit_status = $23,[m
+[31m-                work_email = $24,[m
+[31m-                personal_email = $25,[m
+[31m-                phone_country_code = $26,[m
+[31m-                phone_number = $27,[m
+[31m-                emergency_contact_name = $28,[m
+[31m-                emergency_contact_phone = $29,[m
+[31m-                emergency_contact_relation = $30,[m
+[31m-                base_salary = $31,[m
+[31m-                currency = $32,[m
+[31m-                payment_method = $33,[m
+[31m-                bank_name = $34,[m
+[31m-                bank_iban = $35,[m
+[31m-                bank_swift = $36,[m
+[31m-                grade_id = $37,[m
+[31m-                updated_at = CURRENT_TIMESTAMP[m
+[31m-            WHERE id = $1;[m
+[31m-        """,[m
+[31m-            emp_uuid, payload.first_name.strip(), payload.last_name.strip(), full_name,[m
+[31m-            payload.display_name_local, payload.gender, parse_date(payload.date_of_birth), payload.marital_status,[m
+[31m-            payload.nationality, payload.job_title, payload.department_id,[m
+[31m-            payload.employment_type, parse_date(payload.hire_date), parse_date(payload.probation_end_date),[m
+[31m-            parse_date(payload.contract_end_date), payload.status, payload.national_id_number,[m
+[31m-            parse_date(payload.national_id_expiry), payload.passport_number, parse_date(payload.passport_expiry),[m
+[31m-            payload.visa_number, parse_date(payload.visa_expiry), payload.work_permit_status,[m
+[31m-            payload.work_email, payload.personal_email, payload.phone_country_code,[m
+[31m-            payload.phone_number, payload.emergency_contact_name, payload.emergency_contact_phone,[m
+[31m-            payload.emergency_contact_relation, payload.base_salary, payload.currency,[m
+[31m-            payload.payment_method, payload.bank_name, payload.bank_iban, payload.bank_swift,[m
+[31m-            new_grade_id[m
+[31m-        )[m
+[31m-[m
+[31m-        # If grade_id changed, automatically update active contract benefit lines configured with grade_based[m
+[31m-        if new_grade_id and old_grade_id != new_grade_id:[m
+[31m-            active_contract = await conn.fetchrow("""[m
+[31m-                SELECT id FROM employee_contracts[m
+[31m-                WHERE employee_id = $1 AND status = 'active'[m
+[31m-                ORDER BY created_at DESC LIMIT 1;[m
+[31m-            """, emp_uuid)[m
+[31m-            if active_contract:[m
+[31m-                gb_lines = await conn.fetch("""[m
+[31m-                    SELECT cbl.id, cbl.rule_id[m
+[31m-                    FROM contract_benefit_lines cbl[m
+[31m-                    JOIN salary_rules sr ON cbl.rule_id = sr.id[m
+[31m-                    WHERE cbl.contract_id = $1 AND (cbl.calculation_type = 'grade_based' OR sr.calculation_type = 'grade_based');[m
+[31m-                """, active_contract["id"])[m
+[31m-                for gbl in gb_lines:[m
+[31m-                    rate = await conn.fetchval("""[m
+[31m-                        SELECT amount FROM salary_rule_grade_rates[m
+[31m-                        WHERE rule_id = $1 AND grade_id = $2;[m
+[31m-                    """, gbl["rule_id"], new_grade_id)[m
+[31m-                    if rate is not None:[m
+[31m-                        new_amt = float(rate)[m
+[31m-                        await conn.execute("""[m
+[31m-                            UPDATE contract_benefit_lines[m
+[31m-                            SET amount_value = $1, computed_monthly_total = $1[m
+[31m-                            WHERE id = $2;[m
+[31m-                        """, new_amt, gbl["id"])[m
+[31m-[m
+[31m-        user_id, author_name = await resolve_audit_author(conn, session)[m
+[31m-[m
+[31m-        # Log changes in audit_logs if diff exists[m
+[31m-        if changes_diff:[m
+[31m-            import json[m
+[32m+[m[32m        async with conn.transaction():[m
+[32m+[m[32m            # Perform database update[m
+             await conn.execute("""[m
+[31m-                INSERT INTO audit_logs ([m
+[31m-                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, changes, note, ip_address[m
+[31m-                ) VALUES ([m
+[31m-                    $1::uuid, 'employees', $2, 'UPDATE', $3, $4,[m
+[31m-                    $5::jsonb, $6, $7[m
+[31m-                );[m
+[31m-            """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name, json.dumps(changes_diff),[m
+[31m-                f"Updated {len(changes_diff)} fields on employee profile.", client_ip)[m
+[32m+[m[32m                UPDATE employees SET[m
+[32m+[m[32m                    first_name = $2,[m
+[32m+[m[32m                    last_name = $3,[m
+[32m+[m[32m                    full_name = $4,[m
+[32m+[m[32m                    display_name_local = $5,[m
+[32m+[m[32m                    gender = $6,[m
+[32m+[m[32m                    date_of_birth = $7,[m
+[32m+[m[32m                    marital_status = $8,[m
+[32m+[m[32m                    nationality = $9,[m
+[32m+[m[32m                    job_title = $10,[m
+[32m+[m[32m                    department_id = $11,[m
+[32m+[m[32m                    employment_type = $12,[m
+[32m+[m[32m                    hire_date = $13,[m
+[32m+[m[32m                    probation_end_date = $14,[m
+[32m+[m[32m                    contract_end_date = $15,[m
+[32m+[m[32m                    status = $16,[m
+[32m+[m[32m                    national_id_number = $17,[m
+[32m+[m[32m                    national_id_expiry = $18,[m
+[32m+[m[32m                    passport_number = $19,[m
+[32m+[m[32m                    passport_expiry = $20,[m
+[32m+[m[32m                    visa_number = $21,[m
+[32m+[m[32m                    visa_expiry = $22,[m
+[32m+[m[32m                    work_permit_status = $23,[m
+[32m+[m[32m                    work_email = $24,[m
+[32m+[m[32m                    personal_email = $25,[m
+[32m+[m[32m                    phone_country_code = $26,[m
+[32m+[m[32m                    phone_number = $27,[m
+[32m+[m[32m                    emergency_contact_name = $28,[m
+[32m+[m[32m                    emergency_contact_phone = $29,[m
+[32m+[m[32m                    emergency_contact_relation = $30,[m
+[32m+[m[32m                    base_salary = $31,[m
+[32m+[m[32m                    currency = $32,[m
+[32m+[m[32m                    payment_method = $33,[m
+[32m+[m[32m                    bank_name = $34,[m
+[32m+[m[32m                    bank_iban = $35,[m
+[32m+[m[32m                    bank_swift = $36,[m
+[32m+[m[32m                    grade_id = $37,[m
+[32m+[m[32m                    updated_at = CURRENT_TIMESTAMP[m
+[32m+[m[32m                WHERE id = $1;[m
+[32m+[m[32m            """,[m
+[32m+[m[32m                emp_uuid, payload.first_name.strip(), payload.last_name.strip(), full_name,[m
+[32m+[m[32m                payload.display_name_local, payload.gender, parse_date(payload.date_of_birth), payload.marital_status,[m
+[32m+[m[32m                payload.nationality, payload.job_title, payload.department_id,[m
+[32m+[m[32m                payload.employment_type, parse_date(payload.hire_date), parse_date(payload.probation_end_date),[m
+[32m+[m[32m                parse_date(payload.contract_end_date), payload.status, payload.national_id_number,[m
+[32m+[m[32m                parse_date(payload.national_id_expiry), payload.passport_number, parse_date(payload.passport_expiry),[m
+[32m+[m[32m                payload.visa_number, parse_date(payload.visa_expiry), payload.work_permit_status,[m
+[32m+[m[32m                payload.work_email, payload.personal_email, payload.phone_country_code,[m
+[32m+[m[32m                payload.phone_number, payload.emergency_contact_name, payload.emergency_contact_phone,[m
+[32m+[m[32m                payload.emergency_contact_relation, payload.base_salary, payload.currency,[m
+[32m+[m[32m                payload.payment_method, payload.bank_name, payload.bank_iban, payload.bank_swift,[m
+[32m+[m[32m                new_grade_id[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m            # If grade_id changed, automatically update active contract benefit lines configured with grade_based[m
+[32m+[m[32m            if new_grade_id and old_grade_id != new_grade_id:[m
+[32m+[m[32m                active_contract = await conn.fetchrow("""[m
+[32m+[m[32m                    SELECT id FROM employee_contracts[m
+[32m+[m[32m                    WHERE employee_id = $1 AND status = 'active'[m
+[32m+[m[32m                    ORDER BY created_at DESC LIMIT 1;[m
+[32m+[m[32m                """, emp_uuid)[m
+[32m+[m[32m                if active_contract:[m
+[32m+[m[32m                    await conn.execute("""[m
+[32m+[m[32m                        UPDATE contract_benefit_lines cbl[m
+[32m+[m[32m                        SET amount_value = srgr.amount,[m
+[32m+[m[32m                            computed_monthly_total = srgr.amount[m
+[32m+[m[32m                        FROM salary_rule_grade_rates srgr[m
+[32m+[m[32m                        WHERE cbl.rule_id = srgr.rule_id[m
+[32m+[m[32m                          AND srgr.grade_id = $1[m
+[32m+[m[32m                          AND cbl.contract_id = $2;[m
+[32m+[m[32m                    """, new_grade_id, active_contract["id"])[m
+[32m+[m
+[32m+[m[32m            user_id, author_name = await resolve_audit_author(conn, session)[m
+[32m+[m
+[32m+[m[32m            # Log changes in audit_logs if diff exists[m
+[32m+[m[32m            if changes_diff:[m
+[32m+[m[32m                import json[m
+[32m+[m[32m                await conn.execute("""[m
+[32m+[m[32m                    INSERT INTO audit_logs ([m
+[32m+[m[32m                        id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, changes, note, ip_address[m
+[32m+[m[32m                    ) VALUES ([m
+[32m+[m[32m                        $1::uuid, 'employees', $2, 'UPDATE', $3, $4,[m
+[32m+[m[32m                        $5::jsonb, $6, $7[m
+[32m+[m[32m                    );[m
+[32m+[m[32m                """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name, json.dumps(changes_diff),[m
+[32m+[m[32m                    f"Updated {len(changes_diff)} fields on employee profile.", client_ip)[m
+ [m
+         updated_row = await conn.fetchrow("""[m
+             SELECT e.*, g.name as grade_name, g.code as grade_code[m
+[36m@@ -514,21 +524,23 @@[m [masync def delete_employee([m
+         raise HTTPException(status_code=400, detail="Invalid employee UUID.")[m
+ [m
+     async with pool.acquire() as conn:[m
+[31m-        emp = await conn.fetchrow("SELECT full_name, employee_number FROM employees WHERE id = $1;", emp_uuid)[m
+[32m+[m[32m        emp = await conn.fetchrow("SELECT full_name, employee_number, organization_id FROM employees WHERE id = $1;", emp_uuid)[m
+         if not emp:[m
+             raise HTTPException(status_code=404, detail="Employee not found.")[m
+[32m+[m[32m        verify_record_tenant(emp["organization_id"], session)[m
+ [m
+         client_ip = get_client_ip(request) if request else "127.0.0.1"[m
+         user_id, author_name = await resolve_audit_author(conn, session)[m
+ [m
+[31m-        await conn.execute("DELETE FROM employees WHERE id = $1;", emp_uuid)[m
+[32m+[m[32m        async with conn.transaction():[m
+[32m+[m[32m            await conn.execute("DELETE FROM employees WHERE id = $1;", emp_uuid)[m
+ [m
+[31m-        await conn.execute("""[m
+[31m-            INSERT INTO audit_logs ([m
+[31m-                id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address[m
+[31m-            ) VALUES ([m
+[31m-                $1::uuid, 'employees', $2, 'DELETE', $3, $4, $5, $6[m
+[31m-            );[m
+[31m-        """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name, f"Deleted employee record: {emp['full_name']} ({emp['employee_number']}).", client_ip)[m
+[32m+[m[32m            await conn.execute("""[m
+[32m+[m[32m                INSERT INTO audit_logs ([m
+[32m+[m[32m                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address[m
+[32m+[m[32m                ) VALUES ([m
+[32m+[m[32m                    $1::uuid, 'employees', $2, 'DELETE', $3, $4, $5, $6[m
+[32m+[m[32m                );[m
+[32m+[m[32m            """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name, f"Deleted employee record: {emp['full_name']} ({emp['employee_number']}).", client_ip)[m
+ [m
+     return {"status": "success", "message": "Employee deleted."}[m
+[1mdiff --git a/view-engine/backend/api/v1/notifications.py b/view-engine/backend/api/v1/notifications.py[m
+[1mindex 99441e1..c39b453 100755[m
+[1m--- a/view-engine/backend/api/v1/notifications.py[m
+[1m+++ b/view-engine/backend/api/v1/notifications.py[m
+[36m@@ -5,7 +5,8 @@[m [mfrom fastapi import APIRouter, HTTPException, status, Request, Depends, Query[m
+ from pydantic import BaseModel[m
+ [m
+ from backend.core.database import get_db_pool[m
+[31m-from backend.core.dependencies import get_current_user_session, get_client_ip[m
+[32m+[m[32mfrom backend.core.dependencies import get_current_user_session, get_client_ip, check_permission[m
+[32m+[m[32mfrom backend.core.sequences import uuid7[m
+ [m
+ router = APIRouter(prefix="/api/v1/notifications", tags=["Notifications"])[m
+ [m
+[36m@@ -88,12 +89,23 @@[m [masync def mark_notification_read([m
+ ):[m
+     """Mark an individual notification as read."""[m
+     pool = get_db_pool()[m
+[32m+[m[32m    user_id = session.get("user_id")[m
+[32m+[m[32m    is_superadmin = session.get("is_superadmin", False)[m
+[32m+[m
+     async with pool.acquire() as conn:[m
+[31m-        res = await conn.execute("""[m
+[31m-            UPDATE notifications[m
+[31m-            SET is_read = true[m
+[31m-            WHERE id = $1::uuid;[m
+[31m-        """, notification_id)[m
+[32m+[m[32m        if is_superadmin:[m
+[32m+[m[32m            res = await conn.execute("""[m
+[32m+[m[32m                UPDATE notifications[m
+[32m+[m[32m                SET is_read = true[m
+[32m+[m[32m                WHERE id = $1::uuid;[m
+[32m+[m[32m            """, notification_id)[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            res = await conn.execute("""[m
+[32m+[m[32m                UPDATE notifications[m
+[32m+[m[32m                SET is_read = true[m
+[32m+[m[32m                WHERE id = $1::uuid AND (user_id = $2::uuid OR user_id IS NULL);[m
+[32m+[m[32m            """, notification_id, user_id)[m
+[32m+[m
+         if res == "UPDATE 0":[m
+             raise HTTPException(status_code=404, detail="Notification not found.")[m
+ [m
+[36m@@ -129,8 +141,20 @@[m [masync def delete_notification([m
+ ):[m
+     """Remove a notification from feed."""[m
+     pool = get_db_pool()[m
+[32m+[m[32m    user_id = session.get("user_id")[m
+[32m+[m[32m    is_superadmin = session.get("is_superadmin", False)[m
+[32m+[m
+     async with pool.acquire() as conn:[m
+[31m-        await conn.execute("DELETE FROM notifications WHERE id = $1::uuid;", notification_id)[m
+[32m+[m[32m        if is_superadmin:[m
+[32m+[m[32m            res = await conn.execute("DELETE FROM notifications WHERE id = $1::uuid;", notification_id)[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            res = await conn.execute("""[m
+[32m+[m[32m                DELETE FROM notifications[m
+[32m+[m[32m                WHERE id = $1::uuid AND (user_id = $2::uuid OR user_id IS NULL);[m
+[32m+[m[32m            """, notification_id, user_id)[m
+[32m+[m
+[32m+[m[32m        if res == "DELETE 0":[m
+[32m+[m[32m            raise HTTPException(status_code=404, detail="Notification not found.")[m
+ [m
+     return {"status": "success", "deleted_id": notification_id}[m
+ [m
+[36m@@ -141,8 +165,16 @@[m [masync def create_notification([m
+     session: Dict[str, Any] = Depends(get_current_user_session)[m
+ ):[m
+     """Publish a new notification event."""[m
+[32m+[m[32m    current_uid = str(session.get("user_id") or "")[m
+[32m+[m[32m    if payload.user_id and str(payload.user_id) != current_uid:[m
+[32m+[m[32m        if not session.get("is_superadmin") and not check_permission(session, "users.manage"):[m
+[32m+[m[32m            raise HTTPException([m
+[32m+[m[32m                status_code=status.HTTP_403_FORBIDDEN,[m
+[32m+[m[32m                detail="Access denied: Cannot dispatch notifications to other users without 'users.manage' permission."[m
+[32m+[m[32m            )[m
+[32m+[m
+     pool = get_db_pool()[m
+[31m-    notif_id = uuid.uuid4()[m
+[32m+[m[32m    notif_id = uuid7()[m
+     now = datetime.datetime.now(datetime.timezone.utc)[m
+     target_user = payload.user_id or session.get("user_id")[m
+ [m
+[1mdiff --git a/view-engine/backend/api/v1/payroll.py b/view-engine/backend/api/v1/payroll.py[m
+[1mindex 686334b..c3a46cc 100755[m
+[1m--- a/view-engine/backend/api/v1/payroll.py[m
+[1m+++ b/view-engine/backend/api/v1/payroll.py[m
+[36m@@ -9,6 +9,7 @@[m [mfrom pydantic import BaseModel, Field[m
+ from backend.core.database import get_db_pool[m
+ from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, check_permission[m
+ from backend.core.audit import record_audit_log[m
+[32m+[m[32mfrom backend.core.sequences import uuid7, get_next_payroll_batch_code[m
+ [m
+ logger = logging.getLogger("payroll")[m
+ [m
+[36m@@ -410,23 +411,10 @@[m [masync def create_payroll_batch([m
+             if not org_uuid:[m
+                 org_uuid = await conn.fetchval("SELECT id FROM organizations LIMIT 1;")[m
+ [m
+[31m-            # Generate collision-safe unique batch code[m
+[31m-            base_code = f"PAY-{ym}"[m
+[31m-            exists = await conn.fetchval("SELECT 1 FROM payroll_batches WHERE batch_code = $1;", base_code)[m
+[31m-            if not exists:[m
+[31m-                batch_code = base_code[m
+[31m-            else:[m
+[31m-                seq = 2[m
+[31m-                while True:[m
+[31m-                    candidate = f"PAY-{ym}-{seq:02d}"[m
+[31m-                    taken = await conn.fetchval("SELECT 1 FROM payroll_batches WHERE batch_code = $1;", candidate)[m
+[31m-                    if not taken:[m
+[31m-                        batch_code = candidate[m
+[31m-                        break[m
+[31m-                    seq += 1[m
+[31m-[m
+[32m+[m[32m            # 1. Generate lock-free atomic batch code and UUIDv7[m
+[32m+[m[32m            batch_code = await get_next_payroll_batch_code(conn, ym)[m
+             title = payload.title.strip() if payload.title and payload.title.strip() else f"Payroll - {ym}"[m
+[31m-            batch_id = uuid.uuid4()[m
+[32m+[m[32m            batch_id = uuid7()[m
+ [m
+             # Insert initial batch row[m
+             await conn.execute("""[m
+[36m@@ -447,119 +435,204 @@[m [masync def create_payroll_batch([m
+             emp_query += " ORDER BY employee_number ASC;"[m
+ [m
+             employees = await conn.fetch(emp_query, *emp_params)[m
+[32m+[m[32m            emp_uuids = [e["id"] for e in employees][m
+ [m
+[31m-            for emp in employees:[m
+[31m-                e_id = emp["id"][m
+[31m-[m
+[31m-                # 1. Check for Active Contract in employee_contracts[m
+[31m-                contract = await conn.fetchrow("""[m
+[31m-                    SELECT id, wage_base, working_hours_per_week[m
+[32m+[m[32m            if emp_uuids:[m
+[32m+[m[32m                # 2. Batch fetch active contracts for all active employees[m
+[32m+[m[32m                contracts = await conn.fetch("""[m
+[32m+[m[32m                    SELECT DISTINCT ON (employee_id) id, employee_id, wage_base, working_hours_per_week[m
+                     FROM employee_contracts[m
+[31m-                    WHERE employee_id = $1 AND LOWER(status) = 'active'[m
+[31m-                    ORDER BY created_at DESC LIMIT 1;[m
+[31m-                """, e_id)[m
+[31m-[m
+[31m-                housing_allowance = 0.0[m
+[31m-                transport_allowance = 0.0[m
+[31m-                other_allowances = 0.0[m
+[31m-                contract_deductions = 0.0[m
+[31m-[m
+[31m-                if contract:[m
+[31m-                    base_salary = float(contract["wage_base"] or 0.0)[m
+[31m-                    benefit_lines = await conn.fetch("""[m
+[31m-                        SELECT cbl.amount_value, cbl.computed_monthly_total, sr.category, sr.wps_code, sr.id as rule_id[m
+[32m+[m[32m                    WHERE employee_id = ANY($1::uuid[]) AND LOWER(status) = 'active'[m
+[32m+[m[32m                    ORDER BY employee_id, created_at DESC;[m
+[32m+[m[32m                """, emp_uuids)[m
+[32m+[m[32m                contract_by_emp = {c["employee_id"]: c for c in contracts}[m
+[32m+[m[32m                contract_ids = [c["id"] for c in contracts][m
+[32m+[m
+[32m+[m[32m                # 3. Batch fetch all benefit lines for all contracts[m
+[32m+[m[32m                benefit_lines_by_contract: Dict[uuid.UUID, List[Any]] = {}[m
+[32m+[m[32m                if contract_ids:[m
+[32m+[m[32m                    bl_rows = await conn.fetch("""[m
+[32m+[m[32m                        SELECT cbl.contract_id, cbl.amount_value, cbl.computed_monthly_total,[m
+[32m+[m[32m                               sr.category, sr.wps_code, sr.id as rule_id[m
+                         FROM contract_benefit_lines cbl[m
+                         JOIN salary_rules sr ON cbl.rule_id = sr.id[m
+[31m-                        WHERE cbl.contract_id = $1;[m
+[31m-                    """, contract["id"])[m
+[31m-[m
+[31m-                    for bl in benefit_lines:[m
+[31m-                        amt = float(bl["computed_monthly_total"] or 0.0)[m
+[31m-                        wps_code = str(bl.get("wps_code") or "").upper()[m
+[31m-                        rule_id = str(bl.get("rule_id") or "").upper()[m
+[31m-                        cat = str(bl.get("category") or "").lower()[m
+[31m-[m
+[31m-                        if wps_code == "HOUSING" or "HOUSING" in rule_id:[m
+[31m-                            housing_allowance += amt[m
+[31m-                        elif wps_code == "TRANSPORT" or "TRANSPORT" in rule_id:[m
+[31m-                            transport_allowance += amt[m
+[31m-                        elif cat == "allowance":[m
+[31m-                            other_allowances += amt[m
+[31m-                        elif cat == "deduction":[m
+[31m-                            contract_deductions += amt[m
+[31m-                else:[m
+[31m-                    base_salary = float(emp["base_salary"] or 0.0)[m
+[31m-[m
+[31m-                # 2. Query verified attendance hours for this employee in this month[m
+[31m-                verified_hours_val = await conn.fetchval("""[m
+[31m-                    SELECT COALESCE(SUM(duration_hours), 0)[m
+[32m+[m[32m                        WHERE cbl.contract_id = ANY($1::uuid[]);[m
+[32m+[m[32m                    """, contract_ids)[m
+[32m+[m[32m                    for bl in bl_rows:[m
+[32m+[m[32m                        cid = bl["contract_id"][m
+[32m+[m[32m                        if cid not in benefit_lines_by_contract:[m
+[32m+[m[32m                            benefit_l

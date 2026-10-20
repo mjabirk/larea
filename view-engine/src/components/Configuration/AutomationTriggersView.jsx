@@ -22,6 +22,7 @@ import {
   Save,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useLocale } from '../../context/LocaleContext';
 
 const EVENT_TYPE_LABELS = {
   leave_approved: 'Leave Request Approved',
@@ -42,6 +43,7 @@ const DEFAULT_NEW_FORM = {
 };
 
 export function AutomationTriggersView() {
+  const { t } = useLocale();
   const auth = useAuth();
   const sessionToken =
     auth?.sessionToken ||
@@ -500,7 +502,7 @@ export function AutomationTriggersView() {
 
               <div className="flex items-center gap-1.5">
                 <span className="font-bold text-slate-100 text-xs">
-                  Automation Triggers
+                  {t('automation_triggers')}
                 </span>
                 <span className="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-400">
                   {filtered.length}
@@ -510,13 +512,13 @@ export function AutomationTriggersView() {
 
             <div className="flex items-center gap-2 flex-1 max-w-sm">
               <div className="relative flex-1">
-                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Search className="w-3.5 h-3.5 absolute start-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
                   placeholder="Search triggers..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="w-full pl-8 pr-2.5 py-1 rounded-lg border border-slate-800 bg-slate-950 text-slate-200 text-xs focus:outline-none focus:border-emerald-500"
+                  className="w-full ps-8 pe-2.5 py-1 rounded-lg border border-slate-800 bg-slate-950 text-slate-200 text-xs focus:outline-none focus:border-emerald-500"
                 />
               </div>
             </div>
@@ -535,15 +537,15 @@ export function AutomationTriggersView() {
           {/* Triggers Table List */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xs">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+              <table className="w-full text-start text-xs">
                 <thead>
                   <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-semibold">
                     <th className="px-3.5 py-2">Trigger Name</th>
-                    <th className="px-3.5 py-2">Lifecycle Event</th>
-                    <th className="px-3.5 py-2">Channel</th>
+                    <th className="px-3.5 py-2">{t('trigger_event')}</th>
+                    <th className="px-3.5 py-2">{t('channel')}</th>
                     <th className="px-3.5 py-2">Configured Payload</th>
-                    <th className="px-3.5 py-2">Status</th>
-                    <th className="px-3.5 py-2 text-right">Actions</th>
+                    <th className="px-3.5 py-2">{t('status_label')}</th>
+                    <th className="px-3.5 py-2 text-end">{t('action')}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800 font-mono text-[11px]">
@@ -614,7 +616,7 @@ export function AutomationTriggersView() {
                             <span>{t.active ? 'Active' : 'Disabled'}</span>
                           </button>
                         </td>
-                        <td className="px-3.5 py-2 text-right font-sans">
+                        <td className="px-3.5 py-2 text-end font-sans">
                           <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                             <button
                               type="button"

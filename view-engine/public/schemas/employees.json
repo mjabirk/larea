@@ -1,0 +1,46 @@
+{
+  "model": "employees",
+  "title": "Workforce Directory",
+  "default_view": "list",
+  "newButtonLabel": "+ Add Employee",
+  "header_actions": [
+    { "id": "act_create", "label": "Add Employee", "action": "create", "type": "create" },
+    { "id": "act_delete", "label": "Delete Employee", "action": "delete", "type": "delete" }
+  ],
+  "fields": {
+    "id": { "type": "uuid", "label": "ID", "readonly": true },
+    "employee_number": { "type": "string", "label": "Employee Number", "required": true },
+    "full_name": { "type": "string", "label": "Full Name", "required": true },
+    "email": { "type": "string", "label": "Email Address" },
+    "department_id": { "type": "string", "label": "Department" },
+    "job_title": { "type": "string", "label": "Job Title" },
+    "base_salary": { "type": "float", "label": "Base Salary" },
+    "status": {
+      "type": "selection",
+      "label": "Status",
+      "options": [
+        { "value": "active", "label": "Active" },
+        { "value": "on_leave", "label": "On Leave" },
+        { "value": "suspended", "label": "Suspended" },
+        { "value": "terminated", "label": "Terminated" }
+      ]
+    },
+    "organization_id": { "type": "uuid", "label": "Organization ID", "readonly": true },
+    "created_at": { "type": "datetime", "label": "Created At", "readonly": true },
+    "updated_at": { "type": "datetime", "label": "Updated At", "readonly": true }
+  },
+  "views": {
+    "list": {
+      "columns": ["employee_number", "full_name", "department_id", "job_title", "base_salary", "status"]
+    },
+    "form": {
+      "statusbar": {
+        "field": "status",
+        "buttons": [
+          { "id": "btn_activate", "label": "Activate", "action": "activate", "target": "active", "style": "primary" },
+          { "id": "btn_suspend", "label": "Suspend", "action": "suspend", "target": "suspended", "style": "warning" }
+        ]
+      }
+    }
+  }
+}

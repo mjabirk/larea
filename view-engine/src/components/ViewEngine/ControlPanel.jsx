@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   List as ListIcon,
   FileText,
@@ -19,6 +19,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useLocale } from '../../context/LocaleContext';
+import { useDebounce } from '../../hooks/useDebounce';
 
 const VIEW_ICON_MAP = {
   list: { icon: ListIcon, labelKey: 'view_list' },
@@ -50,9 +51,66 @@ export function ControlPanel({
   onSearchChange,
   activeFilter,
   onSelectFilter,
+  pageSize,
+  onPageSizeChange,
+  total,
+  page,
+  totalPages,
+  onPageChange,
 }) {
   const { t } = useLocale();
   const [showActionMenu, setShowActionMenu] = useState(false);
+
+  // Debounced search input query
+  const [searchInput, setSearchInput] = useState(searchTerm || '');
+  const debouncedSearch = useDebounce(searchInput, 300);
+
+  // Sync internal search input if external searchTerm changes
+  useEffect(() => {
+    setSearchInput(searchTerm || '');
+  }, [searchTerm]);
+
+  // Trigger parent onSearchChange with debounced query
+  useEffect(() => {
+    if (onSearchChange && debouncedSearch !== searchTerm) {
+      onSearchChange(debouncedSearch);
+    }
+  }, [debouncedSearch]);
+
+  const isFormView = currentView === 'form' || Boolean(recordTitle);
+  const effectivePageSize = pageSize || pager?.pageSize || 25;
+  const effectiveTotal = total ?? pager?.total ?? 0;
+  const effectivePage = page ?? pager?.page ?? 1;
+  const effectiveTotalPages = totalPages ?? pager?.totalPages ?? (effectiveTotal > 0 ? Math.ceil(effectiveTotal / effectivePageSize) : 1);
+  const startRecord = effectiveTotal === 0 ? 0 : (pager?.start ?? ((effectivePage - 1) * effectivePageSize + 1));
+  const endRecord = effectiveTotal === 0 ? 0 : (pager?.end ?? Math.min(effectivePage * effectivePageSize, effectiveTotal));
+
+  const canPrev = pager ? pager.canPrev : effectivePage > 1;
+  const canNext = pager ? pager.canNext : effectivePage < effectiveTotalPages;
+
+  const handlePrev = () => {
+    if (pager?.onPrev) {
+      pager.onPrev();
+    } else if (onPageChange) {
+      onPageChange(Math.max(1, effectivePage - 1));
+    }
+  };
+
+  const handleNext = () => {
+    if (pager?.onNext) {
+      pager.onNext();
+    } else if (onPageChange) {
+      onPageChange(Math.min(effectiveTotalPages, effectivePage + 1));
+    }
+  };
+
+  const handlePageSizeChange = (newSize) => {
+    if (onPageSizeChange) {
+      onPageSizeChange(newSize);
+    } else if (pager?.onPageSizeChange) {
+      pager.onPageSizeChange(newSize);
+    }
+  };
 
   // Enabled views in schema
   const enabledViews = Object.keys(schema?.views || {});
@@ -64,8 +122,6 @@ export function ControlPanel({
     { id: 'verified', label: t('verified') || 'Verified' },
     { id: 'synced', label: t('synced') || 'Synced' },
   ];
-
-  const isFormView = currentView === 'form' || Boolean(recordTitle);
 
   return (
     <div className="h-11 min-h-[44px] bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-100 sticky top-14 z-20 shadow-2xs px-3 sm:px-4 flex items-center justify-between gap-3 select-none">
@@ -153,15 +209,18 @@ export function ControlPanel({
               <Search className="w-4 h-4 text-slate-400 absolute left-3 rtl:right-3 rtl:left-auto top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="text"
-                value={searchTerm}
-                onChange={(e) => onSearchChange(e.target.value)}
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
                 placeholder={t('search_placeholder') || 'Filter records...'}
                 className="w-full pl-9 pr-7 rtl:pr-9 rtl:pl-7 py-1.5 bg-slate-50/90 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-900 transition"
               />
-              {searchTerm && (
+              {searchInput && (
                 <button
                   type="button"
-                  onClick={() => onSearchChange('')}
+                  onClick={() => {
+                    setSearchInput('');
+                    if (onSearchChange) onSearchChange('');
+                  }}
                   className="absolute right-2 rtl:left-2 rtl:right-auto top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
                 >
                   <X className="w-3.5 h-3.5" />
@@ -328,8 +387,64 @@ export function ControlPanel({
           </div>
         )}
 
-        {/* Record Pager Cycling (1 of N < >) */}
-        {pager && (
+        {/* Pagination Controls in List / Other Views */}
+        {!isFormView && (pager || total !== undefined) && (
+          <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400 text-xs pl-2 rtl:pr-2 rtl:pl-0 border-l rtl:border-r rtl:border-l-0 border-slate-200 dark:border-slate-700">
+            {/* Showing A–B of Total */}
+            <span className="hidden sm:inline font-medium text-slate-600 dark:text-slate-300">
+              Showing <span className="font-semibold">{startRecord}–{endRecord}</span> of <span className="font-semibold">{effectiveTotal}</span>
+            </span>
+
+            {/* Page X of Y */}
+            <span className="font-mono text-slate-500 dark:text-slate-400 text-[11px]">
+              Page {effectivePage} of {Math.max(1, effectiveTotalPages)}
+            </span>
+
+            {/* Page Size Selector (25 / 50 / 100) */}
+            <div className="flex items-center gap-1">
+              <select
+                value={effectivePageSize}
+                onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 text-xs text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                title="Page size"
+              >
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </div>
+
+            {/* Prev / Next buttons */}
+            <div className="inline-flex items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+              <button
+                type="button"
+                onClick={handlePrev}
+                disabled={!canPrev}
+                className={`p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer ${
+                  !canPrev ? 'opacity-30 cursor-not-allowed' : 'text-slate-700 dark:text-slate-300'
+                }`}
+                title="Previous"
+              >
+                <ChevronLeft className="w-3.5 h-3.5 rtl:rotate-180" />
+              </button>
+              <div className="w-[1px] h-3.5 bg-slate-200 dark:bg-slate-700" />
+              <button
+                type="button"
+                onClick={handleNext}
+                disabled={!canNext}
+                className={`p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer ${
+                  !canNext ? 'opacity-30 cursor-not-allowed' : 'text-slate-700 dark:text-slate-300'
+                }`}
+                title="Next"
+              >
+                <ChevronRight className="w-3.5 h-3.5 rtl:rotate-180" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Record Pager Cycling in Form View (1 of N < >) */}
+        {isFormView && pager && (
           <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 font-mono text-xs pl-2 rtl:pr-2 rtl:pl-0 border-l rtl:border-r rtl:border-l-0 border-slate-200 dark:border-slate-700">
             <span>{pager.label}</span>
             <div className="inline-flex items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">

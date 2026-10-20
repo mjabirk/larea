@@ -23,8 +23,10 @@ import { WhatsAppTemplatesView } from './WhatsAppTemplatesView';
 import { CommunicationLogsView } from './CommunicationLogsView';
 import { AutomationTriggersView } from './AutomationTriggersView';
 import { useAuth } from '../../context/AuthContext';
+import { useLocale } from '../../context/LocaleContext';
 
 export function ConfigurationView({ activeMenuId = 'wps_config' }) {
+    const { t } = useLocale();
     const [savedBanner, setSavedBanner] = useState('');
     const { refreshSSOConfig } = useAuth();
 
@@ -430,13 +432,13 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                         <div>
                             <div className="inline-flex items-center gap-1.5 text-blue-600 dark:text-blue-400 text-xs font-bold uppercase tracking-wider">
                                 <ShieldCheck className="w-4 h-4" />
-                                <span>Enterprise Identity & Windows Single Sign-On</span>
+                                <span>{t('windows_sso_settings')}</span>
                             </div>
                             <h2 className="text-lg font-bold text-slate-900 dark:text-white mt-1">
-                                Microsoft Entra ID (OIDC), Kerberos SPNEGO & Active Directory Federation
+                                {t('sso_entra_title')} & {t('sso_kerberos_title')}
                             </h2>
                             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                                Configure web-based Windows authentication for multi-user Linux/WSL server deployments accessed by remote Windows client workstations.
+                                {t('windows_sso_desc')}
                             </p>
                         </div>
                         <button
@@ -444,7 +446,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                             className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer shrink-0"
                         >
                             <Save className="w-4 h-4" />
-                            <span>Save SSO Settings</span>
+                            <span>{t('save_sso_settings')}</span>
                         </button>
                     </div>
 
@@ -453,7 +455,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                         <div className="flex items-center justify-between">
                             <div>
                                 <h3 className="font-bold text-slate-900 dark:text-white text-sm">
-                                    1. Microsoft Entra ID (Azure AD) OpenID Connect v2.0 + PKCE
+                                    {t('sso_entra_title')}
                                 </h3>
                                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
                                     Enables seamless one-click "Sign in with Windows" using Windows Hello, PRT, and Entra ID conditional access.
@@ -527,7 +529,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                         <div className="flex items-center justify-between">
                             <div>
                                 <h3 className="font-bold text-slate-900 dark:text-white text-sm">
-                                    2. Integrated Windows Authentication (HTTP SPNEGO / Kerberos)
+                                    {t('sso_kerberos_title')}
                                 </h3>
                                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
                                     Zero-prompt intranet Single Sign-On for domain-joined Windows PCs using Kerberos tickets or a trusted reverse proxy.
@@ -540,14 +542,14 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                                     onChange={(e) => setSsoSettings({ ...ssoSettings, sso_kerberos_enabled: e.target.checked })}
                                     className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
                                 />
-                                <span>Enable Kerberos SPNEGO</span>
+                                <span>{t('enable_kerberos')}</span>
                             </label>
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
                             <div>
                                 <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                    Kerberos Service Principal Name (SPN)
+                                    {t('spn_name')}
                                 </label>
                                 <input
                                     type="text"
@@ -567,7 +569,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                                     />
                                     <div>
                                         <span className="font-semibold text-slate-800 dark:text-slate-200 block">
-                                            Trust Reverse-Proxy Header (X-Remote-User / X-Forwarded-User)
+                                            {t('trust_proxy_header')}
                                         </span>
                                         <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
                                             Enable only when Nginx/Apache/IIS terminates Kerberos or OAuth2 Proxy in front of FastAPI.
@@ -583,7 +585,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                         <div className="flex items-center justify-between">
                             <div>
                                 <h3 className="font-bold text-slate-900 dark:text-white text-sm">
-                                    3. Active Directory LDAP / LDAPS Direct Authentication
+                                    {t('sso_ldap_title')}
                                 </h3>
                                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
                                     Allows users to sign in on the ERP login form using their Windows domain credentials (DOMAIN\username or user@domain).
@@ -596,14 +598,14 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                                     onChange={(e) => setSsoSettings({ ...ssoSettings, ldap_enabled: e.target.checked })}
                                     className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
                                 />
-                                <span>Enable AD LDAP Bind</span>
+                                <span>{t('enable_ldap')}</span>
                             </label>
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div>
                                 <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                    LDAP / LDAPS Server URI
+                                    {t('ldap_server_uri')}
                                 </label>
                                 <input
                                     type="text"
@@ -615,7 +617,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                             </div>
                             <div>
                                 <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                    Active Directory NetBIOS / Domain
+                                    {t('ad_domain')}
                                 </label>
                                 <input
                                     type="text"
@@ -627,7 +629,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                             </div>
                             <div>
                                 <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                    Search Base DN
+                                    {t('search_base_dn')}
                                 </label>
                                 <input
                                     type="text"
@@ -643,7 +645,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                     {/* Section D: Just-in-Time (JIT) User Provisioning & Default Auto-SSO */}
                     <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 space-y-4 text-xs">
                         <h3 className="font-bold text-slate-900 dark:text-white text-sm">
-                            4. Just-In-Time (JIT) Account Provisioning & Auto-Login Policy
+                            {t('sso_jit_title')}
                         </h3>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
                             <label className="flex items-start gap-2.5 cursor-pointer">
@@ -655,7 +657,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                                 />
                                 <div>
                                     <span className="font-semibold text-slate-800 dark:text-slate-200 block">
-                                        Auto-Provision New Windows Users
+                                        {t('auto_provision_users')}
                                     </span>
                                     <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
                                         Automatically create an ERP user account on first verified Windows sign-in.
@@ -672,7 +674,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                                 />
                                 <div>
                                     <span className="font-semibold text-slate-800 dark:text-slate-200 block">
-                                        Default Silent Kerberos Auto-Login
+                                        {t('default_auto_login')}
                                     </span>
                                     <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
                                         Attempt silent SPNEGO sign-in on boot for all domain workstations.
@@ -682,7 +684,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
 
                             <div>
                                 <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                    Default Role for Auto-Provisioned Users
+                                    {t('default_role')}
                                 </label>
                                 <select
                                     value={ssoSettings.sso_default_role_id || 'role-viewer'}

@@ -310,7 +310,7 @@ export function GanttView({ schema, records = [], onRecordClick, onNewShift }) {
                                       const statusKey = (shift.status || 'draft').toLowerCase();
                                       const barColor = STATUS_COLOR[statusKey] || STATUS_COLOR.draft;
                                       const statusLabel = STATUS_LABEL_MAP[statusKey] || 'Draft';
-                                      const timeStr = formatShiftTime(shift.check_in);
+                                      const timeStr = formatShiftTime(shift.start_time || shift.check_in);
 
                                       return (
                                         <button

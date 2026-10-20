@@ -1,3 +1,5 @@
+import asyncio
+import json
 import os
 import uuid
 import hashlib
@@ -9,7 +11,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from backend.core.config import settings
 from backend.core.database import get_db_pool
-from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission
+from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, verify_record_tenant
 
 router = APIRouter(prefix="/api/v1/employees", tags=["Employee Documents"])
 
@@ -85,6 +87,11 @@ async def list_employee_documents(
         raise HTTPException(status_code=400, detail="Invalid employee UUID.")
 
     async with pool.acquire() as conn:
+        emp = await conn.fetchrow("SELECT organization_id FROM employees WHERE id = $1;", emp_uuid)
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found.")
+        verify_record_tenant(emp["organization_id"], session)
+
         rows = await conn.fetch("""
             SELECT id, employee_id, document_type, original_filename, file_size_bytes,
                    mime_type, sha256_checksum, storage_path, is_encrypted, uploaded_by, created_at
@@ -165,48 +172,50 @@ async def upload_employee_document(
         """, emp_uuid)
         if not emp_record:
             raise HTTPException(status_code=404, detail="Employee not found.")
-
+        verify_record_tenant(emp_record["organization_id"], session)
         tenant_id = str(emp_record["organization_id"]) if emp_record["organization_id"] else "default_tenant"
 
-        # 5. Encrypt data in memory with AES-256-GCM
-        sha256_hash = hashlib.sha256(contents).hexdigest()
-        encrypted_payload = encrypt_data(contents)
+    # 5. Encrypt data and write to disk outside DB connection via asyncio.to_thread
+    doc_id = uuid.uuid4()
+    storage_dir = os.path.join(
+        "storage", "tenants", tenant_id, "employees", str(emp_uuid)
+    )
+    storage_filepath = os.path.join(storage_dir, f"{doc_id}.enc")
 
-        # 6. Physical filesystem directory structure
-        doc_id = uuid.uuid4()
-        storage_dir = os.path.join(
-            "storage", "tenants", tenant_id, "employees", str(emp_uuid)
-        )
+    def _encrypt_and_save():
+        sha = hashlib.sha256(contents).hexdigest()
+        enc = encrypt_data(contents)
         os.makedirs(storage_dir, exist_ok=True)
-        storage_filepath = os.path.join(storage_dir, f"{doc_id}.enc")
-
         with open(storage_filepath, "wb") as f:
-            f.write(encrypted_payload)
+            f.write(enc)
+        return sha
 
+    sha256_hash = await asyncio.to_thread(_encrypt_and_save)
+
+    # 6. Re-acquire DB connection briefly to write metadata and audit logs
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+    async with pool.acquire() as conn:
         user_id, author_name = await resolve_audit_author(conn, session)
-        client_ip = get_client_ip(request) if request else "127.0.0.1"
+        async with conn.transaction():
+            await conn.execute("""
+                INSERT INTO employee_documents (
+                    id, employee_id, document_type, original_filename, file_size_bytes,
+                    mime_type, sha256_checksum, storage_path, is_encrypted, uploaded_by
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9);
+            """, doc_id, emp_uuid, document_type, filename, file_size, content_type, sha256_hash, storage_filepath, user_id)
 
-        # 7. Write metadata to database
-        await conn.execute("""
-            INSERT INTO employee_documents (
-                id, employee_id, document_type, original_filename, file_size_bytes,
-                mime_type, sha256_checksum, storage_path, is_encrypted, uploaded_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9);
-        """, doc_id, emp_uuid, document_type, filename, file_size, content_type, sha256_hash, storage_filepath, user_id)
-
-        # 8. Record audit log entry
-        await conn.execute("""
-            INSERT INTO audit_logs (
-                id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, changes, ip_address
-            ) VALUES (
-                $1::uuid, 'employees', $2, 'UPDATE', $3, $4,
-                $5, $6::jsonb, $7
-            );
-        """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name,
-            f"Uploaded encrypted {document_type} document: '{filename}' ({file_size // 1024} KB).",
-            json.dumps({"document_upload": {"filename": filename, "type": document_type}}),
-            client_ip
-        )
+            await conn.execute("""
+                INSERT INTO audit_logs (
+                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, changes, ip_address
+                ) VALUES (
+                    $1::uuid, 'employees', $2, 'UPDATE', $3, $4,
+                    $5, $6::jsonb, $7
+                );
+            """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name,
+                f"Uploaded encrypted {document_type} document: '{filename}' ({file_size // 1024} KB).",
+                json.dumps({"document_upload": {"filename": filename, "type": document_type}}),
+                client_ip
+            )
 
     return {
         "id": str(doc_id),
@@ -240,7 +249,13 @@ async def download_employee_document(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid employee or document UUID.")
 
+    # 1. Fetch document metadata inside brief DB connection
     async with pool.acquire() as conn:
+        emp = await conn.fetchrow("SELECT organization_id FROM employees WHERE id = $1;", emp_uuid)
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found.")
+        verify_record_tenant(emp["organization_id"], session)
+
         doc = await conn.fetchrow("""
             SELECT id, employee_id, document_type, original_filename,
                    file_size_bytes, mime_type, storage_path, is_encrypted
@@ -251,34 +266,38 @@ async def download_employee_document(
         if not doc:
             raise HTTPException(status_code=404, detail="Document metadata record not found.")
 
-        storage_path = doc["storage_path"]
-        if not os.path.exists(storage_path):
-            raise HTTPException(status_code=404, detail="Encrypted physical file not found on disk.")
+        doc_dict = dict(doc)
 
+    # 2. Read and decrypt outside DB connection via asyncio.to_thread
+    storage_path = doc_dict["storage_path"]
+    if not os.path.exists(storage_path):
+        raise HTTPException(status_code=404, detail="Encrypted physical file not found on disk.")
+
+    def _read_and_decrypt():
         with open(storage_path, "rb") as f:
             encrypted_bytes = f.read()
+        if doc_dict["is_encrypted"]:
+            return decrypt_data(encrypted_bytes)
+        return encrypted_bytes
 
-        try:
-            if doc["is_encrypted"]:
-                decrypted_bytes = decrypt_data(encrypted_bytes)
-            else:
-                decrypted_bytes = encrypted_bytes
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Decryption failed: {str(e)}")
+    try:
+        decrypted_bytes = await asyncio.to_thread(_read_and_decrypt)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Decryption failed: {str(e)}")
 
-        orig_filename = doc["original_filename"] or "document.pdf"
-        # Sanitize ASCII fallback and encode for UTF-8 RFC 5987 / RFC 6266
-        safe_ascii = orig_filename.replace('"', '').replace('\n', '').replace('\r', '')
-        encoded_filename = urllib.parse.quote(orig_filename)
-        disposition_type = "inline" if inline else "attachment"
+    orig_filename = doc_dict["original_filename"] or "document.pdf"
+    # Sanitize ASCII fallback and encode for UTF-8 RFC 5987 / RFC 6266
+    safe_ascii = orig_filename.replace('"', '').replace('\n', '').replace('\r', '')
+    encoded_filename = urllib.parse.quote(orig_filename)
+    disposition_type = "inline" if inline else "attachment"
 
-        headers = {
-            "Content-Disposition": f'{disposition_type}; filename="{safe_ascii}"; filename*=UTF-8\'\'{encoded_filename}',
-            "X-Vault-Decrypted": "true",
-            "X-Content-Type-Options": "nosniff",
-            "Access-Control-Expose-Headers": "Content-Disposition",
-        }
-        return Response(content=decrypted_bytes, media_type=doc["mime_type"], headers=headers)
+    headers = {
+        "Content-Disposition": f'{disposition_type}; filename="{safe_ascii}"; filename*=UTF-8\'\'{encoded_filename}',
+        "X-Vault-Decrypted": "true",
+        "X-Content-Type-Options": "nosniff",
+        "Access-Control-Expose-Headers": "Content-Disposition",
+    }
+    return Response(content=decrypted_bytes, media_type=doc_dict["mime_type"], headers=headers)
 
 
 @router.delete("/{employee_id}/documents/{document_id}")
@@ -298,6 +317,11 @@ async def delete_employee_document(
         raise HTTPException(status_code=400, detail="Invalid employee or document UUID.")
 
     async with pool.acquire() as conn:
+        emp = await conn.fetchrow("SELECT organization_id FROM employees WHERE id = $1;", emp_uuid)
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found.")
+        verify_record_tenant(emp["organization_id"], session)
+
         doc = await conn.fetchrow("""
             SELECT id, original_filename, storage_path, document_type
             FROM employee_documents

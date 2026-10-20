@@ -29,6 +29,7 @@ import {
   Save,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useLocale } from '../../context/LocaleContext';
 
 // Predefined ERP Field Suggestions per Model Scope
 const FIELD_SUGGESTIONS = {
@@ -80,6 +81,7 @@ const DEFAULT_NEW_FORM = {
 };
 
 export function WhatsAppTemplatesView() {
+  const { t } = useLocale();
   const auth = useAuth();
   const sessionToken =
     auth?.sessionToken ||
@@ -493,7 +495,7 @@ export function WhatsAppTemplatesView() {
           </div>
           <button
             onClick={() => setActionMessage(null)}
-            className="text-slate-400 hover:text-white cursor-pointer ml-3"
+            className="text-slate-400 hover:text-white cursor-pointer ms-3"
           >
             <X className="w-4 h-4" />
           </button>
@@ -941,7 +943,7 @@ export function WhatsAppTemplatesView() {
 
               <div className="flex items-center gap-1.5">
                 <span className="font-bold text-slate-100 text-xs">
-                  WhatsApp Templates
+                  {t('whatsapp_templates')}
                 </span>
                 <span className="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-400">
                   {filtered.length}
@@ -951,13 +953,13 @@ export function WhatsAppTemplatesView() {
 
             <div className="flex items-center gap-2 flex-1 max-w-md">
               <div className="relative flex-1">
-                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Search className="w-3.5 h-3.5 absolute start-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
                   placeholder="Search templates..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="w-full pl-8 pr-2.5 py-1 rounded-lg border border-slate-800 bg-slate-950 text-slate-200 text-xs focus:outline-none focus:border-emerald-500"
+                  className="w-full ps-8 pe-2.5 py-1 rounded-lg border border-slate-800 bg-slate-950 text-slate-200 text-xs focus:outline-none focus:border-emerald-500"
                 />
               </div>
 
@@ -1000,16 +1002,16 @@ export function WhatsAppTemplatesView() {
           {/* Templates Table List */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xs">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+              <table className="w-full text-start text-xs">
                 <thead>
                   <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-semibold">
-                    <th className="px-3.5 py-2">Template Identifier</th>
+                    <th className="px-3.5 py-2">{t('template_code')}</th>
                     <th className="px-3.5 py-2">Category</th>
                     <th className="px-3.5 py-2">Scope</th>
-                    <th className="px-3.5 py-2">Language</th>
+                    <th className="px-3.5 py-2">{t('language')}</th>
                     <th className="px-3.5 py-2">Header</th>
-                    <th className="px-3.5 py-2">Meta Status</th>
-                    <th className="px-3.5 py-2 text-right">Actions</th>
+                    <th className="px-3.5 py-2">{t('status_label')}</th>
+                    <th className="px-3.5 py-2 text-end">{t('action')}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800 font-mono text-[11px]">
@@ -1052,7 +1054,7 @@ export function WhatsAppTemplatesView() {
                           </span>
                         </td>
                         <td className="px-3.5 py-2">{renderStatusBadge(t.approval_status)}</td>
-                        <td className="px-3.5 py-2 text-right font-sans">
+                        <td className="px-3.5 py-2 text-end font-sans">
                           <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                             {['DRAFT', 'REJECTED'].includes(t.approval_status) && (
                               <button

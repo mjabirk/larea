@@ -516,8 +516,7 @@ export function ChatProvider({ children }) {
         await subscribeWebPush(token);
         setPushEnabled(true);
       } catch (err) {
-        console.error('Push notification subscription error:', err);
-        alert(err.message || 'Could not enable desktop notifications.');
+        console.warn('Push notification subscription failed:', err.message || 'Could not enable desktop notifications.');
       }
     }
   }, [token, pushEnabled]);

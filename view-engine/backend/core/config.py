@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     
     # DragonflyDB / Redis Configuration
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+
+    # Configurable CORS Origins
+    CORS_ALLOWED_ORIGINS: List[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
     
     # Session Policies
     SESSION_IDLE_TIMEOUT_SECONDS: int = 30 * 60  # 30 Minutes Rolling

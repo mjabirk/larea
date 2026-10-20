@@ -1,0 +1,77 @@
+{
+  "model": "shift_rosters",
+  "title": "Shift Rosters & Department Schedules",
+  "default_view": "gantt",
+  "newButtonLabel": "+ Assign Shift",
+  "header_actions": [
+    { "id": "act_create", "label": "Assign Shift", "action": "create", "type": "create" },
+    { "id": "act_delete", "label": "Delete Shift", "action": "delete", "type": "delete" }
+  ],
+  "filterChips": [
+    { "id": "all", "label": "All" },
+    { "id": "scheduled", "label": "Scheduled" },
+    { "id": "in_progress", "label": "In Progress" },
+    { "id": "completed", "label": "Completed" },
+    { "id": "cancelled", "label": "Cancelled" },
+    { "id": "draft", "label": "Draft" },
+    { "id": "confirmed", "label": "Confirmed" },
+    { "id": "published", "label": "Published" }
+  ],
+  "fields": {
+    "id": { "type": "uuid", "label": "ID", "readonly": true },
+    "code": { "type": "string", "label": "Roster Code", "readonly": true },
+    "employee_id": { "type": "uuid", "label": "Employee ID", "required": true },
+    "employee_name": { "type": "string", "label": "Employee", "required": true },
+    "department": { "type": "string", "label": "Department" },
+    "shift_name": { "type": "string", "label": "Shift Name", "default": "Morning Shift (08:00 - 16:00)" },
+    "start_time": { "type": "datetime", "label": "Start Time", "required": true },
+    "end_time": { "type": "datetime", "label": "End Time", "required": true },
+    "duration_hours": { "type": "float", "label": "Duration (Hours)", "readonly": true },
+    "location": { "type": "string", "label": "Location" },
+    "status": {
+      "type": "selection",
+      "label": "Status",
+      "options": [
+        { "value": "scheduled", "label": "Scheduled" },
+        { "value": "in_progress", "label": "In Progress" },
+        { "value": "completed", "label": "Completed" },
+        { "value": "cancelled", "label": "Cancelled" },
+        { "value": "draft", "label": "Draft" },
+        { "value": "confirmed", "label": "Confirmed" },
+        { "value": "published", "label": "Published" }
+      ]
+    },
+    "notes": { "type": "text", "label": "Notes & Exceptions" },
+    "organization_id": { "type": "uuid", "label": "Organization ID", "readonly": true },
+    "created_at": { "type": "datetime", "label": "Created At", "readonly": true },
+    "updated_at": { "type": "datetime", "label": "Updated At", "readonly": true }
+  },
+  "views": {
+    "list": {
+      "columns": ["code", "employee_name", "department", "shift_name", "start_time", "end_time", "duration_hours", "status", "location"]
+    },
+    "gantt": {
+      "date_start": "start_time",
+      "date_stop": "end_time",
+      "title": "employee_name",
+      "group_by": "department"
+    },
+    "calendar": {
+      "date_start": "start_time",
+      "date_stop": "end_time",
+      "event_title": "employee_name",
+      "color_field": "status"
+    },
+    "form": {
+      "statusbar": {
+        "field": "status",
+        "buttons": [
+          { "id": "btn_schedule", "label": "Schedule", "action": "schedule", "target": "scheduled", "style": "primary" },
+          { "id": "btn_start", "label": "Start Shift", "action": "start", "target": "in_progress", "style": "warning" },
+          { "id": "btn_complete", "label": "Complete Shift", "action": "complete", "target": "completed", "style": "success" },
+          { "id": "btn_cancel", "label": "Cancel Shift", "action": "cancel", "target": "cancelled", "style": "danger" }
+        ]
+      }
+    }
+  }
+}

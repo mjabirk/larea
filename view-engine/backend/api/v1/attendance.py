@@ -1,11 +1,18 @@
 import uuid
 import datetime
 from typing import Optional, Dict, Any, List
-from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
+from fastapi import APIRouter, HTTPException, status, Request, Depends, Query, BackgroundTasks
 from pydantic import BaseModel
 from backend.core.database import get_db_pool
-from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, check_permission
+from backend.core.dependencies import (
+    get_current_user_session,
+    get_client_ip,
+    require_permission,
+    check_permission,
+    verify_record_tenant,
+)
 from backend.core.audit import record_audit_log
+from backend.core.sequences import uuid7, get_next_attendance_code
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["Attendance Logs"])
 
@@ -49,6 +56,27 @@ class AttendanceUpdatePayload(BaseModel):
     check_out: Optional[str] = None
     duration_hours: Optional[float] = None
     status: Optional[str] = None
+    notes: Optional[str] = None
+
+class BulkAttendanceItem(BaseModel):
+    employee_id: Optional[str] = None
+    employee_number: Optional[str] = None
+    employee_name: Optional[str] = None
+    department: Optional[str] = None
+    terminal_id: Optional[str] = "Bulk Sync Terminal"
+    check_in: str
+    check_out: Optional[str] = None
+    duration_hours: Optional[float] = 0.0
+    status: Optional[str] = "present"
+    notes: Optional[str] = None
+
+class BulkAttendanceSyncPayload(BaseModel):
+    items: List[BulkAttendanceItem]
+
+class BulkStatusPayload(BaseModel):
+    log_ids: List[str]
+    status: Optional[str] = None
+    approval_status: Optional[str] = None
     notes: Optional[str] = None
 
 @router.get("")
@@ -153,13 +181,9 @@ async def create_attendance_log(
         inherited_dept = payload.department or emp["department_id"] or "Operations"
         emp_name = payload.employee_name or emp["full_name"]
 
-        # Generate collision-safe attendance code
-        max_seq = await conn.fetchval("""
-            SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ATT-[0-9]{4}-([0-9]+)') AS INT)), 1000)
-            FROM attendance_logs
-            WHERE code ~ '^ATT-[0-9]{4}-[0-9]+$';
-        """) or 1000
-        code = f"ATT-2026-{max_seq + 1}"
+        # Generate lock-free atomic attendance code & UUIDv7
+        code = await get_next_attendance_code(conn)
+        new_id = uuid7()
 
         t_in = parse_iso(payload.check_in)
         if not t_in:
@@ -174,7 +198,6 @@ async def create_attendance_log(
 
         client_ip = get_client_ip(request) if request else "127.0.0.1"
         author_name = session.get("full_name") or session.get("username") or "Authorized User"
-        new_id = uuid.uuid4()
 
         await conn.execute("""
             INSERT INTO attendance_logs (
@@ -200,6 +223,243 @@ async def create_attendance_log(
             WHERE a.id = $1;
         """, new_id)
         return serialize_row(dict(row))
+
+
+async def _background_bulk_attendance_audit(
+    log_ids: List[str],
+    tenant_id: str,
+    user_id: Optional[uuid.UUID],
+    user_name: str,
+    client_ip: str,
+    action: str,
+    note: str,
+    changes: Dict[str, Any]
+):
+    """Background task to record audit logs without holding client HTTP response or DB transaction."""
+    try:
+        pool = get_db_pool()
+        async with pool.acquire() as conn:
+            for lid in log_ids:
+                await record_audit_log(
+                    conn=conn,
+                    tenant_id=tenant_id,
+                    entity_type="attendance_logs",
+                    entity_id=lid,
+                    action=action,
+                    changed_by_user_id=user_id,
+                    changed_by_name=user_name,
+                    note=note,
+                    ip_address=client_ip,
+                    changes=changes
+                )
+    except Exception:
+        pass
+
+
+@router.post("/bulk-sync")
+async def bulk_sync_attendance(
+    payload: BulkAttendanceSyncPayload,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    session: Dict[str, Any] = Depends(get_current_user_session),
+):
+    """
+    Bulk high-concurrency ingestion of attendance logs.
+    Performs batched employee resolution and executes a single bulk SQL insert via executemany.
+    Generates collision-free atomic sequences and RFC 9562 UUIDv7 IDs.
+    """
+    require_permission(session, "attendance.write")
+    if not payload.items:
+        return {"inserted": 0, "records": []}
+
+    pool = get_db_pool()
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+    author_name = session.get("full_name") or session.get("username") or "Authorized User"
+    user_id = None
+    uid_str = session.get("id") or session.get("user_id")
+    if uid_str:
+        try:
+            user_id = uuid.UUID(str(uid_str))
+        except Exception:
+            pass
+
+    # Extract distinct employee IDs and employee numbers
+    emp_uuids = []
+    emp_numbers = []
+    for it in payload.items:
+        if it.employee_id:
+            try:
+                emp_uuids.append(uuid.UUID(it.employee_id))
+            except Exception:
+                pass
+        if it.employee_number:
+            emp_numbers.append(it.employee_number.strip())
+
+    async with pool.acquire() as conn:
+        if user_id:
+            user_exists = await conn.fetchval("SELECT 1 FROM users WHERE id = $1;", user_id)
+            if not user_exists:
+                user_id = None
+
+        # Single batched employee lookup query
+        employees = await conn.fetch("""
+            SELECT id, employee_number, full_name, department_id, organization_id
+            FROM employees
+            WHERE id = ANY($1::uuid[]) OR employee_number = ANY($2::text[]);
+        """, emp_uuids, emp_numbers)
+
+        emp_map_by_id = {str(e["id"]): e for e in employees}
+        emp_map_by_num = {e["employee_number"]: e for e in employees if e["employee_number"]}
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        insert_rows = []
+        created_records = []
+        unmatched_count = 0
+
+        for it in payload.items:
+            emp = None
+            if it.employee_id and str(it.employee_id) in emp_map_by_id:
+                emp = emp_map_by_id[str(it.employee_id)]
+            elif it.employee_number and it.employee_number in emp_map_by_num:
+                emp = emp_map_by_num[it.employee_number]
+
+            if not emp:
+                unmatched_count += 1
+                continue
+
+            t_in = parse_iso(it.check_in) or now
+            t_out = parse_iso(it.check_out)
+            hours = it.duration_hours or 0.0
+            if t_in and t_out and t_out > t_in:
+                hours = round((t_out - t_in).total_seconds() / 3600.0, 1)
+
+            code = await get_next_attendance_code(conn)
+            new_id = uuid7()
+            dept = it.department or emp["department_id"] or "Operations"
+            name = it.employee_name or emp["full_name"]
+
+            insert_rows.append((
+                new_id, code, emp["id"], name, dept,
+                it.terminal_id or "Bulk Sync Terminal",
+                t_in, t_out, hours, it.status or "present", it.notes,
+                client_ip, "Bulk Sync API", author_name, emp["organization_id"],
+                user_id, "draft", now, now
+            ))
+
+            created_records.append({
+                "id": str(new_id),
+                "code": code,
+                "employee_id": str(emp["id"]),
+                "employee_name": name,
+                "check_in": t_in.isoformat(),
+                "check_out": t_out.isoformat() if t_out else None,
+                "duration_hours": hours,
+                "status": it.status or "present"
+            })
+
+        if insert_rows:
+            await conn.executemany("""
+                INSERT INTO attendance_logs (
+                    id, code, employee_id, employee_name, department, terminal_id,
+                    check_in, check_out, duration_hours, status, notes, machine_ip,
+                    ingestion_source, last_modified_by, organization_id,
+                    created_by, approval_status, created_at, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+                );
+            """, insert_rows)
+
+        # Offload background audit recording
+        org_id = str(employees[0]["organization_id"]) if employees else "default_tenant"
+        if created_records:
+            background_tasks.add_task(
+                _background_bulk_attendance_audit,
+                log_ids=[r["id"] for r in created_records],
+                tenant_id=org_id,
+                user_id=user_id,
+                user_name=author_name,
+                client_ip=client_ip,
+                action="BULK_SYNC",
+                note=f"Bulk imported {len(created_records)} attendance logs.",
+                changes={"count": len(created_records)}
+            )
+
+        return {
+            "success": True,
+            "inserted": len(created_records),
+            "unmatched": unmatched_count,
+            "records": created_records
+        }
+
+
+@router.post("/bulk-status")
+async def bulk_update_attendance_status(
+    payload: BulkStatusPayload,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    session: Dict[str, Any] = Depends(get_current_user_session),
+):
+    """
+    Bulk updates status or approval_status for multiple attendance records in a single query.
+    Offloads non-critical audit log writes to background tasks.
+    """
+    require_permission(session, "attendance.write")
+    if not payload.log_ids:
+        return {"updated": 0, "records": []}
+
+    pool = get_db_pool()
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+    author_name = session.get("full_name") or session.get("username") or "Authorized User"
+    user_id = None
+    uid_str = session.get("id") or session.get("user_id")
+    if uid_str:
+        try:
+            user_id = uuid.UUID(str(uid_str))
+        except Exception:
+            pass
+
+    valid_uuids = []
+    for lid in payload.log_ids:
+        try:
+            valid_uuids.append(uuid.UUID(lid))
+        except Exception:
+            pass
+
+    if not valid_uuids:
+        raise HTTPException(status_code=400, detail="No valid log UUIDs provided.")
+
+    async with pool.acquire() as conn:
+        updated_rows = await conn.fetch("""
+            UPDATE attendance_logs
+            SET status = COALESCE($1, status),
+                approval_status = COALESCE($2, approval_status),
+                notes = COALESCE($3, notes),
+                last_modified_by = $4,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ANY($5::uuid[])
+            RETURNING id, code, organization_id, status, approval_status;
+        """, payload.status, payload.approval_status, payload.notes, author_name, valid_uuids)
+
+        if updated_rows:
+            org_id = str(updated_rows[0]["organization_id"]) if updated_rows[0]["organization_id"] else "default_tenant"
+            background_tasks.add_task(
+                _background_bulk_attendance_audit,
+                log_ids=[str(r["id"]) for r in updated_rows],
+                tenant_id=org_id,
+                user_id=user_id,
+                user_name=author_name,
+                client_ip=client_ip,
+                action="BULK_STATUS_UPDATE",
+                note=f"Bulk updated {len(updated_rows)} logs to status='{payload.status}', approval_status='{payload.approval_status}'.",
+                changes={"status": payload.status, "approval_status": payload.approval_status}
+            )
+
+        return {
+            "success": True,
+            "updated": len(updated_rows),
+            "records": [{"id": str(r["id"]), "code": r["code"], "status": r["status"], "approval_status": r["approval_status"]} for r in updated_rows]
+        }
+
 
 @router.put("/{log_id}")
 async def update_attendance_log(
@@ -228,6 +488,7 @@ async def update_attendance_log(
         existing = await conn.fetchrow("SELECT * FROM attendance_logs WHERE id = $1;", l_uuid)
         if not existing:
             raise HTTPException(status_code=404, detail="Attendance log not found.")
+        verify_record_tenant(existing["organization_id"], session)
 
         emp_uuid = uuid.UUID(payload.employee_id) if payload.employee_id else existing["employee_id"]
         emp_name = payload.employee_name or existing["employee_name"]
@@ -380,6 +641,7 @@ async def approve_attendance_log(
         existing = await conn.fetchrow("SELECT * FROM attendance_logs WHERE id = $1;", l_uuid)
         if not existing:
             raise HTTPException(status_code=404, detail="Attendance log not found.")
+        verify_record_tenant(existing["organization_id"], session)
 
         # Hard Maker-Checker Rule
         if existing["created_by"] and user_id and str(user_id) == str(existing["created_by"]):
@@ -451,6 +713,7 @@ async def reject_attendance_log(
         existing = await conn.fetchrow("SELECT * FROM attendance_logs WHERE id = $1;", l_uuid)
         if not existing:
             raise HTTPException(status_code=404, detail="Attendance log not found.")
+        verify_record_tenant(existing["organization_id"], session)
 
         if existing["approval_status"] == "approved":
             raise HTTPException(status_code=400, detail="Cannot reject an approved attendance log.")
@@ -494,7 +757,10 @@ async def delete_attendance_log(
         raise HTTPException(status_code=400, detail="Invalid log UUID.")
 
     async with pool.acquire() as conn:
-        res = await conn.execute("DELETE FROM attendance_logs WHERE id = $1;", l_uuid)
-        if res == "DELETE 0":
+        existing = await conn.fetchrow("SELECT organization_id FROM attendance_logs WHERE id = $1;", l_uuid)
+        if not existing:
             raise HTTPException(status_code=404, detail="Attendance log not found.")
+        verify_record_tenant(existing["organization_id"], session)
+
+        await conn.execute("DELETE FROM attendance_logs WHERE id = $1;", l_uuid)
         return {"success": True, "deleted_id": str(l_uuid)}

@@ -25,6 +25,8 @@ from reportlab.platypus import (
     HRFlowable,
     KeepTogether,
 )
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 from backend.core.config import settings
 from backend.core.database import get_db_pool
@@ -48,8 +50,7 @@ def encrypt_mail_password(plain_pwd: str) -> str:
         return base64.b64encode(enc).decode("utf-8")
     except Exception as e:
         logger.error(f"Error encrypting mail password: {e}")
-        # Safe fallback base64 encoding if cipher uninitialized in test
-        return base64.b64encode(plain_pwd.encode("utf-8")).decode("utf-8")
+        raise RuntimeError(f"AES-256-GCM mail password encryption failed: {str(e)}") from e
 
 
 def decrypt_mail_password(enc_pwd_b64: str) -> str:
@@ -127,11 +128,107 @@ def save_attachment_file(filename: str, content_bytes: bytes, mime_type: Optiona
 # 3. REPORTLAB DYNAMIC PDF GENERATOR (PAYSLIP & STATUTORY REPORTS)
 # ==============================================================================
 
-def generate_payslip_pdf_report(payslip_row: Dict[str, Any], batch_row: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+UNICODE_FONT_NAME = "Helvetica"
+UNICODE_BOLD_FONT_NAME = "Helvetica-Bold"
+_UNICODE_FONTS_REGISTERED = False
+
+def ensure_unicode_fonts_registered() -> Tuple[str, str]:
     """
-    Render a clean, official A4 Payslip PDF using ReportLab.
+    Register Unicode-compatible TTF fonts (DejaVuSans, Cairo, Amiri, Arial, Segoe UI)
+    with graceful fallback to default Helvetica fonts.
+    """
+    global UNICODE_FONT_NAME, UNICODE_BOLD_FONT_NAME, _UNICODE_FONTS_REGISTERED
+    if _UNICODE_FONTS_REGISTERED:
+        return UNICODE_FONT_NAME, UNICODE_BOLD_FONT_NAME
+
+    reg_candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/cairo/Cairo-Regular.ttf",
+        "/usr/share/fonts/truetype/amiri/Amiri-Regular.ttf",
+        "/mnt/c/Windows/Fonts/arial.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+        "/mnt/c/Windows/Fonts/segoeui.ttf",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+    ]
+    bold_candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/cairo/Cairo-Bold.ttf",
+        "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
+        "/mnt/c/Windows/Fonts/arialbd.ttf",
+        "C:\\Windows\\Fonts\\arialbd.ttf",
+        "/mnt/c/Windows/Fonts/segoeuib.ttf",
+        "C:\\Windows\\Fonts\\segoeuib.ttf",
+    ]
+
+    reg_path = next((p for p in reg_candidates if os.path.exists(p)), None)
+    bold_path = next((p for p in bold_candidates if os.path.exists(p)), None)
+
+    if reg_path:
+        try:
+            pdfmetrics.registerFont(TTFont("CustomUnicodeFont", reg_path))
+            UNICODE_FONT_NAME = "CustomUnicodeFont"
+        except Exception as e:
+            logger.warning(f"Could not register unicode font from {reg_path}: {e}")
+
+    if bold_path:
+        try:
+            pdfmetrics.registerFont(TTFont("CustomUnicodeBoldFont", bold_path))
+            UNICODE_BOLD_FONT_NAME = "CustomUnicodeBoldFont"
+        except Exception as e:
+            logger.warning(f"Could not register unicode bold font from {bold_path}: {e}")
+            if UNICODE_FONT_NAME != "Helvetica":
+                UNICODE_BOLD_FONT_NAME = UNICODE_FONT_NAME
+
+    _UNICODE_FONTS_REGISTERED = True
+    return UNICODE_FONT_NAME, UNICODE_BOLD_FONT_NAME
+
+
+def format_arabic_text(text: Any) -> str:
+    """
+    Format string containing Arabic characters with arabic_reshaper and python-bidi
+    so cursive glyphs connect properly and read right-to-left without box artifacts.
+    Falls back gracefully if libraries or Arabic characters are absent.
+    """
+    if not text:
+        return ""
+    str_val = str(text)
+    has_arabic = any(
+        '\u0600' <= char <= '\u06ff' or
+        '\u0750' <= char <= '\u077f' or
+        '\u08a0' <= char <= '\u08ff' or
+        '\ufb50' <= char <= '\ufdff' or
+        '\ufe70' <= char <= '\ufeff'
+        for char in str_val
+    )
+    if not has_arabic:
+        return str_val
+
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        reshaped = arabic_reshaper.reshape(str_val)
+        return get_display(reshaped)
+    except Exception as e:
+        logger.warning(f"Arabic text shaping fallback for '{str_val}': {e}")
+        return str_val
+
+
+def generate_payslip_pdf_report(
+    payslip_row: Dict[str, Any],
+    batch_row: Optional[Dict[str, Any]] = None,
+    org_info: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Render a clean, official A4 Payslip PDF using ReportLab with dynamic organization branding
+    and Unicode / Arabic RTL rendering support.
     Saves to disk and returns metadata dict for mail_attachments.
     """
+    unicode_font, unicode_bold = ensure_unicode_fonts_registered()
+
     emp_num = payslip_row.get("employee_number") or "EMP"
     month = (batch_row.get("salary_year_month") if batch_row else None) or payslip_row.get("batch_month") or "Monthly"
     filename = f"Payslip_{month}_{emp_num}.pdf"
@@ -147,12 +244,50 @@ def generate_payslip_pdf_report(payslip_row: Dict[str, Any], batch_row: Optional
         bottomMargin=36,
     )
 
+    # Dynamic organization resolution from org_info / batch_row / payslip_row
+    org_dict = org_info or {}
+    batch_dict = batch_row or {}
+
+    org_name = (
+        org_dict.get("legal_name")
+        or org_dict.get("legal_entity_name")
+        or org_dict.get("name")
+        or batch_dict.get("org_name")
+        or batch_dict.get("company_name")
+        or payslip_row.get("company_name")
+        or payslip_row.get("org_name")
+        or "Primary Corporate Entity"
+    )
+
+    cr_number = (
+        org_dict.get("cr_number")
+        or org_dict.get("tax_id")
+        or org_dict.get("commercial_registration_number")
+        or batch_dict.get("cr_number")
+        or batch_dict.get("org_tax_id")
+        or payslip_row.get("cr_number")
+        or payslip_row.get("org_tax_id")
+        or "QA-CR-001"
+    )
+
+    establishment_eid = (
+        org_dict.get("employer_eid")
+        or org_dict.get("wps_establishment_id")
+        or org_dict.get("establishment_id")
+        or batch_dict.get("employer_eid")
+        or batch_dict.get("wps_establishment_id")
+        or payslip_row.get("employer_eid")
+        or payslip_row.get("wps_establishment_id")
+        or "12345678"
+    )
+
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         "PayslipTitle",
         parent=styles["Heading1"],
         fontSize=18,
         leading=22,
+        fontName=unicode_bold,
         textColor=colors.HexColor("#0f172a"),
         spaceAfter=4,
     )
@@ -161,6 +296,7 @@ def generate_payslip_pdf_report(payslip_row: Dict[str, Any], batch_row: Optional
         parent=styles["Normal"],
         fontSize=9,
         leading=12,
+        fontName=unicode_font,
         textColor=colors.HexColor("#64748b"),
     )
     header_style = ParagraphStyle(
@@ -168,6 +304,7 @@ def generate_payslip_pdf_report(payslip_row: Dict[str, Any], batch_row: Optional
         parent=styles["Heading3"],
         fontSize=11,
         leading=14,
+        fontName=unicode_bold,
         textColor=colors.HexColor("#1e293b"),
         spaceAfter=6,
     )
@@ -176,6 +313,7 @@ def generate_payslip_pdf_report(payslip_row: Dict[str, Any], batch_row: Optional
         parent=styles["Normal"],
         fontSize=8.5,
         leading=11,
+        fontName=unicode_font,
         textColor=colors.HexColor("#334155"),
     )
     cell_bold = ParagraphStyle(
@@ -183,7 +321,7 @@ def generate_payslip_pdf_report(payslip_row: Dict[str, Any], batch_row: Optional
         parent=styles["Normal"],
         fontSize=8.5,
         leading=11,
-        fontName="Helvetica-Bold",
+        fontName=unicode_bold,
         textColor=colors.HexColor("#0f172a"),
     )
     cell_num = ParagraphStyle(
@@ -191,7 +329,7 @@ def generate_payslip_pdf_report(payslip_row: Dict[str, Any], batch_row: Optional
         parent=styles["Normal"],
         fontSize=8.5,
         leading=11,
-        fontName="Helvetica",
+        fontName=unicode_font,
         alignment=2,  # Right-aligned
         textColor=colors.HexColor("#0f172a"),
     )
@@ -200,7 +338,7 @@ def generate_payslip_pdf_report(payslip_row: Dict[str, Any], batch_row: Optional
         parent=styles["Normal"],
         fontSize=9,
         leading=12,
-        fontName="Helvetica-Bold",
+        fontName=unicode_bold,
         alignment=2,
         textColor=colors.HexColor("#047857"),
     )
@@ -209,28 +347,42 @@ def generate_payslip_pdf_report(payslip_row: Dict[str, Any], batch_row: Optional
         parent=styles["Normal"],
         fontSize=8.5,
         leading=11,
-        fontName="Helvetica",
+        fontName=unicode_font,
         alignment=2,
         textColor=colors.HexColor("#b91c1c"),
     )
 
     story = []
 
-    # 1. Company Banner Header
-    story.append(Paragraph("APEX GLOBAL ENTERPRISES Q.P.S.C.", title_style))
-    story.append(Paragraph("State of Qatar • Commercial Registration: QA-90281726-CR • MoI Establishment ID: 12345678", subtitle_style))
+    # 1. Company Banner Header (Dynamic Organization Branding)
+    story.append(Paragraph(format_arabic_text(org_name), title_style))
+    story.append(Paragraph(f"State of Qatar • Commercial Registration: {cr_number} • MoI Establishment ID: {establishment_eid}", subtitle_style))
     story.append(Paragraph(f"Official Salary Statement & Payslip — Period: <strong>{month}</strong>", subtitle_style))
     story.append(Spacer(1, 12))
     story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#cbd5e1"), spaceAfter=14))
 
     # 2. Employee & Batch Information Grid
     emp_name = payslip_row.get("employee_name") or "Employee"
-    dept = payslip_row.get("department") or "General Operations"
-    job_title = payslip_row.get("job_title") or "Staff Associate"
+    local_name = (
+        payslip_row.get("display_name_local")
+        or payslip_row.get("employee_name_local")
+        or payslip_row.get("name_local")
+        or payslip_row.get("employee_name_arabic")
+    )
+
+    if local_name and str(local_name).strip() and str(local_name).strip() != str(emp_name).strip():
+        shaped_local = format_arabic_text(str(local_name).strip())
+        emp_display = f"{emp_name} / {shaped_local}"
+    else:
+        emp_display = format_arabic_text(emp_name)
+
+    dept = format_arabic_text(payslip_row.get("department") or "General Operations")
+    job_title = format_arabic_text(payslip_row.get("job_title") or "Staff Associate")
     qid = payslip_row.get("national_id_number") or "N/A"
-    bank = payslip_row.get("bank_name") or "Qatar National Bank (QNB)"
+    bank = format_arabic_text(payslip_row.get("bank_name") or "Qatar National Bank (QNB)")
     iban = payslip_row.get("bank_iban") or "QA55QNBA••••••••••••"
     work_days = str(payslip_row.get("working_days") or 30)
+
     def _safe_num(val: Any) -> float:
         if val is None:
             return 0.0
@@ -244,7 +396,7 @@ def generate_payslip_pdf_report(payslip_row: Dict[str, Any], batch_row: Optional
     info_data = [
         [
             Paragraph("<strong>Employee Name:</strong>", cell_style),
-            Paragraph(emp_name, cell_bold),
+            Paragraph(emp_display, cell_bold),
             Paragraph("<strong>Salary Month:</strong>", cell_style),
             Paragraph(month, cell_bold),
         ],
@@ -378,8 +530,8 @@ def generate_payslip_pdf_report(payslip_row: Dict[str, Any], batch_row: Optional
     # 5. Net Salary Summary Card
     net_card_data = [
         [
-            Paragraph("<strong>NET DISBURSEMENT AMOUNT:</strong>", ParagraphStyle("NetH", parent=styles["Normal"], fontSize=11, leading=14, fontName="Helvetica-Bold", textColor=colors.HexColor("#0f172a"))),
-            Paragraph(f"<strong>{net_salary:,.2f} QAR</strong>", ParagraphStyle("NetV", parent=styles["Normal"], fontSize=13, leading=16, fontName="Helvetica-Bold", alignment=2, textColor=colors.HexColor("#047857"))),
+            Paragraph("<strong>NET DISBURSEMENT AMOUNT:</strong>", ParagraphStyle("NetH", parent=styles["Normal"], fontSize=11, leading=14, fontName=unicode_bold, textColor=colors.HexColor("#0f172a"))),
+            Paragraph(f"<strong>{net_salary:,.2f} QAR</strong>", ParagraphStyle("NetV", parent=styles["Normal"], fontSize=13, leading=16, fontName=unicode_bold, alignment=2, textColor=colors.HexColor("#047857"))),
         ]
     ]
     net_table = Table(net_card_data, colWidths=[320, 200])
@@ -395,7 +547,7 @@ def generate_payslip_pdf_report(payslip_row: Dict[str, Any], batch_row: Optional
     # 6. Compliance Footer
     story.append(Paragraph(
         "Confidential Notice: This document contains proprietary payroll information processed in accordance with Qatar Labour Law No. 14 of 2004 and Qatar Central Bank Wage Protection System (WPS) regulations. Electronic document generated by Larea ERP ViewEngine.",
-        ParagraphStyle("Footnote", parent=styles["Normal"], fontSize=7.5, leading=10, textColor=colors.HexColor("#94a3b8")),
+        ParagraphStyle("Footnote", parent=styles["Normal"], fontSize=7.5, leading=10, fontName=unicode_font, textColor=colors.HexColor("#94a3b8")),
     ))
 
     # Build PDF
@@ -526,8 +678,15 @@ def test_mail_server_connection(server_dict: Dict[str, Any]) -> Tuple[bool, str]
     Verify SMTP or IMAP connection credentials with handshake verification.
     Returns: (is_success, status_or_error_message)
     """
+    from backend.core.communication_engine import validate_external_target_ip
+
     protocol = (server_dict.get("protocol") or "SMTP").upper()
     host = server_dict.get("host") or "localhost"
+    try:
+        validate_external_target_ip(host)
+    except ValueError as e:
+        return False, f"SSRF Protection Rejected Target: {str(e)}"
+
     port = int(server_dict.get("port") or (465 if server_dict.get("encryption") == "SSL_TLS" else 587))
     encryption = server_dict.get("encryption") or "STARTTLS"
     username = server_dict.get("username") or ""

@@ -35,6 +35,9 @@ export function FormView({
   record,
   onChangeRecord,
   onFormAction,
+  onBack,
+  onDirtyChange,
+  isDirty: externalIsDirty,
 }) {
   const { t } = useLocale();
   const { currentUser } = useTenancy();
@@ -58,6 +61,37 @@ export function FormView({
   const [searchQuery, setSearchQuery] = useState('');
   const [isComboboxOpen, setIsComboboxOpen] = useState(false);
   const comboboxRef = useRef(null);
+
+  // Form dirty state tracking
+  const [isDirty, setIsDirty] = useState(false);
+
+  useEffect(() => {
+    setIsDirty(false);
+    onDirtyChange?.(false);
+  }, [record?.id]);
+
+  // Unsaved changes beforeunload listener
+  useEffect(() => {
+    const effectiveDirty = isDirty || externalIsDirty;
+    if (!effectiveDirty) return;
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty, externalIsDirty]);
+
+  const handleBack = () => {
+    const effectiveDirty = isDirty || externalIsDirty;
+    if (effectiveDirty && !window.confirm('You have unsaved changes. Discard and return to list?')) {
+      return;
+    }
+    setIsDirty(false);
+    onDirtyChange?.(false);
+    onBack?.();
+  };
 
   useEffect(() => {
     let active = true;
@@ -139,6 +173,8 @@ export function FormView({
   );
 
   const handleSelectEmployee = (emp) => {
+    setIsDirty(true);
+    onDirtyChange?.(true);
     if (!emp) {
       const updated = {
         ...record,
@@ -171,6 +207,8 @@ export function FormView({
   }
 
   const handleFieldChange = (fieldName, value) => {
+    setIsDirty(true);
+    onDirtyChange?.(true);
     const updated = { ...record, [fieldName]: value };
 
     // Auto calculate duration_hours if check_in and check_out are provided
@@ -197,24 +235,47 @@ export function FormView({
   };
 
   const handleTransition = (newStatus, actionName = null) => {
+    setIsDirty(true);
+    onDirtyChange?.(true);
     const act = actionName || `set_status_${newStatus}`;
     handleFieldChange('status', newStatus);
     onFormAction && onFormAction(act, { ...record, status: newStatus });
   };
 
-  // Workflow stages definition (SOX 404 dual-control compliance)
-  const stages = [
-    { id: 'draft', label: t('draft') || 'Draft', desc: 'Created by maker (pending submission)' },
-    { id: 'pending_approval', label: 'Pending Approval', desc: 'Awaiting independent dual-control review' },
-    { id: 'verified', label: t('verified') || 'Verified / Approved', desc: 'Reviewed & verified by independent checker' },
-    { id: 'synced', label: t('synced') || 'Synced to Payroll', desc: 'Locked for payroll calculation' },
-  ];
+  const isRoster = schema?.model === 'shift_rosters' || Boolean(record.shift_name);
 
-  const currentStatus = record.status || record.approval_status || 'draft';
+  // Workflow stages definition (SOX 404 dual-control compliance or Shift Lifecycle)
+  const stages = isRoster
+    ? [
+        { id: 'scheduled', label: 'Scheduled', desc: 'Shift planned and assigned to workforce' },
+        { id: 'in_progress', label: 'In Progress', desc: 'Shift currently active/underway' },
+        { id: 'completed', label: 'Completed', desc: 'Shift concluded and recorded' },
+        { id: 'cancelled', label: 'Cancelled', desc: 'Shift assignment cancelled' },
+      ]
+    : [
+        { id: 'draft', label: t('draft') || 'Draft', desc: 'Created by maker (pending submission)' },
+        { id: 'pending_approval', label: 'Pending Approval', desc: 'Awaiting independent dual-control review' },
+        { id: 'verified', label: t('verified') || 'Verified / Approved', desc: 'Reviewed & verified by independent checker' },
+        { id: 'synced', label: t('synced') || 'Synced to Payroll', desc: 'Locked for payroll calculation' },
+      ];
+
+  const currentStatus = record.status || record.approval_status || (isRoster ? 'scheduled' : 'draft');
   const currentStageIndex = stages.findIndex((s) => s.id === currentStatus);
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-16 animate-fadeIn">
+      {onBack && (
+        <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800">
+          <button
+            type="button"
+            onClick={handleBack}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-700 transition cursor-pointer"
+          >
+            <span>← Back to list</span>
+          </button>
+        </div>
+      )}
+
       {/* ASYMMETRIC TWO-PANEL LAYOUT (Main 70% / Sidebar 30%) */}
       <div className="grid grid-cols-1 lg:grid-cols-10 gap-6 items-start">
         {/* ========================================================================= */}
@@ -338,20 +399,54 @@ export function FormView({
                 )}
               </div>
 
-              {/* Biometric Device ID / Terminal */}
-              <div className="space-y-1.5 md:col-span-2">
-                <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                  <Terminal className="w-3.5 h-3.5 text-slate-400" />
-                  <span>{t('terminal_id')}</span>
-                </label>
-                <input
-                  type="text"
-                  value={record.terminal_id || ''}
-                  onChange={(e) => handleFieldChange('terminal_id', e.target.value)}
-                  placeholder="Terminal #01 (Main Lobby Gate)"
-                  className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
-                />
-              </div>
+              {/* Terminal or Shift Template & Location */}
+              {!isRoster ? (
+                <div className="space-y-1.5 md:col-span-2">
+                  <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                    <Terminal className="w-3.5 h-3.5 text-slate-400" />
+                    <span>{t('terminal_id')}</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={record.terminal_id || ''}
+                    onChange={(e) => handleFieldChange('terminal_id', e.target.value)}
+                    placeholder="Terminal #01 (Main Lobby Gate)"
+                    className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-1.5">
+                    <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                      <Briefcase className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Shift Template</span>
+                    </label>
+                    <select
+                      value={record.shift_name || 'Morning Shift (08:00 - 16:00)'}
+                      onChange={(e) => handleFieldChange('shift_name', e.target.value)}
+                      className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition cursor-pointer"
+                    >
+                      <option value="Morning Shift (08:00 - 16:00)">Morning Shift (08:00 - 16:00)</option>
+                      <option value="Evening Shift (16:00 - 00:00)">Evening Shift (16:00 - 00:00)</option>
+                      <option value="Night Shift (00:00 - 08:00)">Night Shift (00:00 - 08:00)</option>
+                      <option value="Flexible Core Hours (09:00 - 17:00)">Flexible Core Hours (09:00 - 17:00)</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                      <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Facility / Location</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={record.location || 'Doha Head Office'}
+                      onChange={(e) => handleFieldChange('location', e.target.value)}
+                      placeholder="e.g. Doha Head Office, Al Khor Facility"
+                      className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
+                    />
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -363,7 +458,7 @@ export function FormView({
                   <Clock className="w-4 h-4" />
                 </div>
                 <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 tracking-tight">
-                  {t('shift_timings')}
+                  {isRoster ? 'Shift Schedule & Duration' : t('shift_timings')}
                 </h3>
               </div>
 
@@ -375,51 +470,61 @@ export function FormView({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* Check In Datetime Picker */}
+              {/* Start Time / Check In */}
               <div className="space-y-1.5">
                 <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center justify-between">
-                  <span>{t('check_in')} <span className="text-rose-500">*</span></span>
+                  <span>{isRoster ? 'Shift Start Time' : t('check_in')} <span className="text-rose-500">*</span></span>
                   <span className="text-[11px] text-slate-400 font-normal">{t('required')}</span>
                 </label>
                 <input
                   type="datetime-local"
-                  value={formatToLocalDatetimeInputValue(record.check_in)}
+                  value={formatToLocalDatetimeInputValue(record.start_time || record.check_in)}
                   onChange={(e) => {
                     const val = e.target.value;
                     if (!val) {
+                      handleFieldChange('start_time', null);
                       handleFieldChange('check_in', null);
                       return;
                     }
                     const d = new Date(val);
-                    handleFieldChange(
-                      'check_in',
-                      !isNaN(d.getTime()) ? d.toISOString() : val
-                    );
+                    const iso = !isNaN(d.getTime()) ? d.toISOString() : val;
+                    handleFieldChange('start_time', iso);
+                    handleFieldChange('check_in', iso);
+                    const currentEnd = record.end_time || record.check_out;
+                    if (currentEnd) {
+                      const diffH = Math.max(0, Math.round(((new Date(currentEnd) - new Date(iso)) / 3600000) * 100) / 100);
+                      handleFieldChange('duration_hours', diffH);
+                    }
                   }}
                   className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
                 />
               </div>
 
-              {/* Check Out Datetime Picker */}
+              {/* End Time / Check Out */}
               <div className="space-y-1.5">
                 <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center justify-between">
-                  <span>{t('check_out')}</span>
-                  <span className="text-[11px] text-slate-400 font-normal">{t('optional_shift')}</span>
+                  <span>{isRoster ? 'Shift End Time' : t('check_out')} <span className="text-rose-500">*</span></span>
+                  <span className="text-[11px] text-slate-400 font-normal">{isRoster ? t('required') : t('optional_shift')}</span>
                 </label>
                 <input
                   type="datetime-local"
-                  value={formatToLocalDatetimeInputValue(record.check_out)}
+                  value={formatToLocalDatetimeInputValue(record.end_time || record.check_out)}
                   onChange={(e) => {
                     const val = e.target.value;
                     if (!val) {
+                      handleFieldChange('end_time', null);
                       handleFieldChange('check_out', null);
                       return;
                     }
                     const d = new Date(val);
-                    handleFieldChange(
-                      'check_out',
-                      !isNaN(d.getTime()) ? d.toISOString() : val
-                    );
+                    const iso = !isNaN(d.getTime()) ? d.toISOString() : val;
+                    handleFieldChange('end_time', iso);
+                    handleFieldChange('check_out', iso);
+                    const currentStart = record.start_time || record.check_in;
+                    if (currentStart) {
+                      const diffH = Math.max(0, Math.round(((new Date(iso) - new Date(currentStart)) / 3600000) * 100) / 100);
+                      handleFieldChange('duration_hours', diffH);
+                    }
                   }}
                   className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
                 />

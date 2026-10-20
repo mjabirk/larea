@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Users,
   Search,
@@ -13,7 +13,9 @@ import {
   CheckCircle2,
   Calendar,
   ChevronLeft,
+  X,
 } from 'lucide-react';
+import { useDebounce } from '../../hooks/useDebounce';
 
 export function EmployeeListView({
   employees = [],
@@ -23,14 +25,44 @@ export function EmployeeListView({
   searchTerm: externalSearchTerm,
   onSearchChange: externalOnSearchChange,
   showHeader = false,
+  total: externalTotal,
+  page: externalPage,
+  pageSize: externalPageSize,
+  onPageChange,
+  onPageSizeChange,
 }) {
-  const [internalSearchTerm, setInternalSearchTerm] = useState('');
-  const searchTerm = externalSearchTerm !== undefined ? externalSearchTerm : internalSearchTerm;
-  const setSearchTerm = externalOnSearchChange || setInternalSearchTerm;
+  const [searchInput, setSearchInput] = useState(externalSearchTerm !== undefined ? externalSearchTerm : '');
+  const debouncedSearch = useDebounce(searchInput, 300);
+
+  // Sync externalSearchTerm changes from parent
+  useEffect(() => {
+    if (externalSearchTerm !== undefined && externalSearchTerm !== searchInput) {
+      setSearchInput(externalSearchTerm);
+    }
+  }, [externalSearchTerm]);
+
+  // Notify parent of debounced search changes and reset page
+  useEffect(() => {
+    if (externalOnSearchChange && debouncedSearch !== externalSearchTerm) {
+      externalOnSearchChange(debouncedSearch);
+    }
+    setCurrentPage(1);
+    onPageChange?.(1);
+  }, [debouncedSearch]);
+
+  const searchTerm = externalSearchTerm !== undefined ? externalSearchTerm : debouncedSearch;
   const [deptFilter, setDeptFilter] = useState('ALL');
   const [complianceFilter, setComplianceFilter] = useState('ALL');
-  const [currentPage, setCurrentPage] = useState(1);
-  const pageSize = 80;
+  const [currentPage, setCurrentPage] = useState(externalPage || 1);
+  const [pageSize, setPageSize] = useState(externalPageSize || 25);
+
+  useEffect(() => {
+    if (externalPage !== undefined) setCurrentPage(externalPage);
+  }, [externalPage]);
+
+  useEffect(() => {
+    if (externalPageSize !== undefined) setPageSize(externalPageSize);
+  }, [externalPageSize]);
 
   // Helper to calculate days remaining until expiry
   const getDaysRemaining = (expiryDateStr) => {
@@ -94,12 +126,16 @@ export function EmployeeListView({
     return matchSearch && matchDept && matchCompliance;
   });
 
-  // 80-record pagination
-  const totalRecords = filteredEmployees.length;
+  // Pagination calculation bound to limit, offset, and total
+  const totalRecords = externalTotal !== undefined ? externalTotal : filteredEmployees.length;
   const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
-  const startIndex = (currentPage - 1) * pageSize;
+  const startIndex = totalRecords === 0 ? 0 : (currentPage - 1) * pageSize;
   const endIndex = Math.min(startIndex + pageSize, totalRecords);
-  const pagedEmployees = filteredEmployees.slice(startIndex, endIndex);
+  const showingStart = totalRecords === 0 ? 0 : startIndex + 1;
+  const showingEnd = endIndex;
+  const pagedEmployees = externalTotal !== undefined && employees.length <= pageSize
+    ? filteredEmployees
+    : filteredEmployees.slice(startIndex, endIndex);
 
   return (
     <div className="space-y-2.5">
@@ -118,28 +154,37 @@ export function EmployeeListView({
             <div className="flex items-center gap-1.5 text-xs pl-2 border-l border-slate-200 dark:border-slate-700">
               <span className="font-bold text-slate-900 dark:text-white">Employees Directory</span>
               <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-                {employees.length}
+                {totalRecords}
               </span>
             </div>
           </div>
         </div>
       )}
 
-      {/* 2. Slim 36px Search & Filter Strip with Odoo-style Pager */}
+      {/* 2. Slim Search & Filter Strip with Debounced Input and Clean Pagination Controls */}
       <div className="h-9 min-h-[36px] bg-white dark:bg-slate-900 px-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs flex items-center justify-between gap-2.5">
         <div className="flex flex-1 items-center gap-2 max-w-xl">
           <div className="relative flex-1">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
-              value={searchTerm}
-              onChange={(e) => {
-                setSearchTerm(e.target.value);
-                setCurrentPage(1);
-              }}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search name, code, QID, title..."
-              className="w-full h-7 text-xs pl-7 pr-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full h-7 text-xs pl-7 pr-6 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
+            {searchInput && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchInput('');
+                  externalOnSearchChange?.('');
+                }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
           </div>
 
           {/* Department Filter */}
@@ -148,6 +193,7 @@ export function EmployeeListView({
             onChange={(e) => {
               setDeptFilter(e.target.value);
               setCurrentPage(1);
+              onPageChange?.(1);
             }}
             className="h-7 text-[11.5px] font-medium px-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0"
           >
@@ -164,6 +210,7 @@ export function EmployeeListView({
             onChange={(e) => {
               setComplianceFilter(e.target.value);
               setCurrentPage(1);
+              onPageChange?.(1);
             }}
             className="h-7 text-[11.5px] font-medium px-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0 hidden sm:block"
           >
@@ -173,28 +220,67 @@ export function EmployeeListView({
           </select>
         </div>
 
-        {/* Right: Odoo-Style Pager [ 1-80 / N ] < > */}
-        <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 font-mono text-xs pl-2 border-l border-slate-200 dark:border-slate-700 shrink-0">
-          <span className="tabular-nums">
-            {totalRecords === 0 ? '0-0' : `${startIndex + 1}-${endIndex}`} / {totalRecords}
+        {/* Right: Clean Pagination Controls (Page X of Y, Showing A–B of Total, Prev/Next, and 25/50/100 selector) */}
+        <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 pl-2 border-l border-slate-200 dark:border-slate-700 shrink-0">
+          {/* Page Size Selector (25 / 50 / 100) */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-slate-400 hidden sm:inline">Rows:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                const newSize = Number(e.target.value);
+                setPageSize(newSize);
+                setCurrentPage(1);
+                onPageSizeChange?.(newSize);
+                onPageChange?.(1);
+              }}
+              className="h-7 text-xs font-medium px-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer"
+              title="Page size (limit)"
+            >
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+          </div>
+
+          {/* Showing A–B of Total */}
+          <span className="font-mono text-xs tabular-nums text-slate-700 dark:text-slate-300 hidden md:inline">
+            Showing {showingStart}–{showingEnd} of {totalRecords}
           </span>
-          <div className="inline-flex items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+
+          <span className="text-slate-300 dark:text-slate-600 hidden md:inline">|</span>
+
+          {/* Page X of Y */}
+          <span className="font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
+            Page {totalRecords === 0 ? 0 : currentPage} of {totalPages}
+          </span>
+
+          {/* Previous / Next buttons */}
+          <div className="inline-flex items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-2xs">
             <button
               type="button"
-              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              onClick={() => {
+                const prev = Math.max(1, currentPage - 1);
+                setCurrentPage(prev);
+                onPageChange?.(prev);
+              }}
               disabled={currentPage <= 1}
               className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-              title="Previous 80 Records"
+              title="Previous Page"
             >
               <ChevronLeft className="w-3.5 h-3.5 text-slate-700 dark:text-slate-300" />
             </button>
             <div className="w-[1px] h-3.5 bg-slate-200 dark:bg-slate-700" />
             <button
               type="button"
-              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              onClick={() => {
+                const next = Math.min(totalPages, currentPage + 1);
+                setCurrentPage(next);
+                onPageChange?.(next);
+              }}
               disabled={currentPage >= totalPages}
               className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-              title="Next 80 Records"
+              title="Next Page"
             >
               <ChevronRight className="w-3.5 h-3.5 text-slate-700 dark:text-slate-300" />
             </button>

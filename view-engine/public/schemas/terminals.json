@@ -1,0 +1,42 @@
+{
+  "model": "terminals",
+  "title": "Biometric Hardware Terminals",
+  "default_view": "list",
+  "newButtonLabel": "+ Register Terminal",
+  "header_actions": [
+    { "id": "act_create", "label": "Register Terminal", "action": "create", "type": "create" },
+    { "id": "act_delete", "label": "Delete Terminal", "action": "delete", "type": "delete" }
+  ],
+  "fields": {
+    "id": { "type": "uuid", "label": "ID", "readonly": true },
+    "sn": { "type": "string", "label": "Serial Number (SN)", "required": true },
+    "alias": { "type": "string", "label": "Terminal Alias", "required": true },
+    "ip_address": { "type": "string", "label": "IP Address" },
+    "is_enrollment_terminal": { "type": "boolean", "label": "Enrollment Terminal" },
+    "state": {
+      "type": "selection",
+      "label": "State",
+      "options": [
+        { "value": "active", "label": "Active / Online" },
+        { "value": "offline", "label": "Offline" },
+        { "value": "maintenance", "label": "Maintenance" }
+      ]
+    },
+    "last_activity": { "type": "datetime", "label": "Last Activity", "readonly": true },
+    "created_at": { "type": "datetime", "label": "Created At", "readonly": true }
+  },
+  "views": {
+    "list": {
+      "columns": ["sn", "alias", "ip_address", "state", "last_activity"]
+    },
+    "form": {
+      "statusbar": {
+        "field": "state",
+        "buttons": [
+          { "id": "btn_reboot", "label": "Reboot Terminal", "action": "reboot", "style": "warning" },
+          { "id": "btn_sync", "label": "Sync Biometrics", "action": "sync", "style": "primary" }
+        ]
+      }
+    }
+  }
+}

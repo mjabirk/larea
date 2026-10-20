@@ -1,10 +1,11 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { X, Printer } from 'lucide-react';
 import { formatDateTime } from './Widgets';
 import { useModalEscape } from '../../hooks/useModalEscape';
 
 export function PrintReportModal({ isOpen, onClose, schema, records = [] }) {
-  useModalEscape(onClose, isOpen);
+  const modalRef = useRef(null);
+  useModalEscape(onClose, isOpen, modalRef);
 
   if (!isOpen) return null;
 
@@ -20,9 +21,13 @@ export function PrintReportModal({ isOpen, onClose, schema, records = [] }) {
   return (
     <div
       className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-fadeIn"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="print-report-modal-title"
       onClick={onClose}
     >
       <div
+        ref={modalRef}
         className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-fadeIn"
         onClick={(e) => e.stopPropagation()}
       >
@@ -30,7 +35,7 @@ export function PrintReportModal({ isOpen, onClose, schema, records = [] }) {
         <div className="px-6 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between print:hidden">
           <div className="flex items-center gap-2">
             <Printer className="w-5 h-5 text-blue-600" />
-            <h3 className="font-bold text-slate-800 text-sm">
+            <h3 id="print-report-modal-title" className="font-bold text-slate-800 text-sm">
               Official Executive Slip & Report Preview
             </h3>
           </div>
@@ -39,7 +44,7 @@ export function PrintReportModal({ isOpen, onClose, schema, records = [] }) {
             <button
               type="button"
               onClick={handlePrint}
-              className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+              className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
             >
               <Printer className="w-3.5 h-3.5" />
               <span>Print / Save as PDF</span>
@@ -48,7 +53,7 @@ export function PrintReportModal({ isOpen, onClose, schema, records = [] }) {
             <button
               type="button"
               onClick={onClose}
-              className="flex items-center gap-1.5 p-1.5 rounded-md hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition cursor-pointer group"
+              className="flex items-center gap-1.5 p-1.5 rounded-md hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
               title="Close (Esc)"
               aria-label="Close modal"
             >

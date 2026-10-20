@@ -40,8 +40,10 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useAccessControl } from '../../context/AccessControlContext';
+import { useLocale } from '../../context/LocaleContext';
 
 export function HardwareTerminalsView() {
+  const { t } = useLocale();
   const auth = useAuth();
   const { hasPermission } = useAccessControl();
 
@@ -511,25 +513,25 @@ export function HardwareTerminalsView() {
       case 'pending':
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
-            Pending
+            {t('cmd_pending') || 'Pending'}
           </span>
         );
       case 'sent':
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-400 border border-sky-200 dark:border-sky-800 animate-pulse">
-            In-Flight (Sent)
+            {t('cmd_sent') || 'In-Flight (Sent)'}
           </span>
         );
       case 'success':
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
-            Success (0)
+            {t('cmd_success') || 'Success (0)'}
           </span>
         );
       case 'failed':
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-200 dark:border-rose-800">
-            Failed
+            {t('cmd_failed') || 'Failed'}
           </span>
         );
       default:
@@ -546,22 +548,21 @@ export function HardwareTerminalsView() {
     <div className="space-y-6 animate-fadeIn pb-12">
       {/* Top Banner / Header */}
       <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-2xl p-6 text-white shadow-xl border border-indigo-900/40 relative overflow-hidden">
-        <div className="absolute right-0 top-0 bottom-0 w-96 opacity-10 pointer-events-none flex items-center justify-center">
-          <Cpu className="w-96 h-96 -mr-20 -mt-10" />
+        <div className="absolute end-0 top-0 bottom-0 w-96 opacity-10 pointer-events-none flex items-center justify-center">
+          <Cpu className="w-96 h-96 -me-20 -mt-10" />
         </div>
 
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
           <div>
             <div className="flex items-center gap-2 text-indigo-400 font-bold text-xs uppercase tracking-wider mb-1">
               <Cpu className="w-4 h-4 text-emerald-400 animate-pulse" />
-              <span>ZKTeco ADMS Biometric Gateway • Zero-Trust Hardware Engine</span>
+              <span>{t('adms_gateway_title')}</span>
             </div>
             <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-3">
-              Hardware Terminals & Biometric Ingestion
+              {t('hardware_terminals')}
             </h1>
             <p className="text-xs text-slate-300 max-w-2xl mt-1">
-              Live ADMS device listener for ZKTeco facial, fingerprint, and palm attendance clocks.
-              Hardware sync, smart shift pairing (&le;120s double-punch filter &gt;16h auto-close), and remote biometric enrollment.
+              {t('adms_gateway_desc')}
             </p>
           </div>
 
@@ -572,7 +573,7 @@ export function HardwareTerminalsView() {
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/20 text-white transition-all backdrop-blur-sm border border-white/15 disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-              Refresh
+              {t('refresh') || 'Refresh'}
             </button>
 
             {canManageHardware && (
@@ -591,7 +592,7 @@ export function HardwareTerminalsView() {
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm transition-all"
               >
                 <Play className="w-3.5 h-3.5" />
-                Simulate Punch
+                {t('simulate_punch')}
               </button>
             )}
 
@@ -617,7 +618,7 @@ export function HardwareTerminalsView() {
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition-all"
               >
                 <Plus className="w-3.5 h-3.5" />
-                Register Terminal
+                {t('register_terminal')}
               </button>
             )}
           </div>
@@ -626,34 +627,34 @@ export function HardwareTerminalsView() {
         {/* Quick KPI Bar */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 pt-4 border-t border-white/10 text-xs">
           <div className="bg-white/5 backdrop-blur-xs rounded-xl p-3 border border-white/5">
-            <span className="text-slate-400 block text-[11px]">Total Clocks Registered</span>
+            <span className="text-slate-400 block text-[11px]">{t('total_clocks')}</span>
             <div className="text-lg font-bold text-white mt-0.5 flex items-center gap-2">
               <Server className="w-4 h-4 text-indigo-400" />
               {terminals.length}
-              <span className="text-[10px] text-emerald-400 font-normal">({totalActiveTerminals} Active)</span>
+              <span className="text-[10px] text-emerald-400 font-normal">({totalActiveTerminals} {t('active_terminals')})</span>
             </div>
           </div>
           <div className="bg-white/5 backdrop-blur-xs rounded-xl p-3 border border-white/5">
-            <span className="text-slate-400 block text-[11px]">Master Enrollment Station</span>
+            <span className="text-slate-400 block text-[11px]">{t('enrollment_station')}</span>
             <div className="text-sm font-semibold text-emerald-300 mt-1 flex items-center gap-1.5 truncate">
               <ScanFace className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span className="truncate">{enrollmentTerminal ? enrollmentTerminal.alias : 'None Assigned'}</span>
+              <span className="truncate">{enrollmentTerminal ? enrollmentTerminal.alias : (t('none_assigned') || 'None Assigned')}</span>
             </div>
           </div>
           <div className="bg-white/5 backdrop-blur-xs rounded-xl p-3 border border-white/5">
-            <span className="text-slate-400 block text-[11px]">ADMS Command Queue</span>
+            <span className="text-slate-400 block text-[11px]">{t('adms_command_queue')}</span>
             <div className="text-lg font-bold text-white mt-0.5 flex items-center gap-2">
               <TerminalIcon className="w-4 h-4 text-amber-400" />
               {totalPendingCommands}
-              <span className="text-[10px] text-slate-400 font-normal">Pending Dispatch</span>
+              <span className="text-[10px] text-slate-400 font-normal">{t('pending_dispatch') || 'Pending Dispatch'}</span>
             </div>
           </div>
           <div className="bg-white/5 backdrop-blur-xs rounded-xl p-3 border border-white/5">
-            <span className="text-slate-400 block text-[11px]">Raw Punches Ingested</span>
+            <span className="text-slate-400 block text-[11px]">{t('raw_punches')}</span>
             <div className="text-lg font-bold text-white mt-0.5 flex items-center gap-2">
               <Activity className="w-4 h-4 text-sky-400" />
               {transactions.length}
-              <span className="text-[10px] text-sky-300 font-normal">Transactions</span>
+              <span className="text-[10px] text-sky-300 font-normal">{t('transactions_count') || 'Transactions'}</span>
             </div>
           </div>
         </div>
@@ -700,7 +701,7 @@ export function HardwareTerminalsView() {
           }`}
         >
           <Server className="w-4 h-4 text-indigo-500" />
-          <span>Biometric Terminals Grid & Controls</span>
+          <span>{t('tab_terminals')}</span>
           <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400">
             {terminals.length}
           </span>
@@ -715,7 +716,7 @@ export function HardwareTerminalsView() {
           }`}
         >
           <Fingerprint className="w-4 h-4 text-emerald-500" />
-          <span>Biometric Enrollment & Badge Directory</span>
+          <span>{t('tab_directory')}</span>
           <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400">
             {employees.length}
           </span>
@@ -730,7 +731,7 @@ export function HardwareTerminalsView() {
           }`}
         >
           <Activity className="w-4 h-4 text-sky-500" />
-          <span>Raw ADMS Transactions & Smart Pairing Feed</span>
+          <span>{t('tab_transactions')}</span>
           <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-sky-50 dark:bg-sky-950 text-sky-600 dark:text-sky-400">
             {transactions.length}
           </span>
@@ -745,7 +746,7 @@ export function HardwareTerminalsView() {
           }`}
         >
           <TerminalIcon className="w-4 h-4 text-amber-500" />
-          <span>ADMS Command Queue (C:ID:CMD)</span>
+          <span>{t('tab_commands')}</span>
           {totalPendingCommands > 0 && (
             <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-amber-500 text-white font-bold animate-pulse">
               {totalPendingCommands}
@@ -760,9 +761,9 @@ export function HardwareTerminalsView() {
       {activeTab === 'terminals' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {terminals.map((t) => (
+            {terminals.map((tItem) => (
               <div
-                key={t.id}
+                key={tItem.id}
                 className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs hover:shadow-md transition-all flex flex-col justify-between"
               >
                 <div>
@@ -771,40 +772,40 @@ export function HardwareTerminalsView() {
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-mono text-xs font-bold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700">
-                          {t.sn}
+                          {tItem.sn}
                         </span>
-                        {t.is_enrollment_terminal && (
+                        {tItem.is_enrollment_terminal && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
                             <ScanFace className="w-3 h-3 text-indigo-500" />
-                            Enrollment Station
+                            {t('enrollment_station')}
                           </span>
                         )}
                       </div>
                       <h3 className="font-bold text-sm text-slate-900 dark:text-white mt-1.5">
-                        {t.alias}
+                        {tItem.alias}
                       </h3>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                        Group: <strong className="text-slate-700 dark:text-slate-300">{t.group_name || 'Standard Access'}</strong>
+                        Group: <strong className="text-slate-700 dark:text-slate-300">{tItem.group_name || 'Standard Access'}</strong>
                       </p>
                     </div>
 
                     <div className="flex flex-col items-end gap-1">
                       <span
                         className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                          t.state === 'active'
+                          tItem.state === 'active'
                             ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800'
                             : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
                         }`}
                       >
                         <span
                           className={`w-1.5 h-1.5 rounded-full ${
-                            t.state === 'active' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
+                            tItem.state === 'active' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
                           }`}
                         />
-                        {t.state === 'active' ? 'Active' : 'Idle'}
+                        {tItem.state === 'active' ? t('active_terminals') : t('idle_terminals')}
                       </span>
                       <span className="text-[10px] text-slate-400">
-                        {t.last_activity ? new Date(t.last_activity).toLocaleTimeString() : 'No Heartbeat'}
+                        {tItem.last_activity ? new Date(tItem.last_activity).toLocaleTimeString() : (t('no_heartbeat') || 'No Heartbeat')}
                       </span>
                     </div>
                   </div>
@@ -814,25 +815,25 @@ export function HardwareTerminalsView() {
                     <div>
                       <span className="text-slate-400 block text-[10px]">LAN IP</span>
                       <span className="font-mono font-medium text-slate-700 dark:text-slate-300">
-                        {t.lan_ip_address || 'DHCP'}
+                        {tItem.lan_ip_address || 'DHCP'}
                       </span>
                     </div>
                     <div>
                       <span className="text-slate-400 block text-[10px]">WAN Ingress</span>
                       <span className="font-mono font-medium text-slate-700 dark:text-slate-300">
-                        {t.ip_address || '127.0.0.1'}
+                        {tItem.ip_address || '127.0.0.1'}
                       </span>
                     </div>
                     <div>
                       <span className="text-slate-400 block text-[10px]">Firmware Algos</span>
                       <span className="text-slate-700 dark:text-slate-300 font-medium">
-                        FP: v{t.fp_algo} • Face: v{t.face_algo}
+                        FP: v{tItem.fp_algo} • Face: v{tItem.face_algo}
                       </span>
                     </div>
                     <div>
                       <span className="text-slate-400 block text-[10px]">Palm Shift Algo</span>
                       <span className="text-slate-700 dark:text-slate-300 font-medium">
-                        {t.palm_algo !== 'unknown' ? `v${t.palm_algo}` : 'N/A'}
+                        {tItem.palm_algo !== 'unknown' ? `v${tItem.palm_algo}` : 'N/A'}
                       </span>
                     </div>
                   </div>
@@ -840,20 +841,20 @@ export function HardwareTerminalsView() {
                   {/* Enrolled Counts Pill */}
                   <div className="grid grid-cols-4 gap-1.5 py-2 px-2.5 rounded-xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100/60 dark:border-indigo-900/40 text-center mb-4">
                     <div>
-                      <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Users</span>
-                      <span className="font-bold text-xs text-indigo-700 dark:text-indigo-300">{t.user_count}</span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{t('biometric_users')}</span>
+                      <span className="font-bold text-xs text-indigo-700 dark:text-indigo-300">{tItem.user_count}</span>
                     </div>
                     <div>
-                      <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Fingers</span>
-                      <span className="font-bold text-xs text-indigo-700 dark:text-indigo-300">{t.finger_count}</span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{t('biometric_fingers')}</span>
+                      <span className="font-bold text-xs text-indigo-700 dark:text-indigo-300">{tItem.finger_count}</span>
                     </div>
                     <div>
-                      <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Faces</span>
-                      <span className="font-bold text-xs text-indigo-700 dark:text-indigo-300">{t.face_count}</span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{t('biometric_faces')}</span>
+                      <span className="font-bold text-xs text-indigo-700 dark:text-indigo-300">{tItem.face_count}</span>
                     </div>
                     <div>
-                      <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Palms</span>
-                      <span className="font-bold text-xs text-indigo-700 dark:text-indigo-300">{t.palm_count}</span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{t('biometric_palms')}</span>
+                      <span className="font-bold text-xs text-indigo-700 dark:text-indigo-300">{tItem.palm_count}</span>
                     </div>
                   </div>
 
@@ -862,13 +863,13 @@ export function HardwareTerminalsView() {
                     <span>Queue:</span>
                     <div className="flex items-center gap-1.5">
                       <span className="px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 font-semibold text-[10px]">
-                        {t.pending_commands} pend
+                        {tItem.pending_commands} pend
                       </span>
                       <span className="px-1.5 py-0.2 rounded bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300 font-semibold text-[10px]">
-                        {t.sent_commands} sent
+                        {tItem.sent_commands} sent
                       </span>
                       <span className="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 font-semibold text-[10px]">
-                        {t.success_commands} ok
+                        {tItem.success_commands} ok
                       </span>
                     </div>
                   </div>
@@ -879,39 +880,39 @@ export function HardwareTerminalsView() {
                   <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
                     <div className="grid grid-cols-2 gap-1.5 text-xs">
                       <button
-                        onClick={() => handleTerminalAction(t.id, 'sync_users')}
+                        onClick={() => handleTerminalAction(tItem.id, 'sync_users')}
                         className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg font-medium bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 dark:bg-slate-800 dark:hover:bg-indigo-950 dark:hover:text-indigo-300 text-slate-700 dark:text-slate-200 transition-all border border-slate-200 dark:border-slate-700"
                         title="Broadcast all active employees & cards to terminal"
                       >
                         <Users className="w-3.5 h-3.5 text-indigo-500" />
-                        <span>Sync Users</span>
+                        <span>{t('sync_users')}</span>
                       </button>
 
                       <button
-                        onClick={() => handleTerminalAction(t.id, 'fix_time_qatar')}
+                        onClick={() => handleTerminalAction(tItem.id, 'fix_time_qatar')}
                         className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg font-medium bg-slate-100 hover:bg-amber-50 hover:text-amber-700 dark:bg-slate-800 dark:hover:bg-amber-950 dark:hover:text-amber-300 text-slate-700 dark:text-slate-200 transition-all border border-slate-200 dark:border-slate-700"
                         title="Set terminal internal RTC to Qatar Time (GMT+3)"
                       >
                         <Clock className="w-3.5 h-3.5 text-amber-500" />
-                        <span>Qatar Time</span>
+                        <span>{t('qatar_time')}</span>
                       </button>
 
                       <button
-                        onClick={() => handleTerminalAction(t.id, 'clear_admin')}
+                        onClick={() => handleTerminalAction(tItem.id, 'clear_admin')}
                         className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg font-medium bg-slate-100 hover:bg-purple-50 hover:text-purple-700 dark:bg-slate-800 dark:hover:bg-purple-950 dark:hover:text-purple-300 text-slate-700 dark:text-slate-200 transition-all border border-slate-200 dark:border-slate-700"
                         title="Remove admin lockout if password is lost"
                       >
                         <Unlock className="w-3.5 h-3.5 text-purple-500" />
-                        <span>Clear Admin</span>
+                        <span>{t('clear_admin')}</span>
                       </button>
 
                       <button
-                        onClick={() => handleTerminalAction(t.id, 'reboot')}
+                        onClick={() => handleTerminalAction(tItem.id, 'reboot')}
                         className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg font-medium bg-slate-100 hover:bg-rose-50 hover:text-rose-700 dark:bg-slate-800 dark:hover:bg-rose-950 dark:hover:text-rose-300 text-slate-700 dark:text-slate-200 transition-all border border-slate-200 dark:border-slate-700"
                         title="Reboot terminal device"
                       >
                         <Power className="w-3.5 h-3.5 text-rose-500" />
-                        <span>Reboot</span>
+                        <span>{t('reboot_device')}</span>
                       </button>
                     </div>
 
@@ -960,13 +961,13 @@ export function HardwareTerminalsView() {
           {/* Controls Bar */}
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
             <div className="relative w-full sm:w-80">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 placeholder="Search by name, PIN, RFID card, or dept..."
                 value={empSearchTerm}
                 onChange={(e) => setEmpSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
+                className="w-full ps-9 pe-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
               />
             </div>
 
@@ -974,7 +975,7 @@ export function HardwareTerminalsView() {
               <ScanFace className="w-4 h-4 text-emerald-500" />
               <span>Target Enrollment Station:</span>
               <strong className="text-slate-800 dark:text-slate-200">
-                {enrollmentTerminal ? enrollmentTerminal.alias : 'None (Select in Terminals Grid)'}
+                {enrollmentTerminal ? enrollmentTerminal.alias : (t('none_assigned') || 'None (Select in Terminals Grid)')}
               </strong>
             </div>
           </div>
@@ -982,7 +983,7 @@ export function HardwareTerminalsView() {
           {/* Directory Table */}
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-2xs">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+              <table className="w-full text-start text-xs">
                 <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 uppercase font-bold text-[10px] tracking-wider">
                   <tr>
                     <th className="py-3 px-4">Employee</th>
@@ -991,7 +992,7 @@ export function HardwareTerminalsView() {
                     <th className="py-3 px-3">Terminal Admin</th>
                     <th className="py-3 px-3">Access State</th>
                     <th className="py-3 px-3">Biometrics Registered</th>
-                    <th className="py-3 px-4 text-right">Remote Capture</th>
+                    <th className="py-3 px-4 text-end">Remote Capture</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
@@ -1063,7 +1064,7 @@ export function HardwareTerminalsView() {
                             </span>
                           </div>
                         </td>
-                        <td className="py-3 px-4 text-right">
+                        <td className="py-3 px-4 text-end">
                           <div className="flex items-center justify-end gap-1.5">
                             {canManageHardware && (
                               <>
@@ -1088,7 +1089,7 @@ export function HardwareTerminalsView() {
                                   className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
                                   title="Edit Hardware PIN / Card"
                                 >
-                                  <Sliders className="w-3.5 h-3.5" />
+                                  <Settings className="w-3.5 h-3.5" />
                                 </button>
                               </>
                             )}
@@ -1113,13 +1114,13 @@ export function HardwareTerminalsView() {
           <div className="flex flex-col md:flex-row items-center justify-between gap-3 bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
             <div className="flex items-center gap-3 w-full md:w-auto flex-wrap">
               <div className="relative w-full sm:w-64">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
                   placeholder="Search punches by name or PIN..."
                   value={txSearchTerm}
                   onChange={(e) => setTxSearchTerm(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
+                  className="w-full ps-9 pe-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
 
@@ -1161,7 +1162,7 @@ export function HardwareTerminalsView() {
           {/* Transactions Table */}
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-2xs">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+              <table className="w-full text-start text-xs">
                 <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 uppercase font-bold text-[10px] tracking-wider">
                   <tr>
                     <th className="py-3 px-4">Punch Time</th>
@@ -1170,7 +1171,7 @@ export function HardwareTerminalsView() {
                     <th className="py-3 px-3">Terminal SN</th>
                     <th className="py-3 px-3">Method</th>
                     <th className="py-3 px-3">Smart Pairing Outcome</th>
-                    <th className="py-3 px-4 text-right">Attendance Log</th>
+                    <th className="py-3 px-4 text-end">Attendance Log</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
@@ -1209,7 +1210,7 @@ export function HardwareTerminalsView() {
                         <td className="py-3 px-3">
                           {getPunchStateBadge(tx.punch_state)}
                         </td>
-                        <td className="py-3 px-4 text-right font-mono text-[10px] text-slate-400">
+                        <td className="py-3 px-4 text-end font-mono text-[10px] text-slate-400">
                           {tx.attendance_log_id ? (
                             <span className="inline-flex items-center gap-1 text-slate-600 dark:text-slate-300">
                               <Check className="w-3 h-3 text-emerald-500" />
@@ -1287,7 +1288,7 @@ export function HardwareTerminalsView() {
           {/* Commands Table */}
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-2xs">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+              <table className="w-full text-start text-xs">
                 <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 uppercase font-bold text-[10px] tracking-wider">
                   <tr>
                     <th className="py-3 px-4">Command ID</th>
@@ -1295,7 +1296,7 @@ export function HardwareTerminalsView() {
                     <th className="py-3 px-3">ADMS Payload (C:ID:CMD)</th>
                     <th className="py-3 px-3">Status</th>
                     <th className="py-3 px-3">Dispatched At</th>
-                    <th className="py-3 px-4 text-right">Updated</th>
+                    <th className="py-3 px-4 text-end">Updated</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
@@ -1321,7 +1322,7 @@ export function HardwareTerminalsView() {
                         <td className="py-3 px-3 text-[11px] text-slate-500">
                           {cmd.created_at ? new Date(cmd.created_at).toLocaleTimeString() : '—'}
                         </td>
-                        <td className="py-3 px-4 text-right text-[11px] text-slate-400 font-mono">
+                        <td className="py-3 px-4 text-end text-[11px] text-slate-400 font-mono">
                           {cmd.updated_at ? new Date(cmd.updated_at).toLocaleTimeString() : '—'}
                         </td>
                       </tr>

@@ -1,0 +1,41 @@
+{
+  "model": "organizations",
+  "title": "Organizations & Legal Entities",
+  "default_view": "list",
+  "newButtonLabel": "+ New Organization",
+  "header_actions": [
+    { "id": "act_create", "label": "New Organization", "action": "create", "type": "create" },
+    { "id": "act_delete", "label": "Delete Organization", "action": "delete", "type": "delete" }
+  ],
+  "fields": {
+    "id": { "type": "uuid", "label": "ID", "readonly": true },
+    "legal_name": { "type": "string", "label": "Legal Name", "required": true },
+    "trade_name": { "type": "string", "label": "Trade Name" },
+    "tax_id": { "type": "string", "label": "Tax / TIN ID" },
+    "commercial_registration_number": { "type": "string", "label": "CR Number" },
+    "country": { "type": "string", "label": "Country", "default": "QA" },
+    "currency": { "type": "string", "label": "Currency", "default": "QAR" },
+    "status": {
+      "type": "selection",
+      "label": "Status",
+      "options": [
+        { "value": "active", "label": "Active" },
+        { "value": "inactive", "label": "Inactive" }
+      ]
+    },
+    "created_at": { "type": "datetime", "label": "Created At", "readonly": true }
+  },
+  "views": {
+    "list": {
+      "columns": ["legal_name", "trade_name", "tax_id", "commercial_registration_number", "currency", "status"]
+    },
+    "form": {
+      "statusbar": {
+        "field": "status",
+        "buttons": [
+          { "id": "btn_activate", "label": "Activate", "action": "activate", "target": "active", "style": "primary" }
+        ]
+      }
+    }
+  }
+}

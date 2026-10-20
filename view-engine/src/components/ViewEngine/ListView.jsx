@@ -281,10 +281,11 @@ function RowItem({
   // Parse date and time separately using user preferences
   let dateFormatted = '—';
   let timeFormatted = '';
-  if (record.check_in) {
+  const dtRaw = record.start_time || record.check_in;
+  if (dtRaw) {
     try {
-      dateFormatted = formatDate(record.check_in);
-      const d = new Date(record.check_in);
+      dateFormatted = formatDate(dtRaw);
+      const d = new Date(dtRaw);
       if (!isNaN(d.getTime())) {
         if (timeFormat === '24h') {
           const hh = String(d.getHours()).padStart(2, '0');
@@ -299,7 +300,7 @@ function RowItem({
         }
       }
     } catch {
-      dateFormatted = record.check_in;
+      dateFormatted = dtRaw;
     }
   }
 
@@ -327,7 +328,7 @@ function RowItem({
       <td className="py-1 px-2.5 text-left rtl:text-right">
         <span
           className="font-semibold text-[12.5px] text-slate-100 truncate max-w-[200px] block"
-          title={`${record.employee_name}${record.terminal_id ? ` • Terminal: ${record.terminal_id}` : ''}`}
+          title={`${record.employee_name}${record.shift_name ? ` • ${record.shift_name}` : ''}${record.terminal_id ? ` • Terminal: ${record.terminal_id}` : ''}`}
         >
           {record.employee_name}
         </span>

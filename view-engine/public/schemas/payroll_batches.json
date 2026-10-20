@@ -1,0 +1,49 @@
+{
+  "model": "payroll_batches",
+  "title": "Payroll Batches & WPS Submissions",
+  "default_view": "list",
+  "newButtonLabel": "+ New Batch",
+  "header_actions": [
+    { "id": "act_create", "label": "New Batch", "action": "create", "type": "create" },
+    { "id": "act_delete", "label": "Delete Batch", "action": "delete", "type": "delete" }
+  ],
+  "fields": {
+    "id": { "type": "uuid", "label": "ID", "readonly": true },
+    "batch_code": { "type": "string", "label": "Batch Code", "required": true },
+    "salary_year_month": { "type": "string", "label": "Period (YYYY-MM)", "required": true },
+    "period_start": { "type": "date", "label": "Start Date", "required": true },
+    "period_end": { "type": "date", "label": "End Date", "required": true },
+    "total_employees": { "type": "integer", "label": "Employees Count" },
+    "total_base_salary": { "type": "float", "label": "Total Base Salary" },
+    "total_net_salary": { "type": "float", "label": "Total Net Salary" },
+    "status": {
+      "type": "selection",
+      "label": "Status",
+      "options": [
+        { "value": "draft", "label": "Draft" },
+        { "value": "calculated", "label": "Calculated" },
+        { "value": "approved", "label": "Approved" },
+        { "value": "paid", "label": "Paid / WPS Generated" },
+        { "value": "cancelled", "label": "Cancelled" }
+      ]
+    },
+    "organization_id": { "type": "uuid", "label": "Organization ID", "readonly": true },
+    "created_at": { "type": "datetime", "label": "Created At", "readonly": true },
+    "updated_at": { "type": "datetime", "label": "Updated At", "readonly": true }
+  },
+  "views": {
+    "list": {
+      "columns": ["batch_code", "salary_year_month", "period_start", "period_end", "total_employees", "total_base_salary", "total_net_salary", "status"]
+    },
+    "form": {
+      "statusbar": {
+        "field": "status",
+        "buttons": [
+          { "id": "btn_calc", "label": "Calculate Batch", "action": "calculate", "target": "calculated", "style": "warning" },
+          { "id": "btn_approve", "label": "Approve Batch", "action": "approve", "target": "approved", "style": "primary" },
+          { "id": "btn_pay", "label": "Execute Payment", "action": "pay", "target": "paid", "style": "success" }
+        ]
+      }
+    }
+  }
+}

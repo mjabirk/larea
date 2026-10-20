@@ -10,6 +10,7 @@ from backend.core.dependencies import (
     get_client_ip,
     check_permission,
     require_permission,
+    verify_record_tenant,
 )
 from backend.core.chat_engine import handle_employee_department_sync
 
@@ -123,7 +124,8 @@ async def list_employees(
     pool = get_db_pool()
     async with pool.acquire() as conn:
         query = """
-            SELECT e.*, g.name as grade_name, g.code as grade_code
+            SELECT e.*, g.name as grade_name, g.code as grade_code,
+                   COUNT(*) OVER() AS full_count
             FROM employees e
             LEFT JOIN employee_grades g ON e.grade_id = g.id
             WHERE 1=1
@@ -157,8 +159,18 @@ async def list_employees(
         params.extend([limit_val, offset_val])
 
         rows = await conn.fetch(query, *params)
-        employees = [mask_employee_salary(serialize_employee(dict(r)), session) for r in rows]
-        return {"employees": employees, "total": len(employees)}
+        total_count = int(rows[0]["full_count"]) if rows else 0
+        employees = []
+        for r in rows:
+            r_dict = dict(r)
+            r_dict.pop("full_count", None)
+            employees.append(mask_employee_salary(serialize_employee(r_dict), session))
+        return {
+            "employees": employees,
+            "total": total_count,
+            "limit": limit_val,
+            "offset": offset_val,
+        }
 
 @router.get("/{employee_id}")
 async def get_employee(
@@ -182,6 +194,7 @@ async def get_employee(
         """, emp_uuid)
         if not row:
             raise HTTPException(status_code=404, detail="Employee not found.")
+        verify_record_tenant(row["organization_id"], session)
         return mask_employee_salary(serialize_employee(dict(row)), session)
 
 
@@ -212,50 +225,54 @@ async def create_employee(
 
         client_ip = get_client_ip(request) if request else "127.0.0.1"
         branch_uuid = uuid.UUID(payload.branch_id) if payload.branch_id else await conn.fetchval("SELECT id FROM branches LIMIT 1;")
-        org_uuid = uuid.UUID(payload.organization_id) if payload.organization_id else await conn.fetchval("SELECT id FROM organizations LIMIT 1;")
+        if not session.get("is_superadmin") and session.get("organization_id"):
+            org_uuid = uuid.UUID(str(session["organization_id"]))
+        else:
+            org_uuid = uuid.UUID(payload.organization_id) if payload.organization_id else await conn.fetchval("SELECT id FROM organizations LIMIT 1;")
 
-        await conn.execute("""
-            INSERT INTO employees (
-                id, employee_number, first_name, last_name, full_name, display_name_local,
-                gender, date_of_birth, marital_status, nationality, job_title, department_id,
-                branch_id, employment_type, hire_date, probation_end_date, contract_end_date, status,
-                national_id_number, national_id_expiry, passport_number, passport_expiry,
-                visa_number, visa_expiry, work_permit_status, work_email, personal_email,
-                phone_country_code, phone_number, emergency_contact_name, emergency_contact_phone,
-                emergency_contact_relation, base_salary, currency, payment_method, bank_name,
-                bank_iban, bank_swift, organization_id, grade_id
-            ) VALUES (
-                $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                $13::uuid, $14, $15, $16, $17, $18, $19, $20,
-                $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                $32, $33, $34, $35, $36, $37, $38, $39::uuid, $40
-            );
-        """,
-            new_id, emp_number, payload.first_name.strip(), payload.last_name.strip(), full_name,
-            payload.display_name_local, payload.gender, parse_date(payload.date_of_birth), payload.marital_status,
-            payload.nationality, payload.job_title, payload.department_id, branch_uuid,
-            payload.employment_type, parse_date(payload.hire_date), parse_date(payload.probation_end_date),
-            parse_date(payload.contract_end_date), payload.status, payload.national_id_number,
-            parse_date(payload.national_id_expiry), payload.passport_number, parse_date(payload.passport_expiry),
-            payload.visa_number, parse_date(payload.visa_expiry), payload.work_permit_status,
-            payload.work_email, payload.personal_email, payload.phone_country_code,
-            payload.phone_number, payload.emergency_contact_name, payload.emergency_contact_phone,
-            payload.emergency_contact_relation, payload.base_salary, payload.currency,
-            payload.payment_method, payload.bank_name, payload.bank_iban, payload.bank_swift, org_uuid,
-            payload.grade_id.strip() if payload.grade_id and payload.grade_id.strip() else None
-        )
+        async with conn.transaction():
+            await conn.execute("""
+                INSERT INTO employees (
+                    id, employee_number, first_name, last_name, full_name, display_name_local,
+                    gender, date_of_birth, marital_status, nationality, job_title, department_id,
+                    branch_id, employment_type, hire_date, probation_end_date, contract_end_date, status,
+                    national_id_number, national_id_expiry, passport_number, passport_expiry,
+                    visa_number, visa_expiry, work_permit_status, work_email, personal_email,
+                    phone_country_code, phone_number, emergency_contact_name, emergency_contact_phone,
+                    emergency_contact_relation, base_salary, currency, payment_method, bank_name,
+                    bank_iban, bank_swift, organization_id, grade_id
+                ) VALUES (
+                    $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    $13::uuid, $14, $15, $16, $17, $18, $19, $20,
+                    $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
+                    $32, $33, $34, $35, $36, $37, $38, $39::uuid, $40
+                );
+            """,
+                new_id, emp_number, payload.first_name.strip(), payload.last_name.strip(), full_name,
+                payload.display_name_local, payload.gender, parse_date(payload.date_of_birth), payload.marital_status,
+                payload.nationality, payload.job_title, payload.department_id, branch_uuid,
+                payload.employment_type, parse_date(payload.hire_date), parse_date(payload.probation_end_date),
+                parse_date(payload.contract_end_date), payload.status, payload.national_id_number,
+                parse_date(payload.national_id_expiry), payload.passport_number, parse_date(payload.passport_expiry),
+                payload.visa_number, parse_date(payload.visa_expiry), payload.work_permit_status,
+                payload.work_email, payload.personal_email, payload.phone_country_code,
+                payload.phone_number, payload.emergency_contact_name, payload.emergency_contact_phone,
+                payload.emergency_contact_relation, payload.base_salary, payload.currency,
+                payload.payment_method, payload.bank_name, payload.bank_iban, payload.bank_swift, org_uuid,
+                payload.grade_id.strip() if payload.grade_id and payload.grade_id.strip() else None
+            )
 
-        user_id, author_name = await resolve_audit_author(conn, session)
+            user_id, author_name = await resolve_audit_author(conn, session)
 
-        # Log creation in audit_logs
-        await conn.execute("""
-            INSERT INTO audit_logs (
-                id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
-            ) VALUES (
-                $1::uuid, 'employees', $2, 'CREATE', $3, $4,
-                $5, $6
-            );
-        """, str(uuid.uuid4()), str(new_id), user_id, author_name, f"Created employee profile for {full_name} ({emp_number}).", client_ip)
+            # Log creation in audit_logs
+            await conn.execute("""
+                INSERT INTO audit_logs (
+                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
+                ) VALUES (
+                    $1::uuid, 'employees', $2, 'CREATE', $3, $4,
+                    $5, $6
+                );
+            """, str(uuid.uuid4()), str(new_id), user_id, author_name, f"Created employee profile for {full_name} ({emp_number}).", client_ip)
 
         created_row = await conn.fetchrow("""
             SELECT e.*, g.name as grade_name, g.code as grade_code
@@ -301,6 +318,7 @@ async def update_employee(
         existing = await conn.fetchrow("SELECT * FROM employees WHERE id = $1;", emp_uuid)
         if not existing:
             raise HTTPException(status_code=404, detail="Employee not found.")
+        verify_record_tenant(existing["organization_id"], session)
 
         old_dict = serialize_employee(dict(existing))
         full_name = payload.full_name or f"{payload.first_name.strip()} {payload.last_name.strip()}"
@@ -374,103 +392,95 @@ async def update_employee(
         old_grade_id = existing["grade_id"]
         new_grade_id = payload.grade_id.strip() if payload.grade_id and payload.grade_id.strip() else None
 
-        # Perform database update
-        await conn.execute("""
-            UPDATE employees SET
-                first_name = $2,
-                last_name = $3,
-                full_name = $4,
-                display_name_local = $5,
-                gender = $6,
-                date_of_birth = $7,
-                marital_status = $8,
-                nationality = $9,
-                job_title = $10,
-                department_id = $11,
-                employment_type = $12,
-                hire_date = $13,
-                probation_end_date = $14,
-                contract_end_date = $15,
-                status = $16,
-                national_id_number = $17,
-                national_id_expiry = $18,
-                passport_number = $19,
-                passport_expiry = $20,
-                visa_number = $21,
-                visa_expiry = $22,
-                work_permit_status = $23,
-                work_email = $24,
-                personal_email = $25,
-                phone_country_code = $26,
-                phone_number = $27,
-                emergency_contact_name = $28,
-                emergency_contact_phone = $29,
-                emergency_contact_relation = $30,
-                base_salary = $31,
-                currency = $32,
-                payment_method = $33,
-                bank_name = $34,
-                bank_iban = $35,
-                bank_swift = $36,
-                grade_id = $37,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $1;
-        """,
-            emp_uuid, payload.first_name.strip(), payload.last_name.strip(), full_name,
-            payload.display_name_local, payload.gender, parse_date(payload.date_of_birth), payload.marital_status,
-            payload.nationality, payload.job_title, payload.department_id,
-            payload.employment_type, parse_date(payload.hire_date), parse_date(payload.probation_end_date),
-            parse_date(payload.contract_end_date), payload.status, payload.national_id_number,
-            parse_date(payload.national_id_expiry), payload.passport_number, parse_date(payload.passport_expiry),
-            payload.visa_number, parse_date(payload.visa_expiry), payload.work_permit_status,
-            payload.work_email, payload.personal_email, payload.phone_country_code,
-            payload.phone_number, payload.emergency_contact_name, payload.emergency_contact_phone,
-            payload.emergency_contact_relation, payload.base_salary, payload.currency,
-            payload.payment_method, payload.bank_name, payload.bank_iban, payload.bank_swift,
-            new_grade_id
-        )
-
-        # If grade_id changed, automatically update active contract benefit lines configured with grade_based
-        if new_grade_id and old_grade_id != new_grade_id:
-            active_contract = await conn.fetchrow("""
-                SELECT id FROM employee_contracts
-                WHERE employee_id = $1 AND status = 'active'
-                ORDER BY created_at DESC LIMIT 1;
-            """, emp_uuid)
-            if active_contract:
-                gb_lines = await conn.fetch("""
-                    SELECT cbl.id, cbl.rule_id
-                    FROM contract_benefit_lines cbl
-                    JOIN salary_rules sr ON cbl.rule_id = sr.id
-                    WHERE cbl.contract_id = $1 AND (cbl.calculation_type = 'grade_based' OR sr.calculation_type = 'grade_based');
-                """, active_contract["id"])
-                for gbl in gb_lines:
-                    rate = await conn.fetchval("""
-                        SELECT amount FROM salary_rule_grade_rates
-                        WHERE rule_id = $1 AND grade_id = $2;
-                    """, gbl["rule_id"], new_grade_id)
-                    if rate is not None:
-                        new_amt = float(rate)
-                        await conn.execute("""
-                            UPDATE contract_benefit_lines
-                            SET amount_value = $1, computed_monthly_total = $1
-                            WHERE id = $2;
-                        """, new_amt, gbl["id"])
-
-        user_id, author_name = await resolve_audit_author(conn, session)
-
-        # Log changes in audit_logs if diff exists
-        if changes_diff:
-            import json
+        async with conn.transaction():
+            # Perform database update
             await conn.execute("""
-                INSERT INTO audit_logs (
-                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, changes, note, ip_address
-                ) VALUES (
-                    $1::uuid, 'employees', $2, 'UPDATE', $3, $4,
-                    $5::jsonb, $6, $7
-                );
-            """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name, json.dumps(changes_diff),
-                f"Updated {len(changes_diff)} fields on employee profile.", client_ip)
+                UPDATE employees SET
+                    first_name = $2,
+                    last_name = $3,
+                    full_name = $4,
+                    display_name_local = $5,
+                    gender = $6,
+                    date_of_birth = $7,
+                    marital_status = $8,
+                    nationality = $9,
+                    job_title = $10,
+                    department_id = $11,
+                    employment_type = $12,
+                    hire_date = $13,
+                    probation_end_date = $14,
+                    contract_end_date = $15,
+                    status = $16,
+                    national_id_number = $17,
+                    national_id_expiry = $18,
+                    passport_number = $19,
+                    passport_expiry = $20,
+                    visa_number = $21,
+                    visa_expiry = $22,
+                    work_permit_status = $23,
+                    work_email = $24,
+                    personal_email = $25,
+                    phone_country_code = $26,
+                    phone_number = $27,
+                    emergency_contact_name = $28,
+                    emergency_contact_phone = $29,
+                    emergency_contact_relation = $30,
+                    base_salary = $31,
+                    currency = $32,
+                    payment_method = $33,
+                    bank_name = $34,
+                    bank_iban = $35,
+                    bank_swift = $36,
+                    grade_id = $37,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $1;
+            """,
+                emp_uuid, payload.first_name.strip(), payload.last_name.strip(), full_name,
+                payload.display_name_local, payload.gender, parse_date(payload.date_of_birth), payload.marital_status,
+                payload.nationality, payload.job_title, payload.department_id,
+                payload.employment_type, parse_date(payload.hire_date), parse_date(payload.probation_end_date),
+                parse_date(payload.contract_end_date), payload.status, payload.national_id_number,
+                parse_date(payload.national_id_expiry), payload.passport_number, parse_date(payload.passport_expiry),
+                payload.visa_number, parse_date(payload.visa_expiry), payload.work_permit_status,
+                payload.work_email, payload.personal_email, payload.phone_country_code,
+                payload.phone_number, payload.emergency_contact_name, payload.emergency_contact_phone,
+                payload.emergency_contact_relation, payload.base_salary, payload.currency,
+                payload.payment_method, payload.bank_name, payload.bank_iban, payload.bank_swift,
+                new_grade_id
+            )
+
+            # If grade_id changed, automatically update active contract benefit lines configured with grade_based
+            if new_grade_id and old_grade_id != new_grade_id:
+                active_contract = await conn.fetchrow("""
+                    SELECT id FROM employee_contracts
+                    WHERE employee_id = $1 AND status = 'active'
+                    ORDER BY created_at DESC LIMIT 1;
+                """, emp_uuid)
+                if active_contract:
+                    await conn.execute("""
+                        UPDATE contract_benefit_lines cbl
+                        SET amount_value = srgr.amount,
+                            computed_monthly_total = srgr.amount
+                        FROM salary_rule_grade_rates srgr
+                        WHERE cbl.rule_id = srgr.rule_id
+                          AND srgr.grade_id = $1
+                          AND cbl.contract_id = $2;
+                    """, new_grade_id, active_contract["id"])
+
+            user_id, author_name = await resolve_audit_author(conn, session)
+
+            # Log changes in audit_logs if diff exists
+            if changes_diff:
+                import json
+                await conn.execute("""
+                    INSERT INTO audit_logs (
+                        id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, changes, note, ip_address
+                    ) VALUES (
+                        $1::uuid, 'employees', $2, 'UPDATE', $3, $4,
+                        $5::jsonb, $6, $7
+                    );
+                """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name, json.dumps(changes_diff),
+                    f"Updated {len(changes_diff)} fields on employee profile.", client_ip)
 
         updated_row = await conn.fetchrow("""
             SELECT e.*, g.name as grade_name, g.code as grade_code
@@ -514,21 +524,23 @@ async def delete_employee(
         raise HTTPException(status_code=400, detail="Invalid employee UUID.")
 
     async with pool.acquire() as conn:
-        emp = await conn.fetchrow("SELECT full_name, employee_number FROM employees WHERE id = $1;", emp_uuid)
+        emp = await conn.fetchrow("SELECT full_name, employee_number, organization_id FROM employees WHERE id = $1;", emp_uuid)
         if not emp:
             raise HTTPException(status_code=404, detail="Employee not found.")
+        verify_record_tenant(emp["organization_id"], session)
 
         client_ip = get_client_ip(request) if request else "127.0.0.1"
         user_id, author_name = await resolve_audit_author(conn, session)
 
-        await conn.execute("DELETE FROM employees WHERE id = $1;", emp_uuid)
+        async with conn.transaction():
+            await conn.execute("DELETE FROM employees WHERE id = $1;", emp_uuid)
 
-        await conn.execute("""
-            INSERT INTO audit_logs (
-                id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
-            ) VALUES (
-                $1::uuid, 'employees', $2, 'DELETE', $3, $4, $5, $6
-            );
-        """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name, f"Deleted employee record: {emp['full_name']} ({emp['employee_number']}).", client_ip)
+            await conn.execute("""
+                INSERT INTO audit_logs (
+                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
+                ) VALUES (
+                    $1::uuid, 'employees', $2, 'DELETE', $3, $4, $5, $6
+                );
+            """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name, f"Deleted employee record: {emp['full_name']} ({emp['employee_number']}).", client_ip)
 
     return {"status": "success", "message": "Employee deleted."}

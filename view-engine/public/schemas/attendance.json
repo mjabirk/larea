@@ -6,6 +6,12 @@
     "dual_control_enforced": true,
     "sod_rule": "SOD_ATTENDANCE_VS_PAYROLL"
   },
+  "default_view": "list",
+  "newButtonLabel": "+ Log Attendance",
+  "header_actions": [
+    { "id": "act_create", "label": "Log Attendance", "action": "create", "type": "create" },
+    { "id": "act_delete", "label": "Delete Log", "action": "delete", "type": "delete" }
+  ],
   "fields": {
     "id": { "type": "integer", "label": "ID", "readonly": true },
     "employee_name": { "type": "string", "label": "Employee", "required": true },

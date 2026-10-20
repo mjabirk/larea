@@ -41,6 +41,18 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
   const [isDirty, setIsDirty] = useState(false);
   const formRef = useRef(null);
 
+  // Unsaved changes beforeunload listener
+  useEffect(() => {
+    if (!isDirty) return;
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
+
   const getHeaders = (hasBody = true) => {
     const headers = {};
     if (hasBody) headers['Content-Type'] = 'application/json';
@@ -163,6 +175,9 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
       {
         label: 'Employees',
         onClick: () => {
+          if (isDirty && !window.confirm('You have unsaved changes. Discard and return to list?')) {
+            return;
+          }
           setViewMode('list');
           setSelectedEmployee(null);
           setIsDirty(false);
@@ -171,7 +186,7 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
       },
       { label: selectedEmployee?.full_name || 'New Employee Profile' },
     ];
-  }, [viewMode, selectedEmployee, onBackToList]);
+  }, [viewMode, selectedEmployee, onBackToList, isDirty]);
 
   // Standard Active Record Pill
   const activeRecordPill = useMemo(() => {
@@ -192,12 +207,18 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
       label: `${currentIndex + 1} of ${filteredEmployees.length}`,
       onPrev: () => {
         if (currentIndex > 0) {
+          if (isDirty && !window.confirm('You have unsaved changes. Discard and switch employee?')) {
+            return;
+          }
           setSelectedEmployee(filteredEmployees[currentIndex - 1]);
           setIsDirty(false);
         }
       },
       onNext: () => {
         if (currentIndex < filteredEmployees.length - 1) {
+          if (isDirty && !window.confirm('You have unsaved changes. Discard and switch employee?')) {
+            return;
+          }
           setSelectedEmployee(filteredEmployees[currentIndex + 1]);
           setIsDirty(false);
         }
@@ -205,21 +226,30 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
       canPrev: currentIndex > 0,
       canNext: currentIndex < filteredEmployees.length - 1,
     };
-  }, [viewMode, currentIndex, filteredEmployees]);
+  }, [viewMode, currentIndex, filteredEmployees, isDirty]);
 
   const handleSelectEmployee = (emp) => {
+    if (isDirty && !window.confirm('You have unsaved changes. Discard and open selected employee?')) {
+      return;
+    }
     setSelectedEmployee(emp);
     setViewMode('form');
     setIsDirty(false);
   };
 
   const handleNewEmployee = () => {
+    if (isDirty && !window.confirm('You have unsaved changes. Discard and create new employee?')) {
+      return;
+    }
     setSelectedEmployee(null);
     setViewMode('form');
     setIsDirty(true);
   };
 
   const handleBack = () => {
+    if (isDirty && !window.confirm('You have unsaved changes. Discard and return to list?')) {
+      return;
+    }
     setViewMode('list');
     setSelectedEmployee(null);
     setIsDirty(false);
@@ -229,6 +259,9 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
 
   // View switcher toggle
   const handleViewChange = (newView) => {
+    if (isDirty && !window.confirm('You have unsaved changes. Discard and switch view?')) {
+      return;
+    }
     if (newView === 'list') {
       setViewMode('list');
       setSelectedEmployee(null);

@@ -37,6 +37,58 @@ MEDIA_STORAGE_DIR = os.path.join(os.getcwd(), "storage", "whatsapp_media")
 
 
 # ==============================================================================
+# 0. SSRF PROTECTION HELPER
+# ==============================================================================
+
+def validate_external_target_ip(hostname: str) -> None:
+    """
+    Validates that a target hostname or IP address resolves exclusively to safe public IPs.
+    When settings.APP_ENV != "development", resolves all IPs via socket.getaddrinfo and rejects:
+    - ip.is_loopback
+    - ip.is_link_local
+    - ip.is_private
+    - ip.is_reserved
+    - ip.is_multicast
+    - Cloud metadata IP (169.254.169.254)
+    Raises ValueError on SSRF violations or if resolution fails.
+    """
+    if getattr(settings, "APP_ENV", "development") == "development":
+        return
+
+    if not hostname:
+        raise ValueError("Invalid target: missing hostname or IP address.")
+
+    clean_host = hostname.strip().strip("[]")
+    try:
+        addr_info = socket.getaddrinfo(clean_host, None)
+    except Exception as e:
+        raise ValueError(f"SSRF validation error: could not resolve hostname '{clean_host}': {str(e)}") from e
+
+    if not addr_info:
+        raise ValueError(f"SSRF validation error: no IP addresses resolved for hostname '{clean_host}'.")
+
+    for _, _, _, _, sockaddr in addr_info:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            raise ValueError(f"SSRF validation error: invalid resolved IP address '{ip_str}'.")
+
+        if (
+            ip.is_loopback
+            or ip.is_link_local
+            or ip.is_private
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip_str == "169.254.169.254"
+        ):
+            raise ValueError(
+                f"SSRF violation: Target '{clean_host}' resolves to restricted IP '{ip_str}' "
+                "(loopback, private, link-local, reserved, or multicast)."
+            )
+
+
+# ==============================================================================
 # 1. PHONE NUMBER NORMALIZER & VALIDATOR (E.164)
 # ==============================================================================
 
@@ -233,22 +285,16 @@ class SMSDispatcher:
             else:
                 body_payload = {"to": clean_phone, "message": message, "sender_id": sender}
 
-        # SSRF Protection: when settings.APP_ENV != "development", parse hostname, resolve IP, and reject loopback/metadata
+        # SSRF Protection: when settings.APP_ENV != "development", parse hostname and validate IP addresses
         if getattr(settings, "APP_ENV", "development") != "development":
             try:
                 parsed_url = urllib.parse.urlparse(url)
                 hostname = parsed_url.hostname
                 if not hostname:
                     return False, None, "Invalid SMS endpoint URL: missing hostname."
-
-                ip_addrs = socket.getaddrinfo(hostname, None)
-                for _, _, _, _, sockaddr in ip_addrs:
-                    ip_str = sockaddr[0]
-                    ip_obj = ipaddress.ip_address(ip_str)
-                    if ip_obj.is_loopback:
-                        return False, None, f"Forbidden target IP address (Loopback / SSRF blocked: {ip_str})."
-                    if ip_str == "169.254.169.254" or ip_obj.is_link_local:
-                        return False, None, f"Forbidden target IP address (Cloud Metadata / SSRF blocked: {ip_str})."
+                validate_external_target_ip(hostname)
+            except ValueError as e:
+                return False, None, f"Forbidden target IP address ({str(e)})."
             except Exception as e:
                 return False, None, f"SSRF URL Validation error: {str(e)}"
 
@@ -319,7 +365,7 @@ class WhatsAppMetaService:
                 "success": True,
                 "status": "connected",
                 "phone_number": config.get("business_phone_number", "+974 4400 5500"),
-                "verified_name": "Apex Global Enterprises Q.P.S.C.",
+                "verified_name": config.get("account_name") or config.get("verified_name") or "Enterprise Corporate Entity",
                 "quality_rating": "GREEN",
                 "message": "Meta Cloud API handshake verified successfully (Simulated environment)."
             }
@@ -586,8 +632,14 @@ async def execute_automation_trigger(
     now = datetime.datetime.now(datetime.timezone.utc)
     results = []
 
+    # 1. Fetch triggers, recipient phone, and WhatsApp config, then release connection immediately
+    triggers = []
+    clean_phone = None
+    recip_name = record_data.get("employee_name") or record_data.get("recipient_name") or "Authorized Recipient"
+    wa_config = None
+
     async with pool.acquire() as conn:
-        triggers = await conn.fetch("""
+        triggers_rows = await conn.fetch("""
             SELECT t.*,
                    wt.template_name as wa_tmpl_name, wt.category as wa_category,
                    wt.language as wa_lang, wt.header_type as wa_header,
@@ -602,6 +654,7 @@ async def execute_automation_trigger(
             LEFT JOIN sms_gateways sg ON t.sms_gateway_id = sg.id
             WHERE t.event_type = $1 AND t.active = true;
         """, event_type)
+        triggers = [dict(tr) for tr in triggers_rows]
 
         if not triggers:
             return results
@@ -609,183 +662,209 @@ async def execute_automation_trigger(
         # Resolve recipient phone
         raw_phone = record_data.get("phone_number") or record_data.get("recipient_phone") or record_data.get("mobile")
         if not raw_phone:
-            # Try to fetch from employee table if employee_id present
             emp_id = record_data.get("employee_id")
             if emp_id:
                 emp_phone = await conn.fetchval("SELECT phone_number FROM employees WHERE id = $1::uuid;", str(emp_id))
                 raw_phone = emp_phone
 
-        if not raw_phone:
-            logger.warning(f"Automation trigger '{event_type}' could not resolve recipient phone for record {record_id}.")
-            return results
+        if raw_phone:
+            clean_phone = sanitize_e164_phone(raw_phone)
 
-        clean_phone = sanitize_e164_phone(raw_phone)
-        recip_name = record_data.get("employee_name") or record_data.get("recipient_name") or "Authorized Recipient"
-
-        for tr in triggers:
-            tr_id = str(tr["id"])
-            channel = tr["channel"]
-            comm_log_id = uuid.uuid4()
-            media_meta = None
-            msg_body = ""
-
-            if channel == "whatsapp":
-                wa_cfg_row = await conn.fetchrow("""
-                    SELECT * FROM whatsapp_configs WHERE is_default = true AND active = true LIMIT 1;
-                """)
-                if not wa_cfg_row:
-                    logger.warning("No active WhatsApp configuration found.")
-                    continue
-
+        has_whatsapp_trigger = any(tr.get("channel") == "whatsapp" for tr in triggers)
+        if has_whatsapp_trigger:
+            wa_cfg_row = await conn.fetchrow("""
+                SELECT * FROM whatsapp_configs WHERE is_default = true AND active = true LIMIT 1;
+            """)
+            if wa_cfg_row:
                 wa_config = dict(wa_cfg_row)
-                tmpl_dict = {
-                    "id": str(tr["whatsapp_template_id"]),
-                    "template_name": tr["wa_tmpl_name"],
-                    "category": tr["wa_category"],
-                    "language": tr["wa_lang"],
-                    "header_type": tr["wa_header"],
-                    "body_text": tr["wa_body"],
-                    "approval_status": tr["wa_status"],
-                }
 
-                # Resolve variables
-                var_mapping = {}
-                if tr["wa_var_map"]:
+    # 2. Guard against missing recipient phone
+    if not clean_phone:
+        logger.warning(f"Automation trigger '{event_type}' could not resolve recipient phone for record {record_id}.")
+        return results
+
+    # 3. Execute external dispatches and PDF generation without holding a database connection
+    for tr in triggers:
+        tr_id = str(tr["id"])
+        channel = tr["channel"]
+        comm_log_id = uuid.uuid4()
+        media_meta = None
+        msg_body = ""
+
+        if channel == "whatsapp":
+            if not wa_config:
+                logger.warning("No active WhatsApp configuration found.")
+                continue
+
+            tmpl_dict = {
+                "id": str(tr["whatsapp_template_id"]),
+                "template_name": tr["wa_tmpl_name"],
+                "category": tr["wa_category"],
+                "language": tr["wa_lang"],
+                "header_type": tr["wa_header"],
+                "body_text": tr["wa_body"],
+                "approval_status": tr["wa_status"],
+            }
+
+            # Resolve variables
+            var_mapping = {}
+            if tr["wa_var_map"]:
+                try:
+                    var_mapping = json.loads(tr["wa_var_map"])
+                except Exception:
+                    var_mapping = {}
+
+            var_values = {}
+            for pos, f_key in var_mapping.items():
+                var_values[str(pos)] = str(record_data.get(f_key, ""))
+
+            msg_body = tr["wa_body"] or ""
+            for pos, val in var_values.items():
+                msg_body = msg_body.replace(f"{{{{{pos}}}}}", val)
+
+            # Generate PDF outside DB connection
+            if tr["wa_header"] == "DOCUMENT" and "payslip" in record_model.lower():
+                batch_mock = {"salary_year_month": record_data.get("month", "Monthly"), "name": "Standard Payroll Run"}
+                org_info = None
+                pool = get_db_pool()
+                if pool:
                     try:
-                        var_mapping = json.loads(tr["wa_var_map"])
+                        async with pool.acquire() as o_conn:
+                            org_id = record_data.get("organization_id")
+                            org_r = await o_conn.fetchrow("SELECT * FROM organizations WHERE id = $1;", org_id) if org_id else None
+                            if not org_r:
+                                org_r = await o_conn.fetchrow("SELECT * FROM organizations ORDER BY created_at ASC LIMIT 1;")
+                            if org_r:
+                                org_info = dict(org_r)
+                            w_val = await o_conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:qatar_wps_config';")
+                            if w_val:
+                                try:
+                                    w_cfg = json.loads(w_val) if isinstance(w_val, str) else dict(w_val)
+                                    if not org_info:
+                                        org_info = {}
+                                    org_info["employer_eid"] = w_cfg.get("employer_eid")
+                                except Exception:
+                                    pass
                     except Exception:
-                        var_mapping = {}
+                        pass
+                pdf_res = await asyncio.to_thread(generate_payslip_pdf_report, record_data, batch_mock, org_info)
+                with open(pdf_res["abs_path"], "rb") as f:
+                    media_meta = save_whatsapp_media(pdf_res["filename"], f.read(), "application/pdf")
 
-                # Map positional values: {"1": value, "2": value}
-                var_values = {}
-                for pos, f_key in var_mapping.items():
-                    var_values[str(pos)] = str(record_data.get(f_key, ""))
+            success, provider_id, err = await asyncio.to_thread(
+                WhatsAppMetaService.send_template_message,
+                config=wa_config,
+                to_phone=clean_phone,
+                template=tmpl_dict,
+                variable_values=var_values,
+                media_attachment=media_meta
+            )
 
-                # Replace in body preview
-                msg_body = tr["wa_body"] or ""
-                for pos, val in var_values.items():
-                    msg_body = msg_body.replace(f"{{{{{pos}}}}}", val)
+            log_status = "sent" if success else "failed"
 
-                # If document header requested on payslip, generate PDF
-                if tr["wa_header"] == "DOCUMENT" and "payslip" in record_model.lower():
-                    batch_mock = {"salary_year_month": record_data.get("month", "Monthly"), "name": "Standard Payroll Run"}
-                    pdf_res = await asyncio.to_thread(generate_payslip_pdf_report, record_data, batch_mock)
-                    # Persist to whatsapp_media
-                    with open(pdf_res["abs_path"], "rb") as f:
-                        media_meta = save_whatsapp_media(pdf_res["filename"], f.read(), "application/pdf")
+            # 4. Re-acquire connection briefly to insert communication_logs and audit_logs
+            chat_id = uuid.uuid4()
+            entity_type = record_model.replace("payroll.", "").replace("hr.", "")
+            chatter_note = f"WhatsApp Message Sent to {clean_phone} using template '{tr['wa_tmpl_name']}'."
+            if not success:
+                chatter_note = f"WhatsApp Message Failed to {clean_phone}: {err}"
 
-                success, provider_id, err = await asyncio.to_thread(
-                    WhatsAppMetaService.send_template_message,
-                    config=wa_config,
-                    to_phone=clean_phone,
-                    template=tmpl_dict,
-                    variable_values=var_values,
-                    media_attachment=media_meta
-                )
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("""
+                        INSERT INTO communication_logs (
+                            id, channel, direction, recipient_phone, recipient_name,
+                            message_body, template_id, record_model, record_id,
+                            status, provider_message_id, error_message, attachment_disk_path, created_at
+                        ) VALUES ($1, 'whatsapp', 'outgoing', $2, $3, $4, $5::uuid, $6, $7, $8, $9, $10, $11, $12);
+                    """, comm_log_id, clean_phone, recip_name, msg_body, tr["whatsapp_template_id"],
+                        record_model, record_id, log_status, provider_id, err,
+                        media_meta["disk_path"] if media_meta else None, now)
 
-                log_status = "sent" if success else "failed"
+                    await conn.execute("""
+                        INSERT INTO audit_logs (
+                            id, entity_type, entity_id, action, changed_by_name, note, changes, ip_address, created_at
+                        ) VALUES ($1, $2, $3, 'WHATSAPP', $4, $5, $6::jsonb, '127.0.0.1', $7);
+                    """, chat_id, entity_type, record_id, author_name, chatter_note,
+                        json.dumps({
+                            "channel": "whatsapp",
+                            "recipient": clean_phone,
+                            "template": tr["wa_tmpl_name"],
+                            "status": log_status,
+                            "wamid": provider_id,
+                            "has_media": bool(media_meta)
+                        }), now)
 
-                # Log communication
-                await conn.execute("""
-                    INSERT INTO communication_logs (
-                        id, channel, direction, recipient_phone, recipient_name,
-                        message_body, template_id, record_model, record_id,
-                        status, provider_message_id, error_message, attachment_disk_path, created_at
-                    ) VALUES ($1, 'whatsapp', 'outgoing', $2, $3, $4, $5::uuid, $6, $7, $8, $9, $10, $11, $12);
-                """, comm_log_id, clean_phone, recip_name, msg_body, tr["whatsapp_template_id"],
-                    record_model, record_id, log_status, provider_id, err,
-                    media_meta["disk_path"] if media_meta else None, now)
+            results.append({
+                "trigger": tr["name"],
+                "channel": "whatsapp",
+                "status": log_status,
+                "provider_id": provider_id,
+                "error": err
+            })
 
-                # Sync to Record Chatter (audit_logs)
-                chat_id = uuid.uuid4()
-                entity_type = record_model.replace("payroll.", "").replace("hr.", "")
-                chatter_note = f"WhatsApp Message Sent to {clean_phone} using template '{tr['wa_tmpl_name']}'."
-                if not success:
-                    chatter_note = f"WhatsApp Message Failed to {clean_phone}: {err}"
+        elif channel == "sms":
+            gw_dict = {
+                "name": tr["sg_name"],
+                "provider_type": tr["sg_provider"],
+                "endpoint_url": tr["sg_url"],
+                "http_method": tr["sg_method"],
+                "request_format": tr["sg_format"],
+                "headers_json": tr["sg_headers"],
+                "body_template": tr["sg_body_tmpl"],
+                "sender_id": tr["sg_sender"]
+            }
+            sms_text = tr["sms_body_template"] or "Notice from Apex Global HR."
+            for k, v in record_data.items():
+                sms_text = sms_text.replace(f"{{{{{k}}}}}", str(v))
 
-                await conn.execute("""
-                    INSERT INTO audit_logs (
-                        id, entity_type, entity_id, action, changed_by_name, note, changes, ip_address, created_at
-                    ) VALUES ($1, $2, $3, 'WHATSAPP', $4, $5, $6::jsonb, '127.0.0.1', $7);
-                """, chat_id, entity_type, record_id, author_name, chatter_note,
-                    json.dumps({
-                        "channel": "whatsapp",
-                        "recipient": clean_phone,
-                        "template": tr["wa_tmpl_name"],
-                        "status": log_status,
-                        "wamid": provider_id,
-                        "has_media": bool(media_meta)
-                    }), now)
+            success, provider_id, err = await asyncio.to_thread(
+                SMSDispatcher.send_sms,
+                gateway=gw_dict,
+                to_phone=clean_phone,
+                message=sms_text,
+                sender_id=tr["sg_sender"]
+            )
 
-                results.append({
-                    "trigger": tr["name"],
-                    "channel": "whatsapp",
-                    "status": log_status,
-                    "provider_id": provider_id,
-                    "error": err
-                })
+            log_status = "sent" if success else "failed"
 
-            elif channel == "sms":
-                gw_dict = {
-                    "name": tr["sg_name"],
-                    "provider_type": tr["sg_provider"],
-                    "endpoint_url": tr["sg_url"],
-                    "http_method": tr["sg_method"],
-                    "request_format": tr["sg_format"],
-                    "headers_json": tr["sg_headers"],
-                    "body_template": tr["sg_body_tmpl"],
-                    "sender_id": tr["sg_sender"]
-                }
-                # Interpolate SMS template with record_data
-                sms_text = tr["sms_body_template"] or "Notice from Apex Global HR."
-                for k, v in record_data.items():
-                    sms_text = sms_text.replace(f"{{{{{k}}}}}", str(v))
+            chat_id = uuid.uuid4()
+            entity_type = record_model.replace("payroll.", "").replace("hr.", "")
+            chatter_note = f"SMS Alert Sent to {clean_phone} via {tr['sg_name']}."
+            if not success:
+                chatter_note = f"SMS Dispatch Failed to {clean_phone}: {err}"
 
-                success, provider_id, err = await asyncio.to_thread(
-                    SMSDispatcher.send_sms,
-                    gateway=gw_dict,
-                    to_phone=clean_phone,
-                    message=sms_text,
-                    sender_id=tr["sg_sender"]
-                )
+            # Re-acquire connection briefly to insert communication_logs and audit_logs
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("""
+                        INSERT INTO communication_logs (
+                            id, channel, direction, recipient_phone, recipient_name,
+                            message_body, template_id, record_model, record_id,
+                            status, provider_message_id, error_message, attachment_disk_path, created_at
+                        ) VALUES ($1, 'sms', 'outgoing', $2, $3, $4, NULL, $5, $6, $7, $8, $9, NULL, $10);
+                    """, comm_log_id, clean_phone, recip_name, sms_text,
+                        record_model, record_id, log_status, provider_id, err, now)
 
-                log_status = "sent" if success else "failed"
+                    await conn.execute("""
+                        INSERT INTO audit_logs (
+                            id, entity_type, entity_id, action, changed_by_name, note, changes, ip_address, created_at
+                        ) VALUES ($1, $2, $3, 'SMS', $4, $5, $6::jsonb, '127.0.0.1', $7);
+                    """, chat_id, entity_type, record_id, author_name, chatter_note,
+                        json.dumps({
+                            "channel": "sms",
+                            "recipient": clean_phone,
+                            "gateway": tr["sg_name"],
+                            "status": log_status,
+                            "provider_id": provider_id
+                        }), now)
 
-                await conn.execute("""
-                    INSERT INTO communication_logs (
-                        id, channel, direction, recipient_phone, recipient_name,
-                        message_body, template_id, record_model, record_id,
-                        status, provider_message_id, error_message, attachment_disk_path, created_at
-                    ) VALUES ($1, 'sms', 'outgoing', $2, $3, $4, NULL, $5, $6, $7, $8, $9, NULL, $10);
-                """, comm_log_id, clean_phone, recip_name, sms_text,
-                    record_model, record_id, log_status, provider_id, err, now)
-
-                # Sync to Record Chatter (audit_logs)
-                chat_id = uuid.uuid4()
-                entity_type = record_model.replace("payroll.", "").replace("hr.", "")
-                chatter_note = f"SMS Alert Sent to {clean_phone} via {tr['sg_name']}."
-                if not success:
-                    chatter_note = f"SMS Dispatch Failed to {clean_phone}: {err}"
-
-                await conn.execute("""
-                    INSERT INTO audit_logs (
-                        id, entity_type, entity_id, action, changed_by_name, note, changes, ip_address, created_at
-                    ) VALUES ($1, $2, $3, 'SMS', $4, $5, $6::jsonb, '127.0.0.1', $7);
-                """, chat_id, entity_type, record_id, author_name, chatter_note,
-                    json.dumps({
-                        "channel": "sms",
-                        "recipient": clean_phone,
-                        "gateway": tr["sg_name"],
-                        "status": log_status,
-                        "provider_id": provider_id
-                    }), now)
-
-                results.append({
-                    "trigger": tr["name"],
-                    "channel": "sms",
-                    "status": log_status,
-                    "provider_id": provider_id,
-                    "error": err
-                })
+            results.append({
+                "trigger": tr["name"],
+                "channel": "sms",
+                "status": log_status,
+                "provider_id": provider_id,
+                "error": err
+            })
 
     return results

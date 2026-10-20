@@ -4,6 +4,7 @@ import hashlib
 import datetime
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
+from backend.core.sequences import uuid7
 
 
 class AuditLog(BaseModel):
@@ -123,7 +124,7 @@ async def record_audit_log(
         canonical_payload=canonical_payload,
     )
 
-    log_id = uuid.uuid4()
+    log_id = uuid7()
     changes_json = json.dumps(changes) if changes is not None else None
 
     # 3. Insert append-only record
@@ -233,20 +234,27 @@ async def verify_audit_chain(conn, tenant_id: Optional[str] = None) -> Dict[str,
             )
 
             if actual_row != computed_hash:
-                t_valid = False
-                all_valid = False
-                err_msg = (
-                    f"Cryptographic digest mismatch at sequence {idx} (row {row_id}): "
-                    f"stored row_hash '{actual_row}' != computed '{computed_hash}'."
-                )
-                t_errors.append(err_msg)
-                tampered_records.append({
-                    "id": row_id,
-                    "tenant_id": t_id,
-                    "sequence": idx,
-                    "error_type": "HASH_MISMATCH",
-                    "detail": err_msg,
-                })
+                # Check PostgreSQL enforce_audit_log_hash_chain trigger fallback
+                pg_dt_str = created_at.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00") if created_at else ""
+                changes_str = r['changes'] if r['changes'] is not None else '{}'
+                raw_trigger = f"{t_id}{actual_prev}{pg_dt_str}{user_id_str}{action}{resource}{changes_str}"
+                trigger_hash = hashlib.sha256(raw_trigger.encode("utf-8")).hexdigest()
+
+                if actual_row != trigger_hash:
+                    t_valid = False
+                    all_valid = False
+                    err_msg = (
+                        f"Cryptographic digest mismatch at sequence {idx} (row {row_id}): "
+                        f"stored row_hash '{actual_row}' != computed '{computed_hash}'."
+                    )
+                    t_errors.append(err_msg)
+                    tampered_records.append({
+                        "id": row_id,
+                        "tenant_id": t_id,
+                        "sequence": idx,
+                        "error_type": "HASH_MISMATCH",
+                        "detail": err_msg,
+                    })
 
             expected_prev_hash = actual_row
 

@@ -1,4 +1,13 @@
+import React from 'react';
 import { UserListView } from './UserListView';
 
-export const UsersView = UserListView;
-export default UserListView;
+/**
+ * UsersView (Wrapper with proper prop forwarding)
+ * Re-exports UserListView which houses the system users and accounts management view.
+ */
+export function UsersView(props) {
+  return <UserListView {...props} />;
+}
+
+export { UserListView };
+export default UsersView;

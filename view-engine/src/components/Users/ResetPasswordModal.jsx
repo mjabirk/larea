@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { KeyRound, X, Check, Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { useTenancy } from '../../context/TenancyContext';
 import { validatePasswordComplexity } from '../../schema/securityValidation';
+import { useModalEscape } from '../../hooks/useModalEscape';
 
 export function ResetPasswordModal({ isOpen, onClose, targetUser, onSuccess }) {
   const { resetUserPassword } = useTenancy();
@@ -15,16 +16,7 @@ export function ResetPasswordModal({ isOpen, onClose, targetUser, onSuccess }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const modalRef = useRef(null);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  useModalEscape(onClose, isOpen, modalRef);
 
   if (!isOpen || !targetUser) return null;
 
@@ -89,7 +81,7 @@ export function ResetPasswordModal({ isOpen, onClose, targetUser, onSuccess }) {
             type="button"
             onClick={onClose}
             aria-label="Close password reset modal"
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
           >
             <X className="w-4 h-4" />
           </button>
@@ -116,13 +108,13 @@ export function ResetPasswordModal({ isOpen, onClose, targetUser, onSuccess }) {
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Enter minimum 8 characters"
                 required
-                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono pr-9 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono pr-9 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
                 aria-label={showPassword ? "Hide password text" : "Show password text"}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer p-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer p-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
               >
                 {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
               </button>
@@ -141,7 +133,7 @@ export function ResetPasswordModal({ isOpen, onClose, targetUser, onSuccess }) {
               onChange={(e) => setConfirmPassword(e.target.value)}
               placeholder="Re-enter password"
               required
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
             />
           </div>
 
@@ -152,7 +144,7 @@ export function ResetPasswordModal({ isOpen, onClose, targetUser, onSuccess }) {
                 type="checkbox"
                 checked={requireChange}
                 onChange={(e) => setRequireChange(e.target.checked)}
-                className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 mt-0.5 cursor-pointer focus-visible:ring-2 focus-visible:ring-blue-500"
+                className="w-4 h-4 rounded border-slate-300 text-amber-600 mt-0.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
               />
               <div className="space-y-0.5">
                 <span className="font-bold text-slate-900 dark:text-white block">
@@ -170,14 +162,14 @@ export function ResetPasswordModal({ isOpen, onClose, targetUser, onSuccess }) {
             <button
               type="button"
               onClick={onClose}
-              className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+              className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
             >
               {isSubmitting ? (
                 <>

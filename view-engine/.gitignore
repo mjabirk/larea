@@ -8,7 +8,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
+dist/
 dist-ssr
 *.local
 
@@ -24,9 +24,11 @@ dist-ssr
 *.sw?
 .venv*
 venv
-__pycache__
+__pycache__/
+*.pyc
 *.py[cod]
 .env
+nul
 
 # Storage
-storage
+storage/
