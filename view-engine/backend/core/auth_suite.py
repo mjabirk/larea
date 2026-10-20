@@ -510,11 +510,17 @@ class WindowsSSOEngine:
         state_data = None
         if redis:
             try:
-                state_data = await redis.hgetall(f"sso_state:{state}")
-                if state_data:
-                    await redis.delete(f"sso_state:{state}")
-            except Exception:
-                pass
+                # Atomic transaction pipeline: fetch and delete state atomically
+                async with redis.pipeline(transaction=True) as pipe:
+                    pipe.hgetall(f"sso_state:{state}")
+                    pipe.delete(f"sso_state:{state}")
+                    pipe_res = await pipe.execute()
+                raw_data, deleted_count = pipe_res[0], pipe_res[1]
+                # Only accept state if key was actually deleted by this transaction (prevents race/reuse)
+                if raw_data and deleted_count > 0:
+                    state_data = raw_data
+            except Exception as e:
+                logger.warning(f"Atomic Redis state retrieval failed: {e}")
         if not state_data:
             state_data = WindowsSSOEngine._pop_state(state)
 

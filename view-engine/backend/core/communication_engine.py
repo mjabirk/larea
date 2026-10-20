@@ -622,15 +622,26 @@ async def execute_automation_trigger(
     record_model: str,
     record_id: str,
     record_data: Dict[str, Any],
-    author_name: str = "Automated Engine"
+    author_name: str = "Automated Engine",
+    organization_id: Optional[Any] = None
 ) -> List[Dict[str, Any]]:
     """
     Evaluates and fires automation triggers on ERP lifecycle events (leave_approved, payslip_confirmed, etc.).
     Logs outgoing dispatch to communication_logs and adds a record event to audit_logs (Chatter).
+    Enforces strict multi-tenant isolation with organization_id filtering and zero arbitrary fallbacks.
     """
     pool = get_db_pool()
     now = datetime.datetime.now(datetime.timezone.utc)
     results = []
+
+    # Determine tenant organization UUID
+    org_id = organization_id or record_data.get("organization_id")
+    org_uuid: Optional[uuid.UUID] = None
+    if org_id:
+        try:
+            org_uuid = uuid.UUID(str(org_id))
+        except (ValueError, TypeError):
+            org_uuid = None
 
     # 1. Fetch triggers, recipient phone, and WhatsApp config, then release connection immediately
     triggers = []
@@ -639,6 +650,23 @@ async def execute_automation_trigger(
     wa_config = None
 
     async with pool.acquire() as conn:
+        # Resolve org_uuid from employee record if not directly provided in record_data
+        if not org_uuid:
+            emp_id = record_data.get("employee_id")
+            if emp_id:
+                try:
+                    e_org = await conn.fetchval("SELECT organization_id FROM employees WHERE id = $1::uuid;", str(emp_id))
+                    if e_org:
+                        org_uuid = uuid.UUID(str(e_org))
+                except Exception:
+                    pass
+
+        # If organization context is missing, do not guess or fall back to arbitrary organizations
+        if not org_uuid:
+            logger.warning(f"execute_automation_trigger: trigger '{event_type}' skipped - missing tenant organization_id context.")
+            return results
+
+        # Enforce tenant organization_id filtering on automation_triggers
         triggers_rows = await conn.fetch("""
             SELECT t.*,
                    wt.template_name as wa_tmpl_name, wt.category as wa_category,
@@ -652,8 +680,9 @@ async def execute_automation_trigger(
             FROM automation_triggers t
             LEFT JOIN whatsapp_templates wt ON t.whatsapp_template_id = wt.id
             LEFT JOIN sms_gateways sg ON t.sms_gateway_id = sg.id
-            WHERE t.event_type = $1 AND t.active = true;
-        """, event_type)
+            WHERE t.event_type = $1 AND t.active = true
+              AND (t.organization_id = $2 OR t.organization_id IS NULL);
+        """, event_type, org_uuid)
         triggers = [dict(tr) for tr in triggers_rows]
 
         if not triggers:
@@ -673,8 +702,11 @@ async def execute_automation_trigger(
         has_whatsapp_trigger = any(tr.get("channel") == "whatsapp" for tr in triggers)
         if has_whatsapp_trigger:
             wa_cfg_row = await conn.fetchrow("""
-                SELECT * FROM whatsapp_configs WHERE is_default = true AND active = true LIMIT 1;
-            """)
+                SELECT * FROM whatsapp_configs
+                WHERE active = true AND (organization_id = $1 OR organization_id IS NULL)
+                ORDER BY (CASE WHEN organization_id = $1 THEN 0 ELSE 1 END) ASC, is_default DESC
+                LIMIT 1;
+            """, org_uuid)
             if wa_cfg_row:
                 wa_config = dict(wa_cfg_row)
 
@@ -727,13 +759,10 @@ async def execute_automation_trigger(
                 batch_mock = {"salary_year_month": record_data.get("month", "Monthly"), "name": "Standard Payroll Run"}
                 org_info = None
                 pool = get_db_pool()
-                if pool:
+                if pool and org_uuid:
                     try:
                         async with pool.acquire() as o_conn:
-                            org_id = record_data.get("organization_id")
-                            org_r = await o_conn.fetchrow("SELECT * FROM organizations WHERE id = $1;", org_id) if org_id else None
-                            if not org_r:
-                                org_r = await o_conn.fetchrow("SELECT * FROM organizations ORDER BY created_at ASC LIMIT 1;")
+                            org_r = await o_conn.fetchrow("SELECT * FROM organizations WHERE id = $1;", org_uuid)
                             if org_r:
                                 org_info = dict(org_r)
                             w_val = await o_conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:qatar_wps_config';")
@@ -745,8 +774,8 @@ async def execute_automation_trigger(
                                     org_info["employer_eid"] = w_cfg.get("employer_eid")
                                 except Exception:
                                     pass
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch organization info for payslip PDF: {e}")
                 pdf_res = await asyncio.to_thread(generate_payslip_pdf_report, record_data, batch_mock, org_info)
                 def _prepare_wa_pdf(pdf_abs: str, pdf_fn: str):
                     with open(pdf_abs, "rb") as f:

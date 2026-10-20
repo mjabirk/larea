@@ -69,63 +69,94 @@ async def _get_db_max_counter(seq_name: str, tenant_id: str) -> int:
 
         async with pool.acquire() as conn:
             if seq_name.startswith("attendance"):
+                parts = seq_name.split(":")
+                year = parts[1] if len(parts) > 1 and parts[1].isdigit() else datetime.datetime.now().strftime("%Y")
+                regex_pattern = f"^ATT-{year}-[0-9]+$"
+                substring_pattern = f"ATT-{year}-([0-9]+)"
                 if org_uuid:
                     val = await conn.fetchval("""
-                        SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ATT-[0-9]{4}-([0-9]+)') AS INT)), 1000)
+                        SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM $1) AS INT)), 1000)
                         FROM attendance_logs
-                        WHERE code ~ '^ATT-[0-9]{4}-[0-9]+$' AND organization_id = $1;
-                    """, org_uuid)
+                        WHERE code ~ $2 AND organization_id = $3;
+                    """, substring_pattern, regex_pattern, org_uuid)
                 else:
                     val = await conn.fetchval("""
-                        SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ATT-[0-9]{4}-([0-9]+)') AS INT)), 1000)
+                        SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM $1) AS INT)), 1000)
                         FROM attendance_logs
-                        WHERE code ~ '^ATT-[0-9]{4}-[0-9]+$';
-                    """)
+                        WHERE code ~ $2;
+                    """, substring_pattern, regex_pattern)
                 return int(val or 1000)
             elif seq_name.startswith("roster"):
+                parts = seq_name.split(":")
+                year = parts[1] if len(parts) > 1 and parts[1].isdigit() else datetime.datetime.now().strftime("%Y")
+                regex_pattern = f"^ROS-{year}-[0-9]+$"
+                substring_pattern = f"ROS-{year}-([0-9]+)"
                 if org_uuid:
                     val = await conn.fetchval("""
-                        SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ROS-[0-9]{4}-([0-9]+)') AS INT)), 1000)
+                        SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM $1) AS INT)), 1000)
                         FROM shift_rosters
-                        WHERE code ~ '^ROS-[0-9]{4}-[0-9]+$' AND organization_id = $1;
-                    """, org_uuid)
+                        WHERE code ~ $2 AND organization_id = $3;
+                    """, substring_pattern, regex_pattern, org_uuid)
                 else:
                     val = await conn.fetchval("""
-                        SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM 'ROS-[0-9]{4}-([0-9]+)') AS INT)), 1000)
+                        SELECT COALESCE(MAX(CAST(SUBSTRING(code FROM $1) AS INT)), 1000)
                         FROM shift_rosters
-                        WHERE code ~ '^ROS-[0-9]{4}-[0-9]+$';
-                    """)
+                        WHERE code ~ $2;
+                    """, substring_pattern, regex_pattern)
                 return int(val or 1000)
             elif seq_name.startswith("payroll:"):
                 ym = seq_name.split(":", 1)[1]
                 if org_uuid:
-                    cnt = await conn.fetchval(
-                        "SELECT COUNT(*) FROM payroll_batches WHERE salary_year_month = $1 AND organization_id = $2;",
-                        ym, org_uuid
-                    )
+                    val = await conn.fetchval("""
+                        SELECT COALESCE(MAX(
+                            CASE 
+                                WHEN batch_code ~ ('^PAY-' || $1 || '-[0-9]+$') 
+                                THEN CAST(SUBSTRING(batch_code FROM ('^PAY-' || $1 || '-([0-9]+)$')) AS INT)
+                                WHEN batch_code = ('PAY-' || $1) THEN 1
+                                ELSE 0
+                            END
+                        ), 0)
+                        FROM payroll_batches
+                        WHERE salary_year_month = $1 AND organization_id = $2;
+                    """, ym, org_uuid)
                 else:
-                    cnt = await conn.fetchval(
-                        "SELECT COUNT(*) FROM payroll_batches WHERE salary_year_month = $1;", ym
-                    )
-                return int(cnt or 0)
+                    val = await conn.fetchval("""
+                        SELECT COALESCE(MAX(
+                            CASE 
+                                WHEN batch_code ~ ('^PAY-' || $1 || '-[0-9]+$') 
+                                THEN CAST(SUBSTRING(batch_code FROM ('^PAY-' || $1 || '-([0-9]+)$')) AS INT)
+                                WHEN batch_code = ('PAY-' || $1) THEN 1
+                                ELSE 0
+                            END
+                        ), 0)
+                        FROM payroll_batches
+                        WHERE salary_year_month = $1;
+                    """, ym)
+                return int(val or 0)
             elif seq_name.startswith("contract:"):
                 # contract:{year}:{emp_short}
                 parts = seq_name.split(":")
                 if len(parts) >= 3:
+                    y_part = parts[1]
                     emp_short = parts[2]
+                    regex_str = f"^CNT-{y_part}-{emp_short}-[0-9]+$"
+                    substr_str = f"^CNT-{y_part}-{emp_short}-([0-9]+)$"
                     if org_uuid:
-                        cnt = await conn.fetchval("""
-                            SELECT COUNT(*) FROM employee_contracts c
+                        val = await conn.fetchval("""
+                            SELECT COALESCE(MAX(CAST(SUBSTRING(c.contract_reference FROM $1) AS INT)), 0)
+                            FROM employee_contracts c
                             JOIN employees e ON c.employee_id = e.id
-                            WHERE e.employee_number LIKE $1 AND (c.organization_id = $2 OR e.organization_id = $2);
-                        """, f"%{emp_short}%", org_uuid)
+                            WHERE c.contract_reference ~ $2
+                              AND (c.organization_id = $3 OR e.organization_id = $3);
+                        """, substr_str, regex_str, org_uuid)
                     else:
-                        cnt = await conn.fetchval("""
-                            SELECT COUNT(*) FROM employee_contracts c
+                        val = await conn.fetchval("""
+                            SELECT COALESCE(MAX(CAST(SUBSTRING(c.contract_reference FROM $1) AS INT)), 0)
+                            FROM employee_contracts c
                             JOIN employees e ON c.employee_id = e.id
-                            WHERE e.employee_number LIKE $1;
-                        """, f"%{emp_short}%")
-                    return int(cnt or 0)
+                            WHERE c.contract_reference ~ $2;
+                        """, substr_str, regex_str)
+                    return int(val or 0)
             elif seq_name.startswith("employee_number") or seq_name.startswith("employee:"):
                 if org_uuid:
                     val = await conn.fetchval("""
@@ -147,8 +178,8 @@ async def _get_db_max_counter(seq_name: str, tenant_id: str) -> int:
 
 async def _fallback_db_sequence(seq_name: str, tenant_id: str, start_value: int) -> int:
     """
-    Atomic single-query PostgreSQL upsert fallback when Redis is unreachable.
-    Seeds from _get_db_max_counter() on initial fallback insert to avoid resetting existing database sequences.
+    Atomic PostgreSQL upsert fallback when Redis is unreachable.
+    Only queries _get_db_max_counter() if the sequence key does not yet exist in document_sequences.
     """
     from backend.core.database import get_db_pool
     pool = get_db_pool()
@@ -158,11 +189,22 @@ async def _fallback_db_sequence(seq_name: str, tenant_id: str, start_value: int)
         return start_value
 
     try:
-        # Seed initial value based on existing DB state if not yet in document_sequences
-        seed = await _get_db_max_counter(seq_name, tenant_id)
-        initial_insert_val = max(seed, start_value - 1) + 1
-
         async with pool.acquire() as conn:
+            # First attempt to atomically increment existing record
+            val = await conn.fetchval("""
+                UPDATE document_sequences
+                SET current_val = current_val + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE sequence_key = $1
+                RETURNING current_val;
+            """, full_key)
+            if val is not None:
+                return int(val)
+
+            # Sequence key does not yet exist: seed from existing DB state
+            seed = await _get_db_max_counter(seq_name, tenant_id)
+            initial_insert_val = max(seed, start_value - 1) + 1
+
             val = await conn.fetchval("""
                 INSERT INTO document_sequences (sequence_key, current_val, updated_at)
                 VALUES ($1, $2, CURRENT_TIMESTAMP)

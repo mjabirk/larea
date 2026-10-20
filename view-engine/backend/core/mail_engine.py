@@ -6,6 +6,7 @@ import hashlib
 import mimetypes
 import logging
 import datetime
+import asyncio
 import smtplib
 import imaplib
 from email.mime.multipart import MIMEMultipart
@@ -611,8 +612,8 @@ async def run_mail_retention_cleanup() -> Dict[str, Any]:
     """
     Scheduled retention worker function.
     Finds mail_messages where purge_after <= NOW() OR status = 'sent' with immediate purge.
-    1. Unlinks physical attachment files from disk.
-    2. Deletes records from database.
+    1. Releases database connection immediately after DB query/delete.
+    2. Unlinks physical attachment files from disk in a worker thread via asyncio.to_thread().
     3. Returns cleanup summary.
     """
     pool = get_db_pool()
@@ -620,53 +621,64 @@ async def run_mail_retention_cleanup() -> Dict[str, Any]:
     purged_files = 0
     purged_attachments = 0
     purged_messages = 0
+    paths_to_delete: List[str] = []
 
-    async with pool.acquire() as conn:
-        # Find messages eligible for purging
-        messages = await conn.fetch("""
-            SELECT id, subject
-            FROM mail_messages
-            WHERE purge_after IS NOT NULL AND purge_after <= $1;
-        """, now)
+    if pool:
+        async with pool.acquire() as conn:
+            # Find messages eligible for purging
+            messages = await conn.fetch("""
+                SELECT id, subject
+                FROM mail_messages
+                WHERE purge_after IS NOT NULL AND purge_after <= $1;
+            """, now)
 
-        message_ids = [m["id"] for m in messages]
+            message_ids = [m["id"] for m in messages]
 
-        if message_ids:
-            # Query physical disk attachments
-            attachments = await conn.fetch("""
-                SELECT id, filename, disk_path
-                FROM mail_attachments
-                WHERE mail_message_id = ANY($1::uuid[]);
-            """, message_ids)
+            if message_ids:
+                # Query physical disk attachments
+                attachments = await conn.fetch("""
+                    SELECT id, filename, disk_path
+                    FROM mail_attachments
+                    WHERE mail_message_id = ANY($1::uuid[]);
+                """, message_ids)
 
-            # Unlink disk files
-            for att in attachments:
-                disk_path = att["disk_path"]
-                if disk_path:
-                    abs_path = os.path.join(os.getcwd(), disk_path)
-                    if os.path.exists(abs_path):
-                        try:
-                            os.remove(abs_path)
-                            purged_files += 1
-                        except Exception as e:
-                            logger.warning(f"Could not delete physical attachment file '{abs_path}': {e}")
-                purged_attachments += 1
+                purged_attachments = len(attachments)
+                for att in attachments:
+                    disk_path = att.get("disk_path")
+                    if disk_path:
+                        paths_to_delete.append(os.path.join(os.getcwd(), disk_path))
 
-            # Delete database records (CASCADE will delete attachments)
-            delete_res = await conn.execute("""
-                DELETE FROM mail_messages
-                WHERE id = ANY($1::uuid[]);
-            """, message_ids)
+                # Delete database records (CASCADE will delete attachments)
+                delete_res = await conn.execute("""
+                    DELETE FROM mail_messages
+                    WHERE id = ANY($1::uuid[]);
+                """, message_ids)
 
-            try:
-                purged_messages = int(delete_res.split()[-1])
-            except Exception:
-                purged_messages = len(message_ids)
+                try:
+                    purged_messages = int(delete_res.split()[-1])
+                except Exception:
+                    purged_messages = len(message_ids)
 
-            logger.info(
-                f"[Retention Cleanup] Purged {purged_messages} mail messages, "
-                f"{purged_attachments} attachment records, and {purged_files} disk files."
-            )
+    # Physical disk deletion performed outside database connection via worker thread
+    if paths_to_delete:
+        def _delete_files_sync(paths: List[str]) -> int:
+            deleted = 0
+            for abs_path in paths:
+                if os.path.exists(abs_path):
+                    try:
+                        os.remove(abs_path)
+                        deleted += 1
+                    except Exception as e:
+                        logger.warning(f"Could not delete physical attachment file '{abs_path}': {e}")
+            return deleted
+
+        purged_files = await asyncio.to_thread(_delete_files_sync, paths_to_delete)
+
+    if purged_messages > 0 or purged_files > 0:
+        logger.info(
+            f"[Retention Cleanup] Purged {purged_messages} mail messages, "
+            f"{purged_attachments} attachment records, and {purged_files} disk files."
+        )
 
     return {
         "status": "success",
@@ -724,9 +736,9 @@ def test_mail_server_connection(server_dict: Dict[str, Any]) -> Tuple[bool, str]
     elif protocol in ("IMAP", "POP3"):
         try:
             if encryption == "SSL_TLS":
-                client = imaplib.IMAP4_SSL(host, port)
+                client = imaplib.IMAP4_SSL(host, port, timeout=6)
             else:
-                client = imaplib.IMAP4(host, port)
+                client = imaplib.IMAP4(host, port, timeout=6)
                 if encryption == "STARTTLS":
                     client.starttls()
 
@@ -754,6 +766,7 @@ def send_smtp_email(
 ) -> Tuple[bool, Optional[str]]:
     """
     Deliver outgoing email via SMTP with TLS/SSL encryption and physical attachments.
+    Validates host IP to prevent SSRF against internal/cloud metadata networks.
     Returns: (is_success, error_log_or_none)
     """
     host = server_dict.get("host") or "localhost"
@@ -764,6 +777,15 @@ def send_smtp_email(
     password = decrypt_mail_password(enc_password) if enc_password else ""
     from_email = server_dict.get("from_email") or username or "noreply@company.local"
     from_name = server_dict.get("from_name") or "Apex Global ERP"
+
+    # Enforce SSRF target IP validation before socket connection
+    from backend.core.communication_engine import validate_external_target_ip
+    try:
+        validate_external_target_ip(host)
+    except Exception as e:
+        err = f"SSRF security violation for mail host '{host}': {e}"
+        logger.error(err)
+        return False, err
 
     # Build MIME Message
     msg = MIMEMultipart("mixed")
