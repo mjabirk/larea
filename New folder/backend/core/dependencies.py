@@ -1,10 +1,12 @@
-import os
-from typing import Optional, Dict, Any, List
+import uuid
+from contextlib import asynccontextmanager
+from typing import Optional, Dict, Any, List, AsyncGenerator, Tuple
 from fastapi import Request, HTTPException, status, Header, Depends
 
 from backend.core.config import settings
 from backend.core.session import SessionManager, verify_client_cidr
-from backend.core.auth_suite import APIKeyEngine
+from backend.core.auth_suite import APIKeyEngine, DatabaseRLSHelper
+from backend.core.database import get_db_pool
 
 
 def get_client_ip(request: Request) -> str:
@@ -39,7 +41,7 @@ async def get_current_user_session(
         )
 
     # 2. Check Headless API Key authentication
-    if x_api_key:
+    if x_api_key and isinstance(x_api_key, str):
         api_data = await APIKeyEngine.validate_api_key(x_api_key, client_ip)
         if api_data:
             return {
@@ -54,7 +56,7 @@ async def get_current_user_session(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key.")
 
     # 3. Check Stateful Session Bearer Token
-    if not authorization or not authorization.startswith("Bearer "):
+    if not authorization or not isinstance(authorization, str) or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing session token.")
 
     token = authorization.replace("Bearer ", "").strip()
@@ -64,6 +66,46 @@ async def get_current_user_session(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session expired (idle timeout or max lifetime reached). Please log in again."
         )
+
+    x_organization_id = request.headers.get("X-Organization-Id")
+    x_branch_ids = request.headers.get("X-Branch-Ids") or request.headers.get("X-Branch-Id")
+
+    if session.get("is_superadmin"):
+        session["allowed_organizations"] = ["*"]
+        session["allowed_branches"] = ["*"]
+        if x_organization_id:
+            session["active_organization_id"] = x_organization_id
+            session["organization_id"] = x_organization_id
+        elif session.get("organization_id"):
+            session["active_organization_id"] = session["organization_id"]
+
+        if x_branch_ids:
+            if x_branch_ids.strip().lower() == "all":
+                session["active_branch_ids"] = ["all"]
+            else:
+                session["active_branch_ids"] = [b.strip() for b in x_branch_ids.split(",") if b.strip()]
+        else:
+            session["active_branch_ids"] = ["all"]
+    else:
+        if x_organization_id:
+            if x_organization_id in session.get("allowed_company_ids", []) or x_organization_id == session.get("organization_id"):
+                session["organization_id"] = x_organization_id
+                session["active_organization_id"] = x_organization_id
+        elif session.get("organization_id"):
+            session["active_organization_id"] = session["organization_id"]
+
+        if x_branch_ids:
+            if x_branch_ids.strip().lower() == "all":
+                session["active_branch_ids"] = ["all"]
+            else:
+                session["active_branch_ids"] = [b.strip() for b in x_branch_ids.split(",") if b.strip()]
+        else:
+            session["active_branch_ids"] = ["all"]
+
+    if session.get("active_branch_ids") and session["active_branch_ids"] != ["all"] and len(session["active_branch_ids"]) == 1:
+        session["branch_id"] = session["active_branch_ids"][0]
+    elif session.get("active_branch_ids") == ["all"]:
+        session["branch_id"] = None
 
     return session
 
@@ -114,8 +156,20 @@ def check_permission(session: Dict[str, Any], permission_key: str) -> bool:
                 "employees": "employees",
                 "attendance": "attendance_logs",
                 "attendance_logs": "attendance_logs",
+                "roster": "shift_rosters",
+                "rosters": "shift_rosters",
+                "shift_rosters": "shift_rosters",
+                "contract": "employee_contracts",
+                "contracts": "employee_contracts",
+                "employee_contracts": "employee_contracts",
                 "org": "organizations",
                 "organizations": "organizations",
+                "branch": "branches",
+                "branches": "branches",
+                "terminal": "terminals",
+                "terminals": "terminals",
+                "payroll": "payroll_batches",
+                "payroll_batches": "payroll_batches",
                 "users": "users",
                 "roles": "roles",
                 "role": "roles",
@@ -125,8 +179,19 @@ def check_permission(session: Dict[str, Any], permission_key: str) -> bool:
             }
             target_model = model_map.get(model_name, model_name)
 
-            if isinstance(perms.get(target_model), dict):
-                m_perms = perms[target_model]
+            m_perms = perms.get(target_model)
+            if not isinstance(m_perms, dict) and target_model == "shift_rosters":
+                m_perms = perms.get("attendance_logs")
+            elif not isinstance(m_perms, dict) and target_model in ("contracts", "employee_contracts"):
+                m_perms = perms.get("employee_contracts") or perms.get("contracts")
+            elif not isinstance(m_perms, dict) and target_model in ("payroll_batches", "payroll"):
+                m_perms = perms.get("payroll_batches") or perms.get("payroll")
+            elif not isinstance(m_perms, dict) and target_model in ("terminals", "hardware"):
+                m_perms = perms.get("terminals") or perms.get("hardware")
+            elif not isinstance(m_perms, dict) and target_model in ("branches", "organizations"):
+                m_perms = perms.get("branches") or perms.get("organizations")
+
+            if isinstance(m_perms, dict):
                 if action == "read":
                     if m_perms.get("read"):
                         return True
@@ -144,6 +209,9 @@ def check_permission(session: Dict[str, Any], permission_key: str) -> bool:
                         return True
                 elif action == "manage":
                     if m_perms.get("manage") or (m_perms.get("create") and m_perms.get("update")):
+                        return True
+                elif action == "approve":
+                    if m_perms.get("approve") or m_perms.get("update") or m_perms.get("manage"):
                         return True
                 else:
                     if m_perms.get(action):
@@ -169,3 +237,114 @@ def require_permission(session: Dict[str, Any], permission_key: str):
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Access denied: Missing required permission '{permission_key}'."
         )
+
+
+def can_read_salary(session: Dict[str, Any]) -> bool:
+    """Returns True if the authenticated session holds salary reading permissions or superadmin."""
+    if not session:
+        return False
+    if session.get("is_superadmin"):
+        return True
+    return bool(check_permission(session, "hr.salary_read") or check_permission(session, "hr.salary_manage"))
+
+
+async def get_tenant_db_conn(
+    session: Dict[str, Any] = Depends(get_current_user_session)
+) -> AsyncGenerator[Any, None]:
+    """
+    FastAPI dependency and async context manager that acquires a pooled database connection,
+    starts a transaction, and executes DatabaseRLSHelper.set_rls_session_context to apply
+    PostgreSQL Row-Level Security (RLS) policies for the authenticated caller's tenant.
+    Cleanly releases the connection and closes the transaction on exit.
+    """
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            user_id = str(session.get("user_id", "") or "")
+            tenant_id = str(session.get("organization_id", "") or "")
+            role = (
+                "role_superadmin"
+                if session.get("is_superadmin")
+                else str(session.get("role_id") or session.get("role", "") or "")
+            )
+            await DatabaseRLSHelper.set_rls_session_context(
+                conn,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                role=role
+            )
+            yield conn
+
+
+tenant_db_context = asynccontextmanager(get_tenant_db_conn)
+
+
+def verify_record_tenant(record_org_id: Any, session: Dict[str, Any]) -> None:
+    """
+    Enforce tenant boundary checks on record mutations and lookups.
+    Superadmins bypass this check.
+    Raises HTTP 403 Forbidden on cross-tenant mismatch.
+    """
+    if (
+        not session.get("is_superadmin")
+        and session.get("organization_id")
+        and record_org_id
+        and str(record_org_id) != str(session.get("organization_id"))
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cross-tenant access denied."
+        )
+
+
+def build_branch_filter(
+    session: Dict[str, Any],
+    table_alias: str = "e",
+    param_offset: int = 1,
+    branch_col: Optional[str] = None
+) -> Tuple[str, List[Any]]:
+    """
+    Universal Branch & Organization Filter Builder.
+    Constructs SQL clause and parameter list for multi-company & multi-branch filtering.
+    - If superadmin and no active_organization_id: returns "", []
+    - If 'all' in active_branch_ids or not active_branch_ids:
+        returns f" AND {table_alias}.organization_id = ${param_offset}::uuid", [org_id]
+    - Else (specific branches selected):
+        returns f" AND {table_alias}.organization_id = ${param_offset}::uuid AND {col} = ANY(${param_offset + 1}::uuid[])", [org_id, branch_ids]
+    """
+    col = branch_col or f"{table_alias}.branch_id"
+    org_id = session.get("active_organization_id") or session.get("organization_id")
+
+    if session.get("is_superadmin") and not org_id:
+        return "", []
+
+    if not org_id:
+        return "", []
+
+    try:
+        org_uuid = uuid.UUID(str(org_id))
+    except Exception:
+        return "", []
+
+    active_branch_ids = session.get("active_branch_ids", ["all"])
+    if isinstance(active_branch_ids, str):
+        if active_branch_ids.strip().lower() == "all":
+            active_branch_ids = ["all"]
+        else:
+            active_branch_ids = [b.strip() for b in active_branch_ids.split(",") if b.strip()]
+
+    if not active_branch_ids or "all" in active_branch_ids:
+        return f" AND {table_alias}.organization_id = ${param_offset}::uuid", [org_uuid]
+
+    valid_branch_uuids = []
+    for b in active_branch_ids:
+        try:
+            valid_branch_uuids.append(uuid.UUID(str(b)))
+        except Exception:
+            pass
+
+    if not valid_branch_uuids:
+        return f" AND {table_alias}.organization_id = ${param_offset}::uuid", [org_uuid]
+
+    clause = f" AND {table_alias}.organization_id = ${param_offset}::uuid AND {col} = ANY(${param_offset + 1}::uuid[])"
+    return clause, [org_uuid, valid_branch_uuids]

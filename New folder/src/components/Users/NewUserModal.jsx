@@ -18,6 +18,7 @@ import { useTenancy } from '../../context/TenancyContext';
 import { useAccessControl } from '../../context/AccessControlContext';
 import { DEFAULT_ROLES } from '../../schema/rbacSchema';
 import { validatePasswordComplexity } from '../../schema/securityValidation';
+import { useModalEscape } from '../../hooks/useModalEscape';
 
 export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
   const { branches, createUser } = useTenancy();
@@ -55,37 +56,8 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
   const calculatedAge = calculateAge(formData.date_of_birth);
   const isMinor = calculatedAge !== null && calculatedAge < 18;
 
-  // Keyboard navigation & accessible focus trapping
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        onClose();
-        return;
-      }
-
-      if (e.key === 'Tab' && modalRef.current) {
-        const focusable = modalRef.current.querySelectorAll(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        );
-        if (focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  // Keyboard navigation, accessible focus trapping, and escape handling
+  useModalEscape(onClose, isOpen, modalRef);
 
   if (!isOpen) return null;
 
@@ -192,7 +164,7 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
             aria-label="Close Registration Dialog"
           >
             <X className="w-4 h-4" />
@@ -412,14 +384,14 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
             <button
               type="button"
               onClick={onClose}
-              className="px-3.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              className="px-3.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
             >
               {isSubmitting ? (
                 <>

@@ -14,6 +14,7 @@ import {
   Calendar,
   ChevronLeft,
   X,
+  Archive,
 } from 'lucide-react';
 import { useDebounce } from '../../hooks/useDebounce';
 
@@ -24,7 +25,10 @@ export function EmployeeListView({
   onNewEmployee,
   searchTerm: externalSearchTerm,
   onSearchChange: externalOnSearchChange,
+  statusFilter = 'all',
+  onStatusFilterChange,
   showHeader = false,
+  embeddedInControlPanel = false,
   total: externalTotal,
   page: externalPage,
   pageSize: externalPageSize,
@@ -38,17 +42,22 @@ export function EmployeeListView({
   useEffect(() => {
     if (externalSearchTerm !== undefined && externalSearchTerm !== searchInput) {
       setSearchInput(externalSearchTerm);
+      if (embeddedInControlPanel) {
+        setCurrentPage(1);
+        onPageChange?.(1);
+      }
     }
-  }, [externalSearchTerm]);
+  }, [externalSearchTerm, embeddedInControlPanel]);
 
   // Notify parent of debounced search changes and reset page
   useEffect(() => {
+    if (embeddedInControlPanel) return;
     if (externalOnSearchChange && debouncedSearch !== externalSearchTerm) {
       externalOnSearchChange(debouncedSearch);
     }
     setCurrentPage(1);
     onPageChange?.(1);
-  }, [debouncedSearch]);
+  }, [debouncedSearch, embeddedInControlPanel]);
 
   const searchTerm = externalSearchTerm !== undefined ? externalSearchTerm : debouncedSearch;
   const [deptFilter, setDeptFilter] = useState('ALL');
@@ -161,31 +170,69 @@ export function EmployeeListView({
         </div>
       )}
 
-      {/* 2. Slim Search & Filter Strip with Debounced Input and Clean Pagination Controls */}
-      <div className="h-9 min-h-[36px] bg-white dark:bg-slate-900 px-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs flex items-center justify-between gap-2.5">
-        <div className="flex flex-1 items-center gap-2 max-w-xl">
-          <div className="relative flex-1">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <input
-              type="text"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search name, code, QID, title..."
-              className="w-full h-7 text-xs pl-7 pr-6 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            {searchInput && (
+      {/* Status Segmented Filter Chips */}
+      {!embeddedInControlPanel && (
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+          {[
+            { id: 'all', label: 'All (Active)' },
+            { id: 'active', label: 'Active' },
+            { id: 'on leave', label: 'On Leave' },
+            { id: 'terminated', label: 'Terminated' },
+            { id: 'archived', label: 'Archived' },
+          ].map((chip) => {
+            const isActive = (statusFilter || 'all').toLowerCase() === chip.id.toLowerCase();
+            return (
               <button
+                key={chip.id}
                 type="button"
                 onClick={() => {
-                  setSearchInput('');
-                  externalOnSearchChange?.('');
+                  onStatusFilterChange?.(chip.id);
+                  setCurrentPage(1);
+                  onPageChange?.(1);
                 }}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                className={`px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition cursor-pointer flex items-center gap-1.5 ${
+                  isActive
+                    ? chip.id === 'archived'
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'bg-blue-600 text-white shadow-xs'
+                    : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                }`}
               >
-                <X className="w-3 h-3" />
+                {chip.id === 'archived' && <Archive className="w-3 h-3" />}
+                <span>{chip.label}</span>
               </button>
-            )}
-          </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 2. Slim Filter & Pagination Strip with Clean Alignment */}
+      <div className="h-9 min-h-[36px] bg-white dark:bg-slate-900 px-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs flex items-center justify-between gap-2.5 overflow-x-auto no-scrollbar">
+        <div className={`flex items-center gap-2 ${embeddedInControlPanel ? 'shrink-0' : 'flex-1 max-w-xl'}`}>
+          {!embeddedInControlPanel && (
+            <div className="relative flex-1">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder="Search name, code, QID, title..."
+                className="w-full h-7 text-xs pl-7 pr-6 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              {searchInput && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchInput('');
+                    externalOnSearchChange?.('');
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Department Filter */}
           <select
@@ -212,7 +259,7 @@ export function EmployeeListView({
               setCurrentPage(1);
               onPageChange?.(1);
             }}
-            className="h-7 text-[11.5px] font-medium px-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0 hidden sm:block"
+            className="h-7 text-[11.5px] font-medium px-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0"
           >
             <option value="ALL">All Compliance</option>
             <option value="EXPIRING">⚠️ Expiring &lt;30d</option>
@@ -324,7 +371,11 @@ export function EmployeeListView({
                   <tr
                     key={emp.id}
                     onClick={() => onSelectEmployee(emp)}
-                    className="h-8 hover:bg-slate-100/60 dark:hover:bg-slate-800/60 odd:bg-white dark:odd:bg-slate-900 even:bg-slate-50/40 dark:even:bg-slate-800/40 border-b border-slate-200/60 dark:border-slate-800/60 transition-colors cursor-pointer"
+                    className={`h-8 hover:bg-slate-100/60 dark:hover:bg-slate-800/60 border-b border-slate-200/60 dark:border-slate-800/60 transition-colors cursor-pointer ${
+                      emp.is_active === false
+                        ? 'bg-slate-100/60 dark:bg-slate-900/80 text-slate-500 opacity-80'
+                        : 'odd:bg-white dark:odd:bg-slate-900 even:bg-slate-50/40 dark:even:bg-slate-800/40'
+                    }`}
                   >
                     {/* Employee Name (Single-line truncate, ID & email in tooltip) */}
                     <td className="py-1 px-2.5">
@@ -380,17 +431,24 @@ export function EmployeeListView({
 
                     {/* Status Pill (Compact 20px) */}
                     <td className="py-1 px-2.5">
-                      <span
-                        className={`inline-flex items-center h-5 px-1.5 py-0 rounded text-[10.5px] font-bold border shrink-0 ${
-                          emp.status === 'Active'
-                            ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                            : emp.status === 'On Leave'
-                            ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
-                            : 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
-                        }`}
-                      >
-                        {emp.status || 'Active'}
-                      </span>
+                      {emp.is_active === false ? (
+                        <span className="inline-flex items-center gap-1 h-5 px-1.5 py-0 rounded text-[10.5px] font-bold border shrink-0 bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800">
+                          <Archive className="w-2.5 h-2.5" />
+                          <span>Archived</span>
+                        </span>
+                      ) : (
+                        <span
+                          className={`inline-flex items-center h-5 px-1.5 py-0 rounded text-[10.5px] font-bold border shrink-0 ${
+                            emp.status === 'Active'
+                              ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                              : emp.status === 'On Leave'
+                              ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                              : 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+                          }`}
+                        >
+                          {emp.status || 'Active'}
+                        </span>
+                      )}
                     </td>
 
                     {/* Action */}

@@ -55,6 +55,18 @@ export function ModelViewContainer({
   const [isDirty, setIsDirty] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
+  // Unsaved changes beforeunload listener
+  useEffect(() => {
+    if (!isDirty) return;
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
+
   // Search & Filter state
   const [searchTerm, setSearchTerm] = useState('');
   const [activeFilter, setActiveFilter] = useState('all');
@@ -182,6 +194,9 @@ export function ModelViewContainer({
       {
         label: schema?.title || schema?.model || 'Records',
         onClick: () => {
+          if (isDirty && !window.confirm('You have unsaved changes. Discard and return to list?')) {
+            return;
+          }
           setCurrentView('list');
           setDraftRecord(null);
           setIsDirty(false);
@@ -444,13 +459,15 @@ export function ModelViewContainer({
               onToggleSelect={(id) =>
                 setSelectedIds((prev) =>
                   prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-                ),
-              onSelectAll: () =>
+                )
+              }
+              onSelectAll={() =>
                 setSelectedIds((prev) =>
                   prev.length === filteredRecords.length ? [] : filteredRecords.map((r) => r.id)
-                ),
-              onRecordClick: openRecord,
-              onDeleteRecord: handleDeleteRecord,
+                )
+              }
+              onRecordClick={openRecord}
+              onDeleteRecord={handleDeleteRecord}
             />
           )
         )}
@@ -476,6 +493,9 @@ export function ModelViewContainer({
                 setDraftRecord(updated);
                 setIsDirty(true);
               }}
+              onBack={handleDiscard}
+              onDirtyChange={setIsDirty}
+              isDirty={isDirty}
             />
           )
         )}

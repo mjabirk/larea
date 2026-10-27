@@ -41,6 +41,7 @@ from backend.core.auth_suite import (
     TwoFactorAuthService,
     DatabaseRLSHelper
 )
+from backend.core.dependency_guard import inspect_dependencies
 from backend.core.sod import (
     validate_sod_compliance,
     raise_if_sod_violation,
@@ -96,6 +97,7 @@ from backend.api.v1.notifications import router as notifications_router
 from backend.api.v1.mail import router as mail_router
 from backend.api.v1.communication import router as communication_router
 from backend.api.v1.chat import router as chat_router, push_router, websocket_chat_endpoint, websocket_channel_endpoint
+from backend.api.v1.ai_assistant import router as ai_assistant_router
 
 app.include_router(documents_router)
 app.include_router(employees_router)
@@ -111,6 +113,7 @@ app.include_router(mail_router)
 app.include_router(communication_router)
 app.include_router(chat_router)
 app.include_router(push_router)
+app.include_router(ai_assistant_router)
 
 # Direct root WebSocket alias for /ws/chat and /ws/notifications
 app.add_api_websocket_route("/ws/chat", websocket_chat_endpoint)
@@ -531,6 +534,8 @@ def _build_user_session_payload(row: Any, policies: Dict[str, Any]) -> Dict[str,
         "ad_sam_account": row.get("ad_sam_account"),
         "auto_sso_enabled": bool(row.get("auto_sso_enabled", False)),
         "is_2fa_enabled": bool(row.get("is_2fa_enabled", False)),
+        "allowed_company_ids": json.loads(row["allowed_company_ids"]) if isinstance(row.get("allowed_company_ids"), str) else (row.get("allowed_company_ids") or []),
+        "allowed_branch_ids": json.loads(row["allowed_branch_ids"]) if isinstance(row.get("allowed_branch_ids"), str) else (row.get("allowed_branch_ids") or []),
     }
 
 async def _resolve_or_provision_sso_user(
@@ -1727,6 +1732,9 @@ async def delete_user(
         if target["is_superadmin"]:
             raise HTTPException(status_code=400, detail="Cannot delete Root Superadmin.")
         verify_record_tenant(target["organization_id"], session)
+        violation = await inspect_dependencies(conn, "users", u_id, target["email"])
+        if violation:
+            raise HTTPException(status_code=409, detail=violation)
         await conn.execute("DELETE FROM users WHERE id = $1", u_id)
 
         await log_audit_event(
@@ -1741,6 +1749,26 @@ async def delete_user(
         )
         
     return {"status": "success", "message": "User deleted."}
+
+
+@app.post("/api/v1/iam/users/{user_id}/toggle-archive")
+async def toggle_archive_user(user_id: str, session: Dict[str, Any] = Depends(get_current_user_session)):
+    require_permission(session, "users.manage")
+    pool = get_db_pool()
+    try:
+        u_uuid = uuid.UUID(user_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid user UUID.")
+
+    async with pool.acquire() as conn:
+        target = await conn.fetchrow("SELECT is_superadmin, is_active, email FROM users WHERE id = $1", u_uuid)
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found.")
+        if target["is_superadmin"]:
+            raise HTTPException(status_code=400, detail="Cannot archive Root Superadmin.")
+        new_state = not bool(target["is_active"])
+        await conn.execute("UPDATE users SET is_active = $1, status = $2 WHERE id = $3", new_state, 'active' if new_state else 'inactive', u_uuid)
+        return {"status": "success", "is_active": new_state, "message": f"User {target['email']} {'unarchived' if new_state else 'archived'}."}
 
 # ==============================================================================
 # 4. IAM ROLES CRUD ENDPOINTS (PostgreSQL Direct with Menu Access & SoD Matrix)
@@ -1937,10 +1965,10 @@ async def delete_role(
         if role["is_system"]:
             raise HTTPException(status_code=400, detail="System protected roles cannot be deleted.")
             
-        assigned_count = await conn.fetchval("SELECT count(*) FROM users WHERE role_id = $1", role_id)
-        if assigned_count > 0:
-            raise HTTPException(status_code=400, detail=f"Cannot delete role: {assigned_count} users currently assigned.")
-            
+        violation = await inspect_dependencies(conn, "roles", role_id, role["name"])
+        if violation:
+            raise HTTPException(status_code=409, detail=violation)
+
         await conn.execute("DELETE FROM roles WHERE id = $1", role_id)
 
         await log_audit_event(
@@ -1955,6 +1983,21 @@ async def delete_role(
         )
         
     return {"status": "success", "message": "Role deleted."}
+
+
+@app.post("/api/v1/iam/roles/{role_id}/toggle-archive")
+async def toggle_archive_role(role_id: str, session: Dict[str, Any] = Depends(get_current_user_session)):
+    require_permission(session, "roles.manage")
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        role = await conn.fetchrow("SELECT is_system, name, is_active FROM roles WHERE id = $1", role_id)
+        if not role:
+            raise HTTPException(status_code=404, detail="Role not found.")
+        if role["is_system"]:
+            raise HTTPException(status_code=400, detail="System protected roles cannot be archived.")
+        new_state = not bool(role.get("is_active", True))
+        await conn.execute("UPDATE roles SET is_active = $1 WHERE id = $2", new_state, role_id)
+        return {"status": "success", "is_active": new_state, "message": f"Role '{role['name']}' {'unarchived' if new_state else 'archived'}."}
 
 # ==============================================================================
 # 4.1 HEADLESS API KEY PERSISTENCE ENDPOINTS (PostgreSQL + Redis Cache)
@@ -2027,20 +2070,51 @@ async def revoke_api_key(
 # ==============================================================================
 @app.get("/api/v1/iam/tenancy")
 async def get_tenancy_data(session: Dict[str, Any] = Depends(get_current_user_session)):
-    """Returns organizations and branches from PostgreSQL scoped to tenant for non-superadmins."""
+    """
+    Returns organizations and branches from PostgreSQL.
+    Superadmins and users with wildcard permissions see ALL organizations and branches.
+    Otherwise, returns organizations and branches matching user's organization_id, branch_id, or allowed_company_ids.
+    """
     pool = get_db_pool()
     is_superadmin = bool(session.get("is_superadmin"))
-    org_id = session.get("organization_id")
+    has_wildcard = (
+        is_superadmin or
+        "*" in session.get("security_groups", []) or
+        check_permission(session, "*") or
+        check_permission(session, "org.manage")
+    )
 
     async with pool.acquire() as conn:
-        if not is_superadmin and org_id:
-            org_uuid = uuid.UUID(str(org_id))
-            org_rows = await conn.fetch("SELECT * FROM organizations WHERE id = $1 ORDER BY created_at ASC", org_uuid)
-            branch_rows = await conn.fetch("SELECT * FROM branches WHERE organization_id = $1 ORDER BY created_at ASC", org_uuid)
+        if is_superadmin or has_wildcard:
+            org_rows = await conn.fetch("SELECT * FROM organizations WHERE is_active = true ORDER BY created_at ASC")
+            branch_rows = await conn.fetch("SELECT * FROM branches WHERE is_active = true ORDER BY created_at ASC")
         else:
-            org_rows = await conn.fetch("SELECT * FROM organizations ORDER BY created_at ASC")
-            branch_rows = await conn.fetch("SELECT * FROM branches ORDER BY created_at ASC")
-        
+            allowed_org_ids = set()
+            if session.get("organization_id"):
+                allowed_org_ids.add(str(session.get("organization_id")))
+            for oid in session.get("allowed_company_ids", []):
+                allowed_org_ids.add(str(oid))
+
+            valid_org_uuids = []
+            for oid in allowed_org_ids:
+                try:
+                    valid_org_uuids.append(uuid.UUID(oid))
+                except Exception:
+                    pass
+
+            if valid_org_uuids:
+                org_rows = await conn.fetch(
+                    "SELECT * FROM organizations WHERE id = ANY($1::uuid[]) AND is_active = true ORDER BY created_at ASC",
+                    valid_org_uuids
+                )
+                branch_rows = await conn.fetch(
+                    "SELECT * FROM branches WHERE organization_id = ANY($1::uuid[]) AND is_active = true ORDER BY created_at ASC",
+                    valid_org_uuids
+                )
+            else:
+                org_rows = []
+                branch_rows = []
+
         orgs = [
             {
                 "id": str(r["id"]),
@@ -2052,7 +2126,7 @@ async def get_tenancy_data(session: Dict[str, Any] = Depends(get_current_user_se
             }
             for r in org_rows
         ]
-        
+
         branches = [
             {
                 "id": str(r["id"]),
@@ -2060,12 +2134,162 @@ async def get_tenancy_data(session: Dict[str, Any] = Depends(get_current_user_se
                 "name": r["name"],
                 "code": r["code"],
                 "city": r["city"],
-                "ip_allowlist": json.loads(r["ip_allowlist"]) if r["ip_allowlist"] else ["127.0.0.1/32"],
+                "ip_allowlist": json.loads(r["ip_allowlist"]) if isinstance(r["ip_allowlist"], str) else (r["ip_allowlist"] or ["127.0.0.1/32"]),
             }
             for r in branch_rows
         ]
-        
+
         return {"organizations": orgs, "branches": branches}
+
+class CreateOrganizationRequest(BaseModel):
+    legal_name: str
+    tax_id: Optional[str] = None
+    base_currency: Optional[str] = "QAR"
+    default_timezone: Optional[str] = "Asia/Qatar"
+    default_locale: Optional[str] = "en"
+
+@app.post("/api/v1/iam/organizations")
+async def create_organization(
+    req: CreateOrganizationRequest,
+    request: Request,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """
+    Creates a new organization in PostgreSQL and provisions an initial primary operating branch.
+    Requires require_permission(session, "org.manage").
+    """
+    require_permission(session, "org.manage")
+    legal_name = req.legal_name.strip()
+    if not legal_name:
+        raise HTTPException(status_code=400, detail="Organization legal_name is required.")
+
+    pool = get_db_pool()
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+    new_org_id = uuid.uuid4()
+    new_branch_id = uuid.uuid4()
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("""
+                INSERT INTO organizations (id, legal_name, tax_id, base_currency, default_timezone, default_locale)
+                VALUES ($1, $2, $3, $4, $5, $6);
+            """, new_org_id, legal_name, req.tax_id or "QA-0000000-CR", req.base_currency or "QAR", req.default_timezone or "Asia/Qatar", req.default_locale or "en")
+
+            primary_branch_name = f"{legal_name} Main Branch"
+            await conn.execute("""
+                INSERT INTO branches (id, organization_id, name, code, city, ip_allowlist)
+                VALUES ($1, $2, $3, 'MAIN', 'Doha', '["127.0.0.1/32"]'::jsonb);
+            """, new_branch_id, new_org_id, primary_branch_name)
+
+            if session.get("is_superadmin"):
+                admin_uid = session.get("id") or session.get("user_id")
+                if admin_uid:
+                    try:
+                        await conn.execute("""
+                            UPDATE users
+                            SET allowed_company_ids = allowed_company_ids || $1::jsonb,
+                                allowed_branch_ids = allowed_branch_ids || $2::jsonb
+                            WHERE id = $3::uuid;
+                        """, json.dumps([str(new_org_id)]), json.dumps([str(new_branch_id)]), uuid.UUID(str(admin_uid)))
+                    except Exception:
+                        pass
+
+            await log_audit_event(
+                conn=conn,
+                entity_type="organizations",
+                entity_id=new_org_id,
+                action="CREATE",
+                session=session,
+                client_ip=client_ip,
+                note=f"Created organization '{legal_name}' and initial branch '{primary_branch_name}'.",
+                changes={"id": str(new_org_id), "legal_name": legal_name, "branch_id": str(new_branch_id)}
+            )
+
+        return {
+            "status": "success",
+            "organization": {
+                "id": str(new_org_id),
+                "legal_name": legal_name,
+                "tax_id": req.tax_id,
+                "base_currency": req.base_currency or "QAR",
+                "default_timezone": req.default_timezone or "Asia/Qatar",
+                "default_locale": req.default_locale or "en",
+            },
+            "branch": {
+                "id": str(new_branch_id),
+                "organization_id": str(new_org_id),
+                "name": primary_branch_name,
+                "code": "MAIN",
+                "city": "Doha"
+            }
+        }
+
+@app.delete("/api/v1/iam/organizations/{org_id}")
+async def delete_organization(
+    org_id: str,
+    request: Request,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """
+    Deletes an organization and cascades to child branches.
+    Safety check: Verify at least 1 organization remains in the database (prevent deleting the last active company).
+    Requires require_permission(session, "org.manage").
+    """
+    require_permission(session, "org.manage")
+    pool = get_db_pool()
+    try:
+        o_uuid = uuid.UUID(org_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid organization UUID.")
+
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
+    async with pool.acquire() as conn:
+        total_orgs = await conn.fetchval("SELECT COUNT(*) FROM organizations WHERE is_active = true;")
+        if total_orgs <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete the last remaining organization in the database."
+            )
+
+        org_name = await conn.fetchval("SELECT legal_name FROM organizations WHERE id = $1;", o_uuid)
+        if not org_name:
+            raise HTTPException(status_code=404, detail="Organization not found.")
+
+        # Relational Dependency Guard
+        violation = await inspect_dependencies(conn, "organizations", o_uuid, org_name)
+        if violation:
+            raise HTTPException(status_code=409, detail=violation)
+
+        async with conn.transaction():
+            await conn.execute("DELETE FROM branches WHERE organization_id = $1;", o_uuid)
+            await conn.execute("DELETE FROM organizations WHERE id = $1;", o_uuid)
+
+            await log_audit_event(
+                conn=conn,
+                entity_type="organizations",
+                entity_id=o_uuid,
+                action="DELETE",
+                session=session,
+                client_ip=client_ip,
+                note=f"Deleted organization '{org_name}' ({o_uuid}).",
+                changes={"deleted_org_id": str(o_uuid), "legal_name": org_name}
+            )
+
+        return {"status": "success", "message": f"Organization '{org_name}' permanently deleted."}
+
+
+@app.post("/api/v1/iam/organizations/{org_id}/toggle-archive")
+async def toggle_archive_organization(org_id: str, session: Dict[str, Any] = Depends(get_current_user_session)):
+    require_permission(session, "org.manage")
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        current = await conn.fetchval("SELECT is_active FROM organizations WHERE id = $1::uuid;", org_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="Organization not found.")
+        new_state = not bool(current)
+        await conn.execute("UPDATE organizations SET is_active = $1 WHERE id = $2::uuid;", new_state, org_id)
+        return {"status": "success", "is_active": new_state, "message": "Company archived." if not new_state else "Company unarchived."}
 
 class UpdateOrganizationRequest(BaseModel):
     legal_name: str
@@ -2251,11 +2475,19 @@ async def delete_branch(
     client_ip = get_client_ip(request) if request else "127.0.0.1"
 
     async with pool.acquire() as conn:
-        count = await conn.fetchval("SELECT count(*) FROM branches")
+        count = await conn.fetchval("SELECT count(*) FROM branches WHERE is_active = true")
         if count <= 1:
             raise HTTPException(status_code=400, detail="Cannot delete the primary operating branch.")
             
         branch_info = await conn.fetchrow("SELECT name, code FROM branches WHERE id = $1", b_uuid)
+        if not branch_info:
+            raise HTTPException(status_code=404, detail="Branch not found.")
+
+        # Relational Dependency Guard
+        violation = await inspect_dependencies(conn, "branches", b_uuid, branch_info["name"])
+        if violation:
+            raise HTTPException(status_code=409, detail=violation)
+
         await conn.execute("DELETE FROM branches WHERE id = $1", b_uuid)
 
         await log_audit_event(
@@ -2265,11 +2497,24 @@ async def delete_branch(
             action="DELETE",
             session=session,
             client_ip=client_ip,
-            note=f"Deleted operating branch {branch_info['name'] if branch_info else ''} ({b_uuid}).",
+            note=f"Deleted operating branch {branch_info['name']} ({b_uuid}).",
             changes={"deleted_branch_id": str(b_uuid)}
         )
 
         return {"status": "success", "deleted_id": str(b_uuid)}
+
+
+@app.post("/api/v1/iam/branches/{branch_id}/toggle-archive")
+async def toggle_archive_branch(branch_id: str, session: Dict[str, Any] = Depends(get_current_user_session)):
+    require_permission(session, "org.manage")
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        current = await conn.fetchval("SELECT is_active FROM branches WHERE id = $1::uuid;", branch_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="Branch not found.")
+        new_state = not bool(current)
+        await conn.execute("UPDATE branches SET is_active = $1 WHERE id = $2::uuid;", new_state, branch_id)
+        return {"status": "success", "is_active": new_state, "message": "Branch archived." if not new_state else "Branch unarchived."}
 
 @app.get("/api/v1/settings/security-policies")
 async def get_security_policies_setting(session: Dict[str, Any] = Depends(get_current_user_session)):

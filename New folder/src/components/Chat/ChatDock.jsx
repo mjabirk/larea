@@ -18,13 +18,16 @@ import {
   Maximize2,
   Download,
   ExternalLink,
-  Eye
+  Eye,
+  AlertCircle
 } from 'lucide-react';
 import { useChat } from '../../context/ChatContext';
 import { useAuth } from '../../context/AuthContext';
 import { useChatChannel } from '../../hooks/useChatChannel';
+import { useLocale } from '../../context/LocaleContext';
 
 export default function ChatDock() {
+  const { t } = useLocale();
   const {
     openDocks,
     minimizedDockIds,
@@ -44,7 +47,7 @@ export default function ChatDock() {
     openDocks.slice().reverse().find((d) => !minimizedDockIds.has(d.id));
 
   return (
-    <div className="fixed bottom-0 right-4 z-50 flex items-end gap-2.5 pointer-events-none select-none">
+    <div className="fixed bottom-0 end-4 z-50 flex items-end gap-2.5 pointer-events-none select-none">
       {/* Minimized Pills Tray (for minimized channels) */}
       <div className="flex items-center gap-1.5 pointer-events-auto">
         {openDocks
@@ -82,6 +85,7 @@ export default function ChatDock() {
 
 function MinimizedPill({ channel, onRestore, onClose }) {
   const { onlineUsers } = useChat();
+  const { t } = useLocale();
   const isDirect = channel.channel_type === 'direct';
   const otherUid = channel.other_user?.id;
   const isOnline = otherUid ? onlineUsers.has(otherUid) : false;
@@ -91,7 +95,7 @@ function MinimizedPill({ channel, onRestore, onClose }) {
   return (
     <div
       onClick={onRestore}
-      title={`Restore ${channel.name}`}
+      title={`${t('restore_chat')} ${channel.name}`}
       className={`h-9 px-3 rounded-t-xl border border-b-0 flex items-center gap-2 cursor-pointer transition-all shadow-xl ${
         hasUnread
           ? 'bg-emerald-950/90 border-emerald-500/60 text-emerald-200 animate-bounce'
@@ -126,8 +130,8 @@ function MinimizedPill({ channel, onRestore, onClose }) {
           e.stopPropagation();
           onClose();
         }}
-        title="Close chat"
-        className="text-slate-400 hover:text-rose-400 p-0.5 rounded ml-1 transition-colors"
+        title={t('close_chat')}
+        className="text-slate-400 hover:text-rose-400 p-0.5 rounded ms-1 transition-colors"
       >
         <X className="w-3.5 h-3.5" />
       </button>
@@ -149,6 +153,7 @@ function FloatingChatWindow({
   onClose
 }) {
   const { token, session, currentUser } = useAuth();
+  const { t } = useLocale();
   const currentUserId = String(currentUser?.id || session?.user?.id || session?.id || session?.user_id || '').toLowerCase();
   const myEmail = String(currentUser?.email || session?.user?.email || session?.email || '').toLowerCase();
 
@@ -283,6 +288,8 @@ function FloatingChatWindow({
     query: '',
     cursorIndex: 0
   });
+
+  const [uploadError, setUploadError] = useState(null);
 
   const messagesEndRef = useRef(null);
   const typingTimerRef = useRef(null);
@@ -505,7 +512,8 @@ function FloatingChatWindow({
     if (!file || !token) return;
 
     if (file.size > 25 * 1024 * 1024) {
-      alert('File size exceeds the 25MB limit.');
+      setUploadError('File size exceeds the 25MB limit.');
+      setTimeout(() => setUploadError(null), 4000);
       return;
     }
 
@@ -523,10 +531,13 @@ function FloatingChatWindow({
         const data = await res.json();
         setAttachments((prev) => [...prev, data.attachment]);
       } else {
-        alert('File upload failed.');
+        setUploadError('File upload failed. Please try again.');
+        setTimeout(() => setUploadError(null), 4000);
       }
     } catch (err) {
       console.error('File upload error:', err);
+      setUploadError('File upload error: ' + (err.message || 'Network error'));
+      setTimeout(() => setUploadError(null), 4000);
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -798,14 +809,14 @@ function FloatingChatWindow({
                                 </div>
                               </div>
                               <div className="px-2 py-1 bg-black/40 flex items-center justify-between text-[10px] text-slate-300">
-                                <span className="truncate flex-1 pr-2 font-mono">{formatBytes(att.size)}</span>
+                                <span className="truncate flex-1 pe-2 font-mono">{formatBytes(att.size)}</span>
                                 <button
                                   type="button"
                                   onClick={() => setPreviewImage({ url: viewUrl, name: fileName, size: att.size, dlUrl })}
                                   className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1 text-[10px] cursor-pointer"
                                 >
                                   <Eye className="w-3 h-3" />
-                                  <span>View</span>
+                                  <span>{t('preview_file')}</span>
                                 </button>
                               </div>
                             </div>
@@ -894,7 +905,7 @@ function FloatingChatWindow({
           type="button"
           onClick={() => scrollToBottom('smooth')}
           title="Scroll to latest messages"
-          className="absolute bottom-16 right-4 z-20 flex items-center gap-1.5 px-2.5 py-2 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg border border-emerald-400/40 transition-all cursor-pointer animate-fadeIn"
+          className="absolute bottom-16 end-4 z-20 flex items-center gap-1.5 px-2.5 py-2 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg border border-emerald-400/40 transition-all cursor-pointer animate-fadeIn"
         >
           <ArrowDown className="w-4 h-4" />
           {unreadBelowCount > 0 && (
@@ -927,7 +938,7 @@ function FloatingChatWindow({
                   {autocomplete.type === '@' ? item.token : item.channel_slug || item.name}
                 </span>
               </div>
-              <span className="text-[10px] text-slate-500 ml-2">
+              <span className="text-[10px] text-slate-500 ms-2">
                 {item.full_name || item.name}
               </span>
             </div>
@@ -948,12 +959,34 @@ function FloatingChatWindow({
               <button
                 type="button"
                 onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
-                className="text-slate-400 hover:text-rose-400 ml-0.5"
+                className="text-slate-400 hover:text-rose-400 ms-0.5"
               >
                 <X className="w-3 h-3" />
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Upload Error Accessible Toast */}
+      {uploadError && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="mx-2 mb-1 p-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center justify-between shadow-xs animate-fadeIn"
+        >
+          <div className="flex items-center gap-1.5">
+            <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+            <span>{uploadError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setUploadError(null)}
+            className="text-slate-400 hover:text-white p-0.5 rounded cursor-pointer"
+            aria-label="Dismiss upload error"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
@@ -980,7 +1013,7 @@ function FloatingChatWindow({
             id="chat-attach-button"
             disabled={isUploading}
             onClick={() => fileInputRef.current?.click()}
-            title="Attach file (Disk storage/chat_attachments/)"
+            title={t('attach_file')}
             className="p-2 text-slate-400 hover:text-emerald-400 hover:bg-slate-800 rounded-lg transition-colors disabled:opacity-50 flex-shrink-0"
           >
             {isUploading ? (
@@ -999,8 +1032,8 @@ function FloatingChatWindow({
               value={inputText}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
-              placeholder={`Message #${channel.channel_slug || channel.name}... (@ to mention)`}
-              className="w-full bg-slate-800/90 text-slate-200 text-xs px-3 py-2 pr-10 rounded-xl border border-slate-700/80 focus:outline-none focus:border-blue-500 placeholder:text-slate-500 resize-none max-h-[100px] leading-relaxed"
+              placeholder={t('type_message')}
+              className="w-full bg-slate-800/90 text-slate-200 text-xs px-3 py-2 pe-10 rounded-xl border border-slate-700/80 focus:outline-none focus:border-blue-500 placeholder:text-slate-500 resize-none max-h-[100px] leading-relaxed"
             />
           </div>
 
@@ -1009,7 +1042,7 @@ function FloatingChatWindow({
             type="submit"
             id="chat-send-button"
             disabled={!inputText.trim() && !attachments.length}
-            title="Send Message (Enter)"
+            title={t('send')}
             className="p-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-600 text-white rounded-xl transition-colors shadow-md flex-shrink-0 cursor-pointer disabled:cursor-not-allowed"
           >
             <Send className="w-4 h-4" />

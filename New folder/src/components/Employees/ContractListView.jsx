@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   FileText,
   Search,
@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { useAccessControl } from '../../context/AccessControlContext';
 import { useAuth } from '../../context/AuthContext';
+import { useDebounce } from '../../hooks/useDebounce';
 
 export function ContractListView({ onSelectEmployee }) {
   const { hasPermission } = useAccessControl();
@@ -48,8 +49,10 @@ export function ContractListView({ onSelectEmployee }) {
   const canManageSalary = hasPermission('hr.salary_manage');
 
   const [contracts, setContracts] = useState([]);
+  const [totalContracts, setTotalContracts] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const debouncedSearch = useDebounce(searchInput, 300);
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [deptFilter, setDeptFilter] = useState('ALL');
   const [expiringSoonFilter, setExpiringSoonFilter] = useState(false);
@@ -86,8 +89,20 @@ export function ContractListView({ onSelectEmployee }) {
 
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(80);
+  const [pageSize, setPageSize] = useState(25);
   const [showSummary, setShowSummary] = useState(false);
+
+  // Unsaved changes beforeunload listener
+  useEffect(() => {
+    if (!isDirty) return;
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -101,7 +116,7 @@ export function ContractListView({ onSelectEmployee }) {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, statusFilter, deptFilter, expiringSoonFilter]);
+  }, [debouncedSearch, statusFilter, deptFilter, expiringSoonFilter, pageSize]);
 
   // Helper for expiry countdown
   const getDaysRemaining = (expiryDateStr) => {
@@ -116,18 +131,27 @@ export function ContractListView({ onSelectEmployee }) {
     }
   };
 
-  // Fetch contracts from global endpoint
-  const fetchContracts = async () => {
+  // Fetch contracts from global endpoint with debounced search and limit/offset pagination
+  const fetchContracts = useCallback(async () => {
     setIsLoading(true);
     try {
       const headers = {};
       if (sessionToken) {
         headers['Authorization'] = `Bearer ${sessionToken}`;
       }
-      const res = await fetch('/api/v1/contracts', { headers });
+      const params = new URLSearchParams();
+      if (debouncedSearch.trim()) params.append('search', debouncedSearch.trim());
+      if (statusFilter !== 'ALL') params.append('status', statusFilter);
+      if (deptFilter !== 'ALL') params.append('department', deptFilter);
+      if (expiringSoonFilter) params.append('expiring_days', '30');
+      params.append('limit', String(pageSize));
+      params.append('offset', String((currentPage - 1) * pageSize));
+
+      const res = await fetch(`/api/v1/contracts?${params.toString()}`, { headers });
       if (res.ok) {
         const data = await res.json();
         setContracts(data.contracts || []);
+        setTotalContracts(data.total !== undefined ? data.total : (data.contracts || []).length);
       } else {
         console.error('Failed to load contracts:', res.statusText);
       }
@@ -136,7 +160,7 @@ export function ContractListView({ onSelectEmployee }) {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [sessionToken, debouncedSearch, statusFilter, deptFilter, expiringSoonFilter, pageSize, currentPage]);
 
   const fetchEmployees = async () => {
     try {
@@ -153,6 +177,9 @@ export function ContractListView({ onSelectEmployee }) {
 
   useEffect(() => {
     fetchContracts();
+  }, [fetchContracts]);
+
+  useEffect(() => {
     fetchEmployees();
   }, []);
 
@@ -343,12 +370,12 @@ export function ContractListView({ onSelectEmployee }) {
     setContractSuccess('');
   };
 
-  // Filtered contracts
+  // Filtered contracts using debounced search
   const filteredContracts = useMemo(() => {
     return contracts.filter((c) => {
       // 1. Search filter
-      if (searchTerm.trim()) {
-        const term = searchTerm.toLowerCase();
+      if (debouncedSearch.trim()) {
+        const term = debouncedSearch.toLowerCase();
         const matchesRef = (c.contract_reference || '').toLowerCase().includes(term);
         const matchesEmp = (c.employee_name || '').toLowerCase().includes(term);
         const matchesJob = (c.job_title || '').toLowerCase().includes(term);
@@ -382,7 +409,7 @@ export function ContractListView({ onSelectEmployee }) {
 
       return true;
     });
-  }, [contracts, searchTerm, statusFilter, deptFilter, expiringSoonFilter]);
+  }, [contracts, debouncedSearch, statusFilter, deptFilter, expiringSoonFilter]);
 
   // Statistics counters
   const stats = useMemo(() => {
@@ -401,14 +428,19 @@ export function ContractListView({ onSelectEmployee }) {
     return { total, active, drafts, expiringSoon };
   }, [contracts]);
 
-  // Pagination calculations
-  const totalCount = filteredContracts.length;
+  // Pagination calculations bound to limit, offset, and total
+  const totalCount = totalContracts || filteredContracts.length;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-  const startIndex = (currentPage - 1) * pageSize;
+  const startIndex = totalCount === 0 ? 0 : (currentPage - 1) * pageSize;
   const endIndex = Math.min(startIndex + pageSize, totalCount);
+  const showingStart = totalCount === 0 ? 0 : startIndex + 1;
+  const showingEnd = Math.min(startIndex + filteredContracts.length, totalCount);
   const pagedContracts = useMemo(() => {
+    if (totalContracts > 0 && contracts.length <= pageSize) {
+      return filteredContracts;
+    }
     return filteredContracts.slice(startIndex, endIndex);
-  }, [filteredContracts, startIndex, endIndex]);
+  }, [filteredContracts, totalContracts, contracts.length, pageSize, startIndex, endIndex]);
 
   // Selection handlers
   const handleSelectAll = (e) => {
@@ -1083,16 +1115,16 @@ export function ContractListView({ onSelectEmployee }) {
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search reference, employee, job..."
               className="w-full h-7 text-[12px] font-normal pl-8 pr-6 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
-            {searchTerm && (
+            {searchInput && (
               <button
                 type="button"
-                onClick={() => setSearchTerm('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                onClick={() => setSearchInput('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -1139,8 +1171,8 @@ export function ContractListView({ onSelectEmployee }) {
           </button>
         </div>
 
-        {/* Right: Summary toggle & Odoo Pager */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        {/* Right: Summary toggle & Clean Pagination Controls (Page X of Y, Showing A–B of Total, Prev/Next, and 25/50/100 selector) */}
+        <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 pl-2 border-l border-slate-200 dark:border-slate-700 shrink-0">
           <button
             type="button"
             onClick={() => setShowSummary((v) => !v)}
@@ -1151,30 +1183,59 @@ export function ContractListView({ onSelectEmployee }) {
             }`}
           >
             {showSummary ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-            <span>Summary</span>
+            <span className="hidden xl:inline">Summary</span>
           </button>
 
-          <div className="flex items-center gap-1 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-md px-1.5 h-7">
-            <span className="text-[11.5px] font-mono text-slate-600 dark:text-slate-300 font-semibold tracking-tight">
-              {totalCount === 0 ? '0-0 / 0' : `${startIndex + 1}-${endIndex} / ${totalCount}`}
-            </span>
+          {/* Page Size Selector (25 / 50 / 100) */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-slate-400 hidden sm:inline">Rows:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              className="h-7 text-xs font-medium px-1.5 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer"
+              title="Page size (limit)"
+            >
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+          </div>
+
+          {/* Showing A–B of Total */}
+          <span className="font-mono text-xs tabular-nums text-slate-700 dark:text-slate-300 hidden md:inline">
+            Showing {showingStart}–{showingEnd} of {totalCount}
+          </span>
+
+          <span className="text-slate-300 dark:text-slate-600 hidden md:inline">|</span>
+
+          {/* Page X of Y */}
+          <span className="font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
+            Page {totalCount === 0 ? 0 : currentPage} of {totalPages}
+          </span>
+
+          {/* Previous / Next buttons */}
+          <div className="inline-flex items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-2xs">
             <button
               type="button"
               disabled={currentPage <= 1}
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              className="p-0.5 rounded text-slate-500 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
               title="Previous Page"
             >
-              <ChevronLeft className="w-3.5 h-3.5" />
+              <ChevronLeft className="w-3.5 h-3.5 text-slate-700 dark:text-slate-300" />
             </button>
+            <div className="w-[1px] h-3.5 bg-slate-200 dark:bg-slate-700" />
             <button
               type="button"
               disabled={currentPage >= totalPages}
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-              className="p-0.5 rounded text-slate-500 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
               title="Next Page"
             >
-              <ChevronRight className="w-3.5 h-3.5" />
+              <ChevronRight className="w-3.5 h-3.5 text-slate-700 dark:text-slate-300" />
             </button>
           </div>
         </div>

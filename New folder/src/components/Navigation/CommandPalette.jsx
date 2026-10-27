@@ -47,6 +47,7 @@ export function CommandPalette({
   onOpenProfile,
   onOpenPolicy,
   onOpenBusinessModal,
+  onOpenAIAssistant,
 }) {
   const { hasAppAccess, hasPermission, hasMenuAccess } = useAccessControl();
   const {
@@ -243,6 +244,23 @@ export function CommandPalette({
       keywords: ['profile', 'preferences', 'settings', 'theme', 'color', 'password'],
       action: () => {
         onOpenProfile?.();
+        onClose();
+      },
+    });
+
+    // Action: Open Permission-Scoped AI Assistant
+    items.push({
+      id: 'action_open_ai_assistant',
+      scope: 'actions',
+      scopeLabel: 'Quick Actions',
+      title: 'Ask AI Assistant',
+      subtitle: 'Permission-scoped intelligent query across your authorized models and branch boundaries',
+      icon: Sparkles,
+      iconBg: '#9333ea',
+      badge: 'AI Assistant',
+      keywords: ['ai', 'assistant', 'ask', 'copilot', 'query', 'intelligence', 'sparkles', 'bot'],
+      action: () => {
+        onOpenAIAssistant?.();
         onClose();
       },
     });
@@ -468,11 +486,15 @@ export function CommandPalette({
 
       if (e.key === 'ArrowDown') {
         e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation?.();
         setSelectedIndex((prev) =>
           filteredItems.length === 0 ? 0 : (prev + 1) % filteredItems.length
         );
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation?.();
         setSelectedIndex((prev) =>
           filteredItems.length === 0
             ? 0
@@ -480,11 +502,15 @@ export function CommandPalette({
         );
       } else if (e.key === 'Enter') {
         e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation?.();
         if (filteredItems[selectedIndex]) {
           filteredItems[selectedIndex].action();
         }
       } else if (e.key === 'Escape') {
         e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation?.();
         onClose();
       }
     },
@@ -493,8 +519,8 @@ export function CommandPalette({
 
   useEffect(() => {
     if (!isOpen) return;
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
   }, [isOpen, handleKeyDown]);
 
   if (!isOpen) return null;

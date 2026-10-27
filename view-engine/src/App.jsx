@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   LayoutGrid,
   Building2,
@@ -58,6 +58,7 @@ import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { EmployeesView } from './components/Employees/EmployeesView';
 import { ContractListView } from './components/Employees/ContractListView';
 import { ConfigurationView } from './components/Configuration/ConfigurationView';
+import { AIAssistantModal } from './components/Navigation/AIAssistantModal';
 import { PayrollBatchesView } from './components/Payroll/PayrollBatchesView';
 import { PayrollAdjustmentsView } from './components/Payroll/PayrollAdjustmentsView';
 import { LeaveManagementView } from './components/Leaves/LeaveManagementView';
@@ -171,6 +172,11 @@ function MainAppShell() {
     switchActiveUser,
     refreshTenancyData,
     refreshAttendanceData,
+    selectedBranchIds,
+    isAllBranchesSelected,
+    toggleBranchSelection,
+    selectAllBranches,
+    tenantEpoch,
   } = useTenancy();
 
   // Source of truth MUST be the authenticated user session from AuthContext
@@ -207,6 +213,33 @@ function MainAppShell() {
   const [activeModuleId, setActiveModuleId] = useState(initialNav.moduleId);
   const [activeMenuId, setActiveMenuId] = useState(initialNav.menuId);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isAIAssistantOpen, setIsAIAssistantOpen] = useState(false);
+
+  // Quick Access Panel Visibility Setting (default false, persisted to localStorage 'larea_enable_quick_access')
+  const [enableQuickAccess, setEnableQuickAccess] = useState(() => {
+    try {
+      return localStorage.getItem('larea_enable_quick_access') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    const syncSetting = () => {
+      try {
+        setEnableQuickAccess(localStorage.getItem('larea_enable_quick_access') === 'true');
+      } catch {
+        setEnableQuickAccess(false);
+      }
+    };
+
+    window.addEventListener('storage', syncSetting);
+    window.addEventListener('larea_settings_updated', syncSetting);
+    return () => {
+      window.removeEventListener('storage', syncSetting);
+      window.removeEventListener('larea_settings_updated', syncSetting);
+    };
+  }, []);
 
   // User Management List/Form View Mode
   const [userViewMode, setUserViewMode] = useState(initialNav.userViewMode);
@@ -248,6 +281,13 @@ function MainAppShell() {
       fetchRosters();
     }
   }, [activeMenuId, session?.token, fetchRosters]);
+
+  React.useEffect(() => {
+    if (tenantEpoch > 0) {
+      if (refreshAttendanceData) refreshAttendanceData();
+      if (activeMenuId === 'rosters') fetchRosters();
+    }
+  }, [tenantEpoch, refreshAttendanceData, activeMenuId, fetchRosters]);
 
   const handleCreateRoster = React.useCallback(async (record) => {
     try {
@@ -624,6 +664,20 @@ function MainAppShell() {
           onOpenProfile={() => setIsProfileModalOpen(true)}
           onOpenPolicy={handleOpenPolicy}
           onOpenBusinessModal={handleOpenBusinessModal}
+          onOpenAIAssistant={() => setIsAIAssistantOpen(true)}
+        />
+      </ErrorBoundary>
+
+      {/* 3b. PERMISSION-SCOPED AI ASSISTANT MODAL */}
+      <ErrorBoundary title="AI Assistant Error">
+        <AIAssistantModal
+          isOpen={isAIAssistantOpen}
+          onClose={() => setIsAIAssistantOpen(false)}
+          onNavigate={({ moduleId, menuId }) => {
+            setIsLauncherOpen(false);
+            handleSelectModule(moduleId);
+            if (menuId) handleSelectMenu(menuId);
+          }}
         />
       </ErrorBoundary>
 
@@ -683,33 +737,25 @@ function MainAppShell() {
         {/* ========================================================================= */}
         <div className="flex items-center gap-2 sm:gap-2.5">
           {/* 1. Global Command Palette Search (Ctrl+K) */}
-          <div className="hidden xl:flex items-center">
-            <button
-              type="button"
-              onClick={() => setIsCommandPaletteOpen(true)}
-              aria-label="Open Global Command Palette (Ctrl+K)"
-              className="flex items-center gap-2 bg-slate-800/70 hover:bg-slate-800 border border-slate-700/60 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 w-56 transition cursor-pointer shadow-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 text-left rtl:text-right"
-              title="Search records, apps, or commands (Ctrl+K)"
-            >
-              <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-              <span className="flex-1 text-slate-400 truncate">
-                {t('global_search_placeholder')}
-              </span>
-              <kbd className="flex items-center gap-0.5 px-1 py-0.5 bg-slate-900/90 border border-slate-700 rounded text-[9px] font-mono text-slate-400 shrink-0">
-                <Command className="w-2.5 h-2.5" /> K
-              </kbd>
-            </button>
-          </div>
-
-          {/* Mobile/Compact Search Trigger */}
           <button
             type="button"
             onClick={() => setIsCommandPaletteOpen(true)}
             aria-label="Search & Commands (Ctrl+K)"
-            className="xl:hidden p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-            title="Search & Commands (Ctrl+K)"
+            className="p-2 rounded-lg bg-slate-800/70 hover:bg-slate-800 border border-slate-700/60 text-slate-300 hover:text-white transition cursor-pointer shadow-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            title="Search records, apps, or commands (Ctrl+K)"
           >
             <Search className="w-4 h-4" />
+          </button>
+
+          {/* 1b. Permission-Scoped AI Assistant */}
+          <button
+            type="button"
+            onClick={() => setIsAIAssistantOpen(true)}
+            aria-label="Ask AI Assistant"
+            className="p-2 rounded-lg bg-gradient-to-r from-purple-500/15 to-blue-500/15 hover:from-purple-500/25 hover:to-blue-500/25 border border-purple-500/30 text-purple-400 hover:text-purple-300 transition cursor-pointer shadow-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
+            title="Ask AI Assistant (Permission Scoped)"
+          >
+            <Sparkles className="w-4 h-4" />
           </button>
 
           {/* 2. Organization & Branch Switcher (Moved to Top-Right with Click-Outside) */}
@@ -720,7 +766,7 @@ function MainAppShell() {
                 setShowBranchMenu(!showBranchMenu);
                 setShowUserMenu(false);
               }}
-              aria-label={`Current organization: ${currentOrganization?.legal_name || 'Organization'}, operating branch: ${currentBranch?.name || 'Branch'}`}
+              aria-label={`Current organization: ${currentOrganization?.legal_name || 'Organization'}, operating branch: ${isAllBranchesSelected ? 'All Branches (Consolidated)' : selectedBranchIds.length > 1 ? `${selectedBranchIds.length} Branches Selected` : (currentBranch?.name || 'Branch')}`}
               aria-haspopup="true"
               aria-expanded={showBranchMenu}
               className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-800/70 hover:bg-slate-800 border border-slate-700/60 text-xs transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
@@ -734,11 +780,23 @@ function MainAppShell() {
                 {currentOrganization?.legal_name ? currentOrganization.legal_name.slice(0, 1) : 'A'}
               </div>
               <div className="text-left rtl:text-right hidden sm:block">
-                <div className="font-semibold text-slate-200 tracking-tight leading-none text-xs truncate max-w-[130px]">
+                <div className="font-semibold text-slate-200 tracking-tight leading-none text-xs truncate max-w-[140px]">
                   {currentOrganization?.legal_name || 'Organization'}
                 </div>
-                <div className="text-[10px] text-slate-400 font-mono leading-none mt-0.5 truncate max-w-[130px]">
-                  {currentBranch?.name || 'Branch'}
+                <div className="text-[10px] text-slate-400 font-mono leading-none mt-0.5 truncate max-w-[140px] flex items-center gap-1">
+                  {isAllBranchesSelected ? (
+                    <>
+                      <Layers className="w-3 h-3 text-blue-400 shrink-0" />
+                      <span>All Branches (Consolidated)</span>
+                    </>
+                  ) : selectedBranchIds.length > 1 ? (
+                    <>
+                      <Layers className="w-3 h-3 text-blue-400 shrink-0" />
+                      <span>{selectedBranchIds.length} Branches Selected</span>
+                    </>
+                  ) : (
+                    <span>{userBranchesInCurrentOrg.find((b) => b.id === selectedBranchIds[0])?.name || currentBranch?.name || 'Branch'}</span>
+                  )}
                 </div>
               </div>
               <ChevronDown className="w-3.5 h-3.5 text-slate-400 ml-0.5 shrink-0" aria-hidden="true" />
@@ -756,7 +814,10 @@ function MainAppShell() {
                     <button
                       key={org.id}
                       type="button"
-                      onClick={() => switchOrganization(org.id)}
+                      onClick={() => {
+                        switchOrganization(org.id);
+                        setShowBranchMenu(false);
+                      }}
                       className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between hover:bg-slate-800 transition cursor-pointer ${isOrgActive ? 'text-blue-400 font-semibold bg-slate-800/60' : 'text-slate-300'
                         }`}
                     >
@@ -773,22 +834,53 @@ function MainAppShell() {
                 <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   {t('operating_branch')}
                 </div>
+
+                {/* All Branches (Consolidated View) Button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    selectAllBranches();
+                    setShowBranchMenu(false);
+                  }}
+                  className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between rounded-lg transition cursor-pointer ${
+                    isAllBranchesSelected
+                      ? 'text-blue-400 font-bold bg-slate-800/80'
+                      : 'text-slate-300 hover:bg-slate-800/50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Layers className="w-3.5 h-3.5 text-blue-400" />
+                    <span>All Branches (Consolidated)</span>
+                  </div>
+                  {isAllBranchesSelected && <Check className="w-3.5 h-3.5 text-blue-400" />}
+                </button>
+
+                {/* Individual Branches with Checkboxes */}
                 {userBranchesInCurrentOrg.map((br) => {
-                  const isBrActive = br.id === currentBranch?.id;
+                  const isSelected = selectedBranchIds.includes(br.id);
                   return (
                     <button
                       key={br.id}
                       type="button"
                       onClick={() => {
-                        switchBranch(br.id);
-                        setShowBranchMenu(false);
+                        toggleBranchSelection(br.id);
                       }}
-                      className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between hover:bg-slate-800 transition cursor-pointer ${isBrActive ? 'text-blue-400 font-semibold bg-slate-800/60' : 'text-slate-300'
-                        }`}
+                      className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between rounded-lg hover:bg-slate-800/60 transition cursor-pointer ${
+                        isSelected ? 'text-blue-400 font-semibold bg-slate-800/40' : 'text-slate-300'
+                      }`}
                     >
-                      <div className="truncate">
-                        <div>{br.name}</div>
-                        <div className="text-[10px] text-slate-500">{br.city}</div>
+                      <div className="flex items-center gap-2 truncate">
+                        <div
+                          className={`w-4 h-4 rounded border flex items-center justify-center transition shrink-0 ${
+                            isSelected ? 'bg-blue-600 border-blue-500 text-white' : 'border-slate-600 bg-slate-800/80'
+                          }`}
+                        >
+                          {isSelected && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                        <div className="truncate">
+                          <div>{br.name}</div>
+                          <div className="text-[10px] text-slate-500">{br.city}</div>
+                        </div>
                       </div>
                       <span className="font-mono text-[10px] text-slate-500 shrink-0 ml-2">
                         {br.code}
@@ -936,13 +1028,16 @@ function MainAppShell() {
 
       {/* 6. WORKSPACE RENDERER ACCORDING TO 2-TIER MODULE & SUB-MENU */}
       <ErrorBoundary title="Workspace Viewport Error">
-        <main className="flex-1 flex flex-col">
+        <main key={`workspace-${tenantEpoch}`} className="flex-1 flex flex-col">
           {isLauncherOpen ? (
             <AppGridOverlay
               activeModuleId={activeModuleId}
               onSelectModule={handleSelectModule}
               onSelectMenu={handleSelectMenu}
               onClose={() => setIsLauncherOpen(false)}
+              onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+              isCommandPaletteOpen={isCommandPaletteOpen}
+              enableQuickAccess={enableQuickAccess}
             />
           ) : !hasMenuAccess(activeMenuId) ? (
             <div className="flex-1 flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto animate-fadeIn select-none">
@@ -977,7 +1072,7 @@ function MainAppShell() {
               {/* Module HR: Attendance Logs */}
               {activeModuleId === 'hr' && activeMenuId === 'attendances' && (
                 <ViewEngine
-                  key="hr-attendances"
+                  key={`hr-attendances-${currentOrganization?.id || ''}-${currentBranch?.id || ''}`}
                   initialView="list"
                   schema={VIEW_SCHEMA}
                   initialData={attendanceRecords || []}
@@ -1021,7 +1116,7 @@ function MainAppShell() {
               {/* Module HR: Employees & Create New Employee */}
               {activeModuleId === 'hr' && (activeMenuId === 'employees' || activeMenuId === 'new_employee') && (
                 <EmployeesView
-                  key={`emp-view-${employeeResetKey}-${targetContractEmployeeId || 'none'}`}
+                  key={`emp-view-${employeeResetKey}-${currentOrganization?.id || ''}-${currentBranch?.id || ''}-${targetContractEmployeeId || 'none'}`}
                   activeMenuId={activeMenuId}
                   initialEmployeeId={targetContractEmployeeId}
                   onBackToList={() => {
@@ -1069,28 +1164,28 @@ function MainAppShell() {
 
               {/* Module Operations: Hardware Terminals */}
               {activeModuleId === 'operations' && activeMenuId === 'terminals' && (
-                <div className="p-4 sm:p-6">
+                <div className="p-4 sm:p-6" key={`terminals-${currentOrganization?.id || ''}-${currentBranch?.id || ''}`}>
                   <HardwareTerminalsView />
                 </div>
               )}
 
               {/* Module Payroll: Batches */}
               {activeModuleId === 'payroll' && activeMenuId === 'batches' && (
-                <div className="p-4 sm:p-6">
+                <div className="p-4 sm:p-6" key={`payroll-batches-${currentOrganization?.id || ''}-${currentBranch?.id || ''}`}>
                   <PayrollBatchesView />
                 </div>
               )}
 
               {/* Module Payroll: Variable Pay & Approvals */}
               {activeModuleId === 'payroll' && activeMenuId === 'payroll_adjustments' && (
-                <div className="p-4 sm:p-6">
+                <div className="p-4 sm:p-6" key={`payroll-adjustments-${currentOrganization?.id || ''}-${currentBranch?.id || ''}`}>
                   <PayrollAdjustmentsView />
                 </div>
               )}
 
               {/* Module Payroll: EOSB & Final Settlement */}
               {activeModuleId === 'payroll' && activeMenuId === 'eosb' && (
-                <div className="p-4 sm:p-6">
+                <div className="p-4 sm:p-6" key={`payroll-eosb-${currentOrganization?.id || ''}-${currentBranch?.id || ''}`}>
                   <EOSBGratuityView />
                 </div>
               )}
@@ -1189,7 +1284,9 @@ function AppContent() {
     <TenancyProvider>
       <AccessControlProvider>
         <ChatProvider>
-          <MainAppShell />
+          <ErrorBoundary title="Application View Engine Error">
+            <MainAppShell />
+          </ErrorBoundary>
         </ChatProvider>
       </AccessControlProvider>
     </TenancyProvider>

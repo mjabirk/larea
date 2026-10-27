@@ -5,7 +5,7 @@ import math
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
 from pydantic import BaseModel
-from backend.core.database import get_db_pool
+from backend.core.database import get_db_pool, log_audit_event
 from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, check_permission
 from backend.api.v1.payroll import (
     can_read_salary,
@@ -175,11 +175,20 @@ async def list_leave_requests(
         params.append(month.strip())
         idx += 1
 
-    if not session.get("is_superadmin") and session.get("organization_id"):
+    if session.get("organization_id"):
         try:
             org_uuid = uuid.UUID(str(session.get("organization_id")).strip())
             query += f" AND (organization_id = ${idx}::uuid OR organization_id IS NULL)"
             params.append(org_uuid)
+            idx += 1
+        except Exception:
+            pass
+
+    if session.get("branch_id"):
+        try:
+            br_uuid = uuid.UUID(str(session.get("branch_id")).strip())
+            query += f" AND (branch_id = ${idx}::uuid OR branch_id IS NULL)"
+            params.append(br_uuid)
             idx += 1
         except Exception:
             pass
@@ -297,6 +306,25 @@ async def create_leave_request(
             payload.reason, author_name, emp.get("organization_id")
         )
 
+        client_ip = get_client_ip(request) if request else "127.0.0.1"
+        await log_audit_event(
+            conn=conn,
+            entity_type="leave_requests",
+            entity_id=new_id,
+            action="CREATE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Submitted leave request {code} for {emp['full_name']} ({clean_type_id}, {total_days} days).",
+            changes={
+                "code": code,
+                "leave_type_id": clean_type_id,
+                "start_date": str(start_dt),
+                "end_date": str(end_dt),
+                "total_days": total_days,
+                "computed_deduction_qar": computed_deduction_qar
+            }
+        )
+
         row = await conn.fetchrow("SELECT * FROM leave_requests WHERE id = $1;", new_id)
         resp_data = serialize_row(dict(row))
         if not can_read:
@@ -314,6 +342,7 @@ async def create_leave_request(
 async def approve_leave_request(
     leave_id: str,
     payload: ApproveLeavePayload,
+    request: Request = None,
     session: Dict[str, Any] = Depends(get_current_user_session),
 ):
     """
@@ -327,6 +356,8 @@ async def approve_leave_request(
         raise HTTPException(status_code=400, detail="Invalid leave request UUID.")
 
     pool = get_db_pool()
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             leave = await conn.fetchrow("SELECT * FROM leave_requests WHERE id = $1 FOR UPDATE;", l_uuid)
@@ -429,6 +460,24 @@ async def approve_leave_request(
                 # Synchronize to any existing draft payslip
                 await sync_employee_adjustments_to_payslips(conn, leave["employee_id"], salary_ym)
 
+            await log_audit_event(
+                conn=conn,
+                entity_type="leave_requests",
+                entity_id=l_uuid,
+                action="APPROVE",
+                session=session,
+                client_ip=client_ip,
+                note=f"Leave request {leave['code']} updated to '{new_status}' by {author_name}.",
+                changes={
+                    "code": leave["code"],
+                    "previous_status": current_status,
+                    "new_status": new_status,
+                    "leave_type": leave["leave_type_name"],
+                    "total_days": float(leave["total_days"]),
+                    "computed_deduction_qar": float(leave["computed_deduction_qar"] or 0.0)
+                }
+            )
+
             updated = await conn.fetchrow("SELECT * FROM leave_requests WHERE id = $1;", l_uuid)
 
     # Fire automated trigger if leave reached final 'approved' status (outside DB transaction)
@@ -471,6 +520,7 @@ async def approve_leave_request(
 async def reject_leave_request(
     leave_id: str,
     payload: RejectLeavePayload,
+    request: Request = None,
     session: Dict[str, Any] = Depends(get_current_user_session),
 ):
     """Rejects a leave request and records rejection audit notes."""
@@ -482,6 +532,7 @@ async def reject_leave_request(
     if not payload.rejection_reason.strip():
         raise HTTPException(status_code=400, detail="A reason is required to reject a leave request.")
 
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
     pool = get_db_pool()
     async with pool.acquire() as conn:
         leave = await conn.fetchrow("SELECT * FROM leave_requests WHERE id = $1;", l_uuid)
@@ -500,6 +551,22 @@ async def reject_leave_request(
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = $1;
         """, l_uuid, payload.rejection_reason.strip())
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="leave_requests",
+            entity_id=l_uuid,
+            action="REJECT",
+            session=session,
+            client_ip=client_ip,
+            note=f"Leave request {leave['code']} rejected by {author_name}. Reason: {payload.rejection_reason.strip()}",
+            changes={
+                "code": leave["code"],
+                "previous_status": leave["approval_status"],
+                "new_status": "rejected",
+                "rejection_reason": payload.rejection_reason.strip()
+            }
+        )
 
         # Fire automated trigger for leave_rejected
         try:
@@ -530,6 +597,7 @@ async def reject_leave_request(
 @router.delete("/leaves/{leave_id}")
 async def delete_leave_request(
     leave_id: str,
+    request: Request = None,
     session: Dict[str, Any] = Depends(get_current_user_session),
 ):
     """Deletes an unapproved or rejected leave request."""
@@ -538,6 +606,7 @@ async def delete_leave_request(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid leave request UUID.")
 
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
     pool = get_db_pool()
     async with pool.acquire() as conn:
         leave = await conn.fetchrow("SELECT * FROM leave_requests WHERE id = $1;", l_uuid)
@@ -548,6 +617,18 @@ async def delete_leave_request(
             raise HTTPException(status_code=400, detail="Cannot delete an approved leave request. Contact HR to reverse.")
 
         await conn.execute("DELETE FROM leave_requests WHERE id = $1;", l_uuid)
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="leave_requests",
+            entity_id=l_uuid,
+            action="DELETE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Deleted leave request {leave['code']}.",
+            changes={"deleted_leave_id": str(l_uuid), "code": leave["code"]}
+        )
+
         return {"status": "success", "message": f"Leave request {leave['code']} deleted."}
 
 
@@ -608,11 +689,20 @@ async def get_eosb_summary(
             params.append(department.strip())
             idx += 1
 
-        if not session.get("is_superadmin") and session.get("organization_id"):
+        if session.get("organization_id"):
             try:
                 org_uuid = uuid.UUID(str(session.get("organization_id")).strip())
                 query += f" AND (organization_id = ${idx}::uuid OR organization_id IS NULL)"
                 params.append(org_uuid)
+                idx += 1
+            except Exception:
+                pass
+
+        if session.get("branch_id"):
+            try:
+                br_uuid = uuid.UUID(str(session.get("branch_id")).strip())
+                query += f" AND (branch_id = ${idx}::uuid OR branch_id IS NULL)"
+                params.append(br_uuid)
                 idx += 1
             except Exception:
                 pass

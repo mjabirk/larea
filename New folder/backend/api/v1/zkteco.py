@@ -21,8 +21,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from backend.core.dependencies import get_current_user_session, require_permission, check_permission
-from backend.core.database import get_db_pool
+from backend.core.dependencies import get_current_user_session, require_permission, check_permission, get_client_ip
+from backend.core.database import get_db_pool, log_audit_event
+from backend.core.dependency_guard import inspect_dependencies
 
 logger = logging.getLogger("zkteco_adms")
 router = APIRouter()
@@ -317,12 +318,17 @@ async def iclock_cdata_post(request: Request):
         """, client_ip, sn)
 
         # ======================================================================
-        # CASE A: ATTLOG (Attendance Punches & Smart Pairing Engine)
+        # ======================================================================
+        # CASE A: ATTLOG (High-Throughput Batched Attendance Ingestion & Smart Pairing)
         # ======================================================================
         if table == "ATTLOG":
-            processed_count = 0
+            from backend.core.sequences import uuid7, get_next_attendance_code
+
+            parsed_punches = []
+            emp_codes_set = set()
+
             for line in lines:
-                parts = re.split(r"[\t\s]+", line)
+                parts = re.split(r"[\t\s]+", line.strip())
                 if len(parts) < 2:
                     continue
 
@@ -337,16 +343,62 @@ async def iclock_cdata_post(request: Request):
                     punch_time_utc = datetime.datetime.now(datetime.timezone.utc)
 
                 verify_method = VERIFY_METHODS.get(verify_code, f"Biometric ({verify_code})")
+                parsed_punches.append({
+                    "emp_code": emp_code,
+                    "punch_time_utc": punch_time_utc,
+                    "verify_method": verify_method,
+                })
+                emp_codes_set.add(emp_code)
 
-                # Look up employee
-                emp = await conn.fetchrow("""
-                    SELECT id, employee_number, full_name, department_id, organization_id, branch_id
+            if not parsed_punches:
+                return PlainTextResponse("OK: 0\n")
+
+            # 1. Single Batched Query for All Employees in Batch
+            emp_map = {}
+            if emp_codes_set:
+                emp_list = list(emp_codes_set)
+                clean_short = [c.replace("EMP-", "") for c in emp_list]
+                all_codes = list(set(emp_list + clean_short))
+                emp_rows = await conn.fetch("""
+                    SELECT id, employee_number, full_name, department_id, organization_id, branch_id, zk_emp_code
                     FROM employees
-                    WHERE zk_emp_code = $1
-                       OR employee_number = $1
-                       OR REPLACE(employee_number, 'EMP-', '') = $1
-                    LIMIT 1;
-                """, emp_code)
+                    WHERE zk_emp_code = ANY($1::text[])
+                       OR employee_number = ANY($1::text[])
+                       OR REPLACE(employee_number, 'EMP-', '') = ANY($1::text[]);
+                """, all_codes)
+                for r in emp_rows:
+                    if r["zk_emp_code"]:
+                        emp_map[str(r["zk_emp_code"]).strip()] = r
+                    if r["employee_number"]:
+                        emp_map[str(r["employee_number"]).strip()] = r
+                        emp_map[str(r["employee_number"]).replace("EMP-", "").strip()] = r
+
+            # 2. Single Batched Query for Open Attendance Shifts
+            matched_emp_ids = list(set(e["id"] for e in emp_map.values()))
+            open_logs_map = {}
+            if matched_emp_ids:
+                open_logs = await conn.fetch("""
+                    SELECT id, employee_id, check_in
+                    FROM attendance_logs
+                    WHERE employee_id = ANY($1::uuid[]) AND check_out IS NULL
+                    ORDER BY check_in DESC;
+                """, matched_emp_ids)
+                for ol in open_logs:
+                    eid = ol["employee_id"]
+                    if eid not in open_logs_map:
+                        open_logs_map[eid] = ol
+
+            # 3. In-Memory Smart Pairing & Bulk Operations Preparation
+            updates_shift_checkout = []
+            updates_stale_close = []
+            inserts_attendance = []
+            inserts_transactions = []
+
+            for punch in parsed_punches:
+                emp_code = punch["emp_code"]
+                punch_time_utc = punch["punch_time_utc"]
+                verify_method = punch["verify_method"]
+                emp = emp_map.get(emp_code)
 
                 emp_id = emp["id"] if emp else None
                 emp_name = emp["full_name"] if emp else f"Badge #{emp_code}"
@@ -357,14 +409,7 @@ async def iclock_cdata_post(request: Request):
                 linked_att_id = None
 
                 if emp_id:
-                    # SMART ATTENDANCE PAIRING ENGINE
-                    open_log = await conn.fetchrow("""
-                        SELECT id, check_in
-                        FROM attendance_logs
-                        WHERE employee_id = $1 AND check_out IS NULL
-                        ORDER BY check_in DESC LIMIT 1;
-                    """, emp_id)
-
+                    open_log = open_logs_map.get(emp_id)
                     if open_log:
                         diff_sec = (punch_time_utc - open_log["check_in"]).total_seconds()
                         if diff_sec <= 120:
@@ -374,66 +419,85 @@ async def iclock_cdata_post(request: Request):
                         elif diff_sec <= 16 * 3600:
                             # VALID SHIFT PAIRING (<= 16 hours)
                             dur_hours = round(diff_sec / 3600.0, 2)
-                            await conn.execute("""
-                                UPDATE attendance_logs
-                                SET check_out = $1,
-                                    duration_hours = $2,
-                                    status = CASE WHEN $2 < 8.0 THEN 'half_day' ELSE 'present' END,
-                                    updated_at = CURRENT_TIMESTAMP
-                                WHERE id = $3;
-                            """, punch_time_utc, dur_hours, open_log["id"])
+                            status_val = "half_day" if dur_hours < 8.0 else "present"
+                            updates_shift_checkout.append((punch_time_utc, dur_hours, status_val, open_log["id"]))
                             punch_state = "Employee Check-Out"
                             linked_att_id = open_log["id"]
+                            del open_logs_map[emp_id]
                         else:
                             # STALE SHIFT AUTO-CLOSE (> 16 hours)
-                            await conn.execute("""
-                                UPDATE attendance_logs
-                                SET check_out = check_in,
-                                    duration_hours = 0.0,
-                                    notes = 'Auto-closed by ZKTeco sync: Employee missed checkout on previous shift',
-                                    updated_at = CURRENT_TIMESTAMP
-                                WHERE id = $1;
-                            """, open_log["id"])
-
-                            new_att_id = uuid.uuid4()
-                            await conn.execute("""
-                                INSERT INTO attendance_logs (
-                                    id, employee_id, employee_name, department, terminal_id, check_in, status, organization_id, notes, ingestion_source, created_at
-                                ) VALUES (
-                                    $1, $2, $3, $4, $5, $6, 'present', $7, 'Created via ZKTeco ADMS terminal (Prior Auto-Closed)', 'ZKTeco ADMS Ingestion', CURRENT_TIMESTAMP
-                                );
-                            """, new_att_id, emp_id, emp_name, dept_name, sn, punch_time_utc, org_id)
+                            updates_stale_close.append((open_log["id"],))
+                            new_att_id = uuid7()
+                            att_code = await get_next_attendance_code(2026, tenant_id=str(org_id or "default_tenant"))
+                            inserts_attendance.append((
+                                new_att_id, att_code, emp_id, emp_name, dept_name, sn,
+                                punch_time_utc, "present", org_id,
+                                "Created via ZKTeco ADMS terminal (Prior Auto-Closed)", "ZKTeco ADMS Ingestion"
+                            ))
                             punch_state = "Employee Check-In (Prior Auto-Closed)"
                             linked_att_id = new_att_id
+                            open_logs_map[emp_id] = {"id": new_att_id, "employee_id": emp_id, "check_in": punch_time_utc}
                     else:
-                        # NEW CHECK-IN
-                        new_att_id = uuid.uuid4()
-                        await conn.execute("""
-                            INSERT INTO attendance_logs (
-                                id, employee_id, employee_name, department, terminal_id, check_in, status, organization_id, notes, ingestion_source, created_at
-                            ) VALUES (
-                                $1, $2, $3, $4, $5, $6, 'present', $7, 'Created via ZKTeco ADMS terminal check-in', 'ZKTeco ADMS Ingestion', CURRENT_TIMESTAMP
-                            );
-                        """, new_att_id, emp_id, emp_name, dept_name, sn, punch_time_utc, org_id)
+                        # NEW CHECK-IN (UUIDv7 + lock-free sequence)
+                        new_att_id = uuid7()
+                        att_code = await get_next_attendance_code(2026, tenant_id=str(org_id or "default_tenant"))
+                        inserts_attendance.append((
+                            new_att_id, att_code, emp_id, emp_name, dept_name, sn,
+                            punch_time_utc, "present", org_id,
+                            "Created via ZKTeco ADMS terminal check-in", "ZKTeco ADMS Ingestion"
+                        ))
                         punch_state = "Employee Check-In"
                         linked_att_id = new_att_id
+                        open_logs_map[emp_id] = {"id": new_att_id, "employee_id": emp_id, "check_in": punch_time_utc}
 
-                # Save raw transaction record
-                await conn.execute("""
+                # Raw transaction (UUIDv7)
+                trans_id = uuid7()
+                inserts_transactions.append((
+                    trans_id, emp_code, emp_id, emp_name, punch_time_utc,
+                    punch_state, sn, verify_method, linked_att_id
+                ))
+
+            # 4. High-Performance Bulk Writes via executemany
+            if updates_shift_checkout:
+                await conn.executemany("""
+                    UPDATE attendance_logs
+                    SET check_out = $1, duration_hours = $2, status = $3, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $4;
+                """, updates_shift_checkout)
+
+            if updates_stale_close:
+                await conn.executemany("""
+                    UPDATE attendance_logs
+                    SET check_out = check_in, duration_hours = 0.0,
+                        notes = 'Auto-closed by ZKTeco sync: Employee missed checkout on previous shift',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $1;
+                """, updates_stale_close)
+
+            if inserts_attendance:
+                await conn.executemany("""
+                    INSERT INTO attendance_logs (
+                        id, code, employee_id, employee_name, department, terminal_id,
+                        check_in, status, organization_id, notes, ingestion_source, created_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP
+                    );
+                """, inserts_attendance)
+
+            if inserts_transactions:
+                await conn.executemany("""
                     INSERT INTO zkteco_transactions (
                         id, emp_code, employee_id, employee_name, punch_time,
                         punch_state, terminal_sn, verify_method, processed, attendance_log_id, created_at
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, true, $9, CURRENT_TIMESTAMP
                     );
-                """, uuid.uuid4(), emp_code, emp_id, emp_name, punch_time_utc, punch_state, sn, verify_method, linked_att_id)
-
-                processed_count += 1
+                """, inserts_transactions)
 
             if stamp:
                 await conn.execute("UPDATE zkteco_terminals SET attlog_stamp = $1 WHERE sn = $2;", stamp.strip(), sn)
 
-            return PlainTextResponse(f"OK: {processed_count}\n")
+            return PlainTextResponse(f"OK: {len(parsed_punches)}\n")
 
         # ======================================================================
         # CASE B: OPERLOG (Device Operation Logs & Alarm Audit Alerts)
@@ -615,21 +679,45 @@ async def list_terminals(session: Dict[str, Any] = Depends(get_current_user_sess
     """List all registered ZKTeco ADMS terminals with command queue metrics and access group info."""
     require_permission(session, "attendance.read")
     pool = get_db_pool()
+    org_id = session.get("organization_id")
+    branch_id = session.get("branch_id")
+
+    query = """
+        SELECT t.*,
+               g.name as group_name,
+               b.name as branch_name,
+               COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'pending'), 0) as pending_commands,
+               COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'sent'), 0) as sent_commands,
+               COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'success'), 0) as success_commands,
+               COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'failed'), 0) as failed_commands,
+               COALESCE((SELECT COUNT(*) FROM zkteco_transactions x WHERE x.terminal_sn = t.sn), 0) as total_transactions
+        FROM zkteco_terminals t
+        LEFT JOIN zkteco_access_groups g ON t.group_id = g.id
+        LEFT JOIN branches b ON t.branch_id = b.id
+        WHERE 1=1
+    """
+    params = []
+    idx = 1
+    if org_id:
+        try:
+            org_uuid = uuid.UUID(str(org_id))
+            query += f" AND (t.organization_id = ${idx}::uuid OR t.organization_id IS NULL)"
+            params.append(org_uuid)
+            idx += 1
+        except Exception:
+            pass
+    if branch_id:
+        try:
+            br_uuid = uuid.UUID(str(branch_id))
+            query += f" AND (t.branch_id = ${idx}::uuid OR t.branch_id IS NULL)"
+            params.append(br_uuid)
+            idx += 1
+        except Exception:
+            pass
+    query += " ORDER BY t.alias ASC;"
+
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT t.*,
-                   g.name as group_name,
-                   b.name as branch_name,
-                   COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'pending'), 0) as pending_commands,
-                   COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'sent'), 0) as sent_commands,
-                   COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'success'), 0) as success_commands,
-                   COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'failed'), 0) as failed_commands,
-                   COALESCE((SELECT COUNT(*) FROM zkteco_transactions x WHERE x.terminal_sn = t.sn), 0) as total_transactions
-            FROM zkteco_terminals t
-            LEFT JOIN zkteco_access_groups g ON t.group_id = g.id
-            LEFT JOIN branches b ON t.branch_id = b.id
-            ORDER BY t.alias ASC;
-        """)
+        rows = await conn.fetch(query, *params)
 
         # Serialize rows
         results = []
@@ -655,12 +743,14 @@ async def list_terminals(session: Dict[str, Any] = Depends(get_current_user_sess
 @router.post("/api/v1/zkteco/terminals")
 async def create_terminal(
     payload: TerminalCreatePayload,
+    request: Request = None,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Register a new ZKTeco hardware terminal."""
     require_permission(session, "attendance.manage")
     clean_sn = payload.sn.strip().upper()
     pool = get_db_pool()
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
 
     async with pool.acquire() as conn:
         existing = await conn.fetchval("SELECT id FROM zkteco_terminals WHERE sn = $1;", clean_sn)
@@ -686,6 +776,17 @@ async def create_terminal(
            bool(payload.is_enrollment_terminal), float(payload.time_offset_hours or 0.0),
            payload.lan_ip_address, payload.fp_algo or "10", payload.face_algo or "39", payload.palm_algo or "unknown")
 
+        await log_audit_event(
+            conn=conn,
+            entity_type="zkteco_terminals",
+            entity_id=t_id,
+            action="CREATE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Registered biometric hardware terminal {clean_sn} ({payload.alias.strip()}).",
+            changes={"sn": clean_sn, "alias": payload.alias.strip(), "lan_ip_address": payload.lan_ip_address}
+        )
+
         return {"status": "success", "id": str(t_id), "sn": clean_sn}
 
 
@@ -693,12 +794,14 @@ async def create_terminal(
 async def update_terminal(
     terminal_id: str,
     payload: TerminalCreatePayload,
+    request: Request = None,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Update hardware terminal parameters."""
     require_permission(session, "attendance.manage")
     pool = get_db_pool()
     t_uuid = uuid.UUID(terminal_id)
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
 
     async with pool.acquire() as conn:
         terminal = await conn.fetchrow("SELECT * FROM zkteco_terminals WHERE id = $1;", t_uuid)
@@ -722,37 +825,90 @@ async def update_terminal(
            payload.lan_ip_address, payload.fp_algo or "10", payload.face_algo or "39",
            payload.palm_algo or "unknown", t_uuid)
 
+        await log_audit_event(
+            conn=conn,
+            entity_type="zkteco_terminals",
+            entity_id=t_uuid,
+            action="UPDATE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Updated terminal {terminal['sn']} ({payload.alias.strip()}).",
+            changes={"alias": payload.alias.strip(), "state": payload.state or "active", "lan_ip_address": payload.lan_ip_address}
+        )
+
         return {"status": "success", "id": str(t_uuid)}
 
 
 @router.delete("/api/v1/zkteco/terminals/{terminal_id}")
 async def delete_terminal(
     terminal_id: str,
+    request: Request = None,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Delete a terminal registration."""
     require_permission(session, "attendance.manage")
     pool = get_db_pool()
     t_uuid = uuid.UUID(terminal_id)
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
     async with pool.acquire() as conn:
-        sn = await conn.fetchval("SELECT sn FROM zkteco_terminals WHERE id = $1;", t_uuid)
-        if not sn:
+        term = await conn.fetchrow("SELECT sn, alias FROM zkteco_terminals WHERE id = $1;", t_uuid)
+        if not term:
             raise HTTPException(status_code=404, detail="Terminal not found.")
+        sn = term["sn"]
+        alias = term.get("alias") or sn
+
+        # Relational Dependency Guard Pre-check
+        violation = await inspect_dependencies(conn, "zkteco_terminals", sn, alias)
+        if violation:
+            raise HTTPException(status_code=409, detail=violation)
+
         await conn.execute("DELETE FROM zkteco_command_queue WHERE terminal_sn = $1;", sn)
         await conn.execute("DELETE FROM zkteco_terminals WHERE id = $1;", t_uuid)
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="zkteco_terminals",
+            entity_id=t_uuid,
+            action="DELETE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Deleted terminal registration {sn} ({t_uuid}).",
+            changes={"deleted_terminal_id": str(t_uuid), "sn": sn}
+        )
+
         return {"status": "deleted", "sn": sn}
+
+
+@router.post("/api/v1/zkteco/terminals/{terminal_id}/toggle-archive")
+async def toggle_archive_terminal(
+    terminal_id: str,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    require_permission(session, "attendance.manage")
+    pool = get_db_pool()
+    t_uuid = uuid.UUID(terminal_id)
+    async with pool.acquire() as conn:
+        term = await conn.fetchrow("SELECT sn, alias, is_active FROM zkteco_terminals WHERE id = $1;", t_uuid)
+        if not term:
+            raise HTTPException(status_code=404, detail="Terminal not found.")
+        new_state = not bool(term.get("is_active", True))
+        await conn.execute("UPDATE zkteco_terminals SET is_active = $1 WHERE id = $2;", new_state, t_uuid)
+        return {"status": "success", "is_active": new_state, "message": f"Terminal {term['alias'] or term['sn']} {'unarchived' if new_state else 'archived'}."}
 
 
 @router.post("/api/v1/zkteco/terminals/{terminal_id}/command")
 async def dispatch_terminal_command(
     terminal_id: str,
     payload: CommandDispatchPayload,
+    request: Request = None,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Queue hardware command actions (sync_users, fix_time_qatar, clear_admin, reboot, clear_queue)."""
     require_permission(session, "attendance.manage")
     pool = get_db_pool()
     t_uuid = uuid.UUID(terminal_id)
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
 
     async with pool.acquire() as conn:
         terminal = await conn.fetchrow("SELECT sn FROM zkteco_terminals WHERE id = $1;", t_uuid)
@@ -760,6 +916,7 @@ async def dispatch_terminal_command(
             raise HTTPException(status_code=404, detail="Terminal not found.")
         sn = terminal["sn"]
 
+        resp = None
         if payload.action == "sync_users":
             # Queue commands to push all active workforce members to device
             employees = await conn.fetch("""
@@ -781,7 +938,7 @@ async def dispatch_terminal_command(
                     VALUES ($1, $2, 'pending');
                 """, sn, cmd_text)
                 count += 1
-            return {"status": "queued", "action": "sync_users", "queued_commands": count}
+            resp = {"status": "queued", "action": "sync_users", "queued_commands": count}
 
         elif payload.action == "fix_time_qatar":
             qatar_now = datetime.datetime.now(QATAR_TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -790,37 +947,50 @@ async def dispatch_terminal_command(
                 INSERT INTO zkteco_command_queue (terminal_sn, command_text, status)
                 VALUES ($1, $2, 'pending') RETURNING id;
             """, sn, cmd_text)
-            return {"status": "queued", "command_id": cmd_id, "command_text": cmd_text}
+            resp = {"status": "queued", "command_id": cmd_id, "command_text": cmd_text}
 
         elif payload.action == "clear_admin":
             cmd_id = await conn.fetchval("""
                 INSERT INTO zkteco_command_queue (terminal_sn, command_text, status)
                 VALUES ($1, 'CLEAR ADMIN', 'pending') RETURNING id;
             """, sn)
-            return {"status": "queued", "command_id": cmd_id, "action": "clear_admin"}
+            resp = {"status": "queued", "command_id": cmd_id, "action": "clear_admin"}
 
         elif payload.action == "reboot":
             cmd_id = await conn.fetchval("""
                 INSERT INTO zkteco_command_queue (terminal_sn, command_text, status)
                 VALUES ($1, 'REBOOT', 'pending') RETURNING id;
             """, sn)
-            return {"status": "queued", "command_id": cmd_id, "action": "reboot"}
+            resp = {"status": "queued", "command_id": cmd_id, "action": "reboot"}
 
         elif payload.action == "clear_queue":
             await conn.execute("""
                 DELETE FROM zkteco_command_queue WHERE terminal_sn = $1 AND status IN ('pending', 'sent');
             """, sn)
-            return {"status": "success", "message": f"Queue cleared for {sn}"}
+            resp = {"status": "success", "message": f"Queue cleared for {sn}"}
 
         elif payload.action == "custom" and payload.custom_cmd:
             cmd_id = await conn.fetchval("""
                 INSERT INTO zkteco_command_queue (terminal_sn, command_text, status)
                 VALUES ($1, $2, 'pending') RETURNING id;
             """, sn, payload.custom_cmd.strip())
-            return {"status": "queued", "command_id": cmd_id, "command_text": payload.custom_cmd.strip()}
+            resp = {"status": "queued", "command_id": cmd_id, "command_text": payload.custom_cmd.strip()}
 
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported command action '{payload.action}'")
+
+        await log_audit_event(
+            conn=conn,
+            entity_type="zkteco_terminals",
+            entity_id=t_uuid,
+            action="DISPATCH_COMMAND",
+            session=session,
+            client_ip=client_ip,
+            note=f"Dispatched command action '{payload.action}' to terminal {sn}.",
+            changes={"sn": sn, "action": payload.action, "result": resp}
+        )
+
+        return resp
 
 
 @router.post("/api/v1/zkteco/enroll")
@@ -1072,14 +1242,36 @@ async def list_zk_transactions(
     require_permission(session, "attendance.read")
     pool = get_db_pool()
 
+    org_id = session.get("organization_id")
+    branch_id = session.get("branch_id")
+
     query = """
         SELECT x.*, e.employee_number, e.department_id, e.job_title
         FROM zkteco_transactions x
         LEFT JOIN employees e ON x.employee_id = e.id
+        LEFT JOIN zkteco_terminals t ON x.terminal_sn = t.sn
         WHERE 1=1
     """
     params: List[Any] = []
     idx = 1
+
+    if org_id:
+        try:
+            org_uuid = uuid.UUID(str(org_id))
+            query += f" AND (e.organization_id = ${idx}::uuid OR t.organization_id = ${idx}::uuid OR e.organization_id IS NULL)"
+            params.append(org_uuid)
+            idx += 1
+        except Exception:
+            pass
+
+    if branch_id:
+        try:
+            br_uuid = uuid.UUID(str(branch_id))
+            query += f" AND (e.branch_id = ${idx}::uuid OR t.branch_id = ${idx}::uuid OR e.branch_id IS NULL)"
+            params.append(br_uuid)
+            idx += 1
+        except Exception:
+            pass
 
     if terminal_sn:
         query += f" AND x.terminal_sn = ${idx}"

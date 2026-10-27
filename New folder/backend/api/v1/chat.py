@@ -3,6 +3,7 @@ import uuid
 import json
 import datetime
 import logging
+import asyncio
 import mimetypes
 import re
 from urllib.parse import unquote, quote
@@ -923,7 +924,7 @@ async def upload_chat_file(
     if len(content_bytes) > 25 * 1024 * 1024:  # 25 MB max limit
         raise HTTPException(status_code=400, detail="File size exceeds maximum 25MB limit.")
 
-    meta = save_chat_attachment(file.filename, content_bytes, file.content_type)
+    meta = await asyncio.to_thread(save_chat_attachment, file.filename, content_bytes, file.content_type)
     att_obj = normalize_attachment_obj({
         "name": meta["filename"],
         "disk_path": meta["disk_path"],
@@ -964,6 +965,9 @@ async def _serve_chat_attachment(
             detail="Session expired or invalid. Please log in again."
         )
 
+    user_id = uuid.UUID(str(session.get("id") or session.get("user_id")))
+    user_role = session.get("role_id") or session.get("role")
+
     chat_root = os.path.abspath(os.path.join(os.getcwd(), "storage", "chat_attachments"))
     os.makedirs(chat_root, exist_ok=True)
 
@@ -972,22 +976,47 @@ async def _serve_chat_attachment(
         clean_req = clean_req[len("storage/chat_attachments/"):].lstrip("/")
 
     target_abs = os.path.abspath(os.path.join(chat_root, clean_req))
-    if not target_abs.startswith(chat_root):
+    if os.path.commonpath([chat_root, target_abs]) != chat_root:
         raise HTTPException(status_code=403, detail="Access denied: invalid file path.")
 
+    base_name = os.path.basename(clean_req)
     if not os.path.isfile(target_abs):
-        base_name = os.path.basename(clean_req)
-        found_file = None
-        for root, _, files in os.walk(chat_root):
-            if base_name in files:
-                cand = os.path.join(root, base_name)
-                if os.path.isfile(cand):
-                    found_file = cand
-                    break
+        def _find_file() -> Optional[str]:
+            for root, _, files in os.walk(chat_root):
+                if base_name in files:
+                    cand = os.path.join(root, base_name)
+                    if os.path.isfile(cand):
+                        return cand
+            return None
+
+        found_file = await asyncio.to_thread(_find_file)
         if found_file:
             target_abs = found_file
+            if os.path.commonpath([chat_root, target_abs]) != chat_root:
+                raise HTTPException(status_code=403, detail="Access denied: invalid file path.")
         else:
             raise HTTPException(status_code=404, detail="Physical attachment file missing from storage disk.")
+
+    # Verify the requesting user is a member of the channel associated with the attachment
+    pool = get_db_pool()
+    if pool and user_role not in ("admin", "superadmin"):
+        async with pool.acquire() as conn:
+            channel_id = await conn.fetchval("""
+                SELECT channel_id FROM chat_messages
+                WHERE attachments_json ILIKE $1
+                ORDER BY created_at DESC LIMIT 1;
+            """, f"%{base_name}%")
+
+            if channel_id:
+                is_member = await conn.fetchval("""
+                    SELECT 1 FROM chat_channel_members
+                    WHERE channel_id = $1 AND user_id = $2;
+                """, channel_id, user_id)
+                if not is_member:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Access denied: you are not a member of the channel associated with this attachment."
+                    )
 
     raw_filename = os.path.basename(target_abs)
     if re.match(r"^[0-9a-fA-F]{12}_", raw_filename):
@@ -1090,6 +1119,30 @@ async def websocket_channel_endpoint(
     user_name = session.get("full_name") or session.get("username") or "User"
     user_email = session.get("email")
 
+    try:
+        ch_uuid = uuid.UUID(str(channel_id))
+        u_uuid = uuid.UUID(str(user_id))
+    except (ValueError, TypeError):
+        try:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        except Exception:
+            pass
+        return
+
+    pool = get_db_pool()
+    if pool:
+        async with pool.acquire() as conn:
+            is_member = await conn.fetchval("""
+                SELECT 1 FROM chat_channel_members
+                WHERE channel_id = $1 AND user_id = $2;
+            """, ch_uuid, u_uuid)
+            if not is_member:
+                try:
+                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                except Exception:
+                    pass
+                return
+
     await chat_ws_manager.connect(websocket, channel_id, user_id)
     # Register presence on global ws_manager without duplicating room channel_id broadcast
     await ws_manager.connect(user_id, websocket, channel_ids=[])
@@ -1114,24 +1167,53 @@ async def websocket_channel_endpoint(
 
             now = datetime.datetime.now(datetime.timezone.utc)
             msg_id = uuid.uuid4()
-            ch_uuid = uuid.UUID(str(channel_id))
             att_json = json.dumps(attachments) if attachments else None
 
-            pool = get_db_pool()
             if pool:
                 async with pool.acquire() as conn:
+                    channel = await conn.fetchrow("""
+                        SELECT id, name, channel_slug, channel_type, is_announcement_only
+                        FROM chat_channels WHERE id = $1;
+                    """, ch_uuid)
+                    if not channel:
+                        continue
+
+                    # Verify channel membership
+                    is_member = await conn.fetchval("""
+                        SELECT 1 FROM chat_channel_members
+                        WHERE channel_id = $1 AND user_id = $2;
+                    """, ch_uuid, u_uuid)
+                    if not is_member:
+                        await websocket.send_json({"type": "ERROR", "message": "Access denied: not a channel member."})
+                        continue
+
+                    # Verify posting permission
+                    can_post = await can_post_in_channel(
+                        conn=conn,
+                        user_id=u_uuid,
+                        channel_id=ch_uuid,
+                        is_announcement_only=bool(channel["is_announcement_only"]),
+                        session=session
+                    )
+                    if not can_post:
+                        await websocket.send_json({
+                            "type": "ERROR",
+                            "message": "This channel is announcement-only. Only managers and moderators can post."
+                        })
+                        continue
+
                     await conn.execute("""
                         INSERT INTO chat_messages (
                             id, channel_id, sender_id, message_text, attachments_json,
                             is_system_event, created_at
                         ) VALUES ($1, $2, $3, $4, $5, false, $6);
-                    """, msg_id, ch_uuid, uuid.UUID(user_id), content, att_json, now)
+                    """, msg_id, ch_uuid, u_uuid, content, att_json, now)
 
                     await conn.execute("""
                         UPDATE chat_channel_members
                         SET last_read_at = $1, last_read_message_id = $2
                         WHERE channel_id = $3 AND user_id = $4;
-                    """, now, msg_id, ch_uuid, uuid.UUID(user_id))
+                    """, now, msg_id, ch_uuid, u_uuid)
 
             payload = {
                 "type": "new_message",
@@ -1243,8 +1325,25 @@ async def websocket_chat_endpoint(
             elif msg_type == "JOIN_ROOM":
                 ch_id = data.get("channelId")
                 if ch_id:
-                    await ws_manager.subscribe_user_to_channel(user_id, str(ch_id))
-                    await websocket.send_text(json.dumps({"type": "ROOM_JOINED", "channelId": str(ch_id)}))
+                    try:
+                        target_ch_uuid = uuid.UUID(str(ch_id))
+                        is_member = False
+                        if pool:
+                            async with pool.acquire() as conn:
+                                is_member = await conn.fetchval("""
+                                    SELECT 1 FROM chat_channel_members
+                                    WHERE channel_id = $1 AND user_id = $2;
+                                """, target_ch_uuid, uuid.UUID(user_id))
+                        if is_member:
+                            await ws_manager.subscribe_user_to_channel(user_id, str(ch_id))
+                            await websocket.send_text(json.dumps({"type": "ROOM_JOINED", "channelId": str(ch_id)}))
+                        else:
+                            await websocket.send_text(json.dumps({
+                                "type": "ERROR",
+                                "message": "Access denied: you are not a member of this channel."
+                            }))
+                    except Exception as e:
+                        logger.warning(f"JOIN_ROOM check failed: {e}")
 
             elif msg_type == "SEND_MESSAGE":
                 ch_id = data.get("channelId")
@@ -1268,6 +1367,18 @@ async def websocket_chat_endpoint(
                         """, ch_uuid)
 
                         if not channel:
+                            continue
+
+                        # Verify channel membership
+                        is_member = await conn.fetchval("""
+                            SELECT 1 FROM chat_channel_members
+                            WHERE channel_id = $1 AND user_id = $2;
+                        """, ch_uuid, uuid.UUID(user_id))
+                        if not is_member:
+                            await websocket.send_text(json.dumps({
+                                "type": "ERROR",
+                                "message": "Access denied: you are not a member of this channel."
+                            }))
                             continue
 
                         # Permission check for announcement only channels

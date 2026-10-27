@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from backend.core.dependencies import get_current_user_session, require_permission, check_permission, get_client_ip
 from backend.core.database import get_db_pool, log_audit_event
+from backend.core.dependency_guard import inspect_dependencies
 
 logger = logging.getLogger("zkteco_adms")
 router = APIRouter()
@@ -678,21 +679,45 @@ async def list_terminals(session: Dict[str, Any] = Depends(get_current_user_sess
     """List all registered ZKTeco ADMS terminals with command queue metrics and access group info."""
     require_permission(session, "attendance.read")
     pool = get_db_pool()
+    org_id = session.get("organization_id")
+    branch_id = session.get("branch_id")
+
+    query = """
+        SELECT t.*,
+               g.name as group_name,
+               b.name as branch_name,
+               COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'pending'), 0) as pending_commands,
+               COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'sent'), 0) as sent_commands,
+               COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'success'), 0) as success_commands,
+               COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'failed'), 0) as failed_commands,
+               COALESCE((SELECT COUNT(*) FROM zkteco_transactions x WHERE x.terminal_sn = t.sn), 0) as total_transactions
+        FROM zkteco_terminals t
+        LEFT JOIN zkteco_access_groups g ON t.group_id = g.id
+        LEFT JOIN branches b ON t.branch_id = b.id
+        WHERE 1=1
+    """
+    params = []
+    idx = 1
+    if org_id:
+        try:
+            org_uuid = uuid.UUID(str(org_id))
+            query += f" AND (t.organization_id = ${idx}::uuid OR t.organization_id IS NULL)"
+            params.append(org_uuid)
+            idx += 1
+        except Exception:
+            pass
+    if branch_id:
+        try:
+            br_uuid = uuid.UUID(str(branch_id))
+            query += f" AND (t.branch_id = ${idx}::uuid OR t.branch_id IS NULL)"
+            params.append(br_uuid)
+            idx += 1
+        except Exception:
+            pass
+    query += " ORDER BY t.alias ASC;"
+
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT t.*,
-                   g.name as group_name,
-                   b.name as branch_name,
-                   COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'pending'), 0) as pending_commands,
-                   COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'sent'), 0) as sent_commands,
-                   COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'success'), 0) as success_commands,
-                   COALESCE((SELECT COUNT(*) FROM zkteco_command_queue q WHERE q.terminal_sn = t.sn AND q.status = 'failed'), 0) as failed_commands,
-                   COALESCE((SELECT COUNT(*) FROM zkteco_transactions x WHERE x.terminal_sn = t.sn), 0) as total_transactions
-            FROM zkteco_terminals t
-            LEFT JOIN zkteco_access_groups g ON t.group_id = g.id
-            LEFT JOIN branches b ON t.branch_id = b.id
-            ORDER BY t.alias ASC;
-        """)
+        rows = await conn.fetch(query, *params)
 
         # Serialize rows
         results = []
@@ -827,9 +852,17 @@ async def delete_terminal(
     client_ip = get_client_ip(request) if request else "127.0.0.1"
 
     async with pool.acquire() as conn:
-        sn = await conn.fetchval("SELECT sn FROM zkteco_terminals WHERE id = $1;", t_uuid)
-        if not sn:
+        term = await conn.fetchrow("SELECT sn, alias FROM zkteco_terminals WHERE id = $1;", t_uuid)
+        if not term:
             raise HTTPException(status_code=404, detail="Terminal not found.")
+        sn = term["sn"]
+        alias = term.get("alias") or sn
+
+        # Relational Dependency Guard Pre-check
+        violation = await inspect_dependencies(conn, "zkteco_terminals", sn, alias)
+        if violation:
+            raise HTTPException(status_code=409, detail=violation)
+
         await conn.execute("DELETE FROM zkteco_command_queue WHERE terminal_sn = $1;", sn)
         await conn.execute("DELETE FROM zkteco_terminals WHERE id = $1;", t_uuid)
 
@@ -845,6 +878,23 @@ async def delete_terminal(
         )
 
         return {"status": "deleted", "sn": sn}
+
+
+@router.post("/api/v1/zkteco/terminals/{terminal_id}/toggle-archive")
+async def toggle_archive_terminal(
+    terminal_id: str,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    require_permission(session, "attendance.manage")
+    pool = get_db_pool()
+    t_uuid = uuid.UUID(terminal_id)
+    async with pool.acquire() as conn:
+        term = await conn.fetchrow("SELECT sn, alias, is_active FROM zkteco_terminals WHERE id = $1;", t_uuid)
+        if not term:
+            raise HTTPException(status_code=404, detail="Terminal not found.")
+        new_state = not bool(term.get("is_active", True))
+        await conn.execute("UPDATE zkteco_terminals SET is_active = $1 WHERE id = $2;", new_state, t_uuid)
+        return {"status": "success", "is_active": new_state, "message": f"Terminal {term['alias'] or term['sn']} {'unarchived' if new_state else 'archived'}."}
 
 
 @router.post("/api/v1/zkteco/terminals/{terminal_id}/command")
@@ -1192,14 +1242,36 @@ async def list_zk_transactions(
     require_permission(session, "attendance.read")
     pool = get_db_pool()
 
+    org_id = session.get("organization_id")
+    branch_id = session.get("branch_id")
+
     query = """
         SELECT x.*, e.employee_number, e.department_id, e.job_title
         FROM zkteco_transactions x
         LEFT JOIN employees e ON x.employee_id = e.id
+        LEFT JOIN zkteco_terminals t ON x.terminal_sn = t.sn
         WHERE 1=1
     """
     params: List[Any] = []
     idx = 1
+
+    if org_id:
+        try:
+            org_uuid = uuid.UUID(str(org_id))
+            query += f" AND (e.organization_id = ${idx}::uuid OR t.organization_id = ${idx}::uuid OR e.organization_id IS NULL)"
+            params.append(org_uuid)
+            idx += 1
+        except Exception:
+            pass
+
+    if branch_id:
+        try:
+            br_uuid = uuid.UUID(str(branch_id))
+            query += f" AND (e.branch_id = ${idx}::uuid OR t.branch_id = ${idx}::uuid OR e.branch_id IS NULL)"
+            params.append(br_uuid)
+            idx += 1
+        except Exception:
+            pass
 
     if terminal_sn:
         query += f" AND x.terminal_sn = ${idx}"

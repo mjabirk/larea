@@ -7,6 +7,7 @@ import {
   Trash2,
   Eye,
   CheckCircle2,
+  AlertCircle,
   Paperclip,
   Code,
   Tag,
@@ -22,6 +23,7 @@ import {
   Save,
   Check
 } from 'lucide-react';
+import { useLocale } from '../../context/LocaleContext';
 
 const MODEL_VARIABLES = {
   'payroll.payslip': [
@@ -84,6 +86,7 @@ const DEFAULT_NEW_FORM = {
 };
 
 export function MailTemplatesView() {
+  const { t } = useLocale();
   const [templates, setTemplates] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -223,11 +226,12 @@ export function MailTemplatesView() {
       const updated = data.template || { ...formData, id: selectedRecord?.id || Date.now() };
       setSelectedRecord(updated);
       setIsDirty(false);
-      setBanner(selectedRecord ? 'Template updated successfully.' : 'Template created successfully.');
-      setTimeout(() => setBanner(''), 3000);
+      setBanner({ text: selectedRecord ? 'Template updated successfully.' : 'Template created successfully.', type: 'success' });
+      setTimeout(() => setBanner(null), 3000);
       fetchTemplates();
     } catch (err) {
-      alert(err.message);
+      setBanner({ text: err.message || 'Operation failed.', type: 'error' });
+      setTimeout(() => setBanner(null), 4000);
     } finally {
       setIsSaving(false);
     }
@@ -247,14 +251,15 @@ export function MailTemplatesView() {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
-      setBanner('Template deleted.');
-      setTimeout(() => setBanner(''), 3000);
+      setBanner({ text: 'Template deleted.', type: 'success' });
+      setTimeout(() => setBanner(null), 3000);
       fetchTemplates();
       if (selectedRecord?.id === id) {
         setViewMode('list');
       }
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      setBanner({ text: 'Delete failed: ' + err.message, type: 'error' });
+      setTimeout(() => setBanner(null), 4000);
     }
   };
 
@@ -265,12 +270,28 @@ export function MailTemplatesView() {
     <div className="space-y-3 animate-fadeIn">
       {/* Toast Notification Banner */}
       {banner && (
-        <div className="p-3 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 rounded-xl text-xs flex items-center justify-between shadow-xs">
+        <div
+          role="status"
+          aria-live="polite"
+          className={`p-3 rounded-xl border text-xs flex items-center justify-between shadow-xs ${
+            typeof banner === 'object' && banner.type === 'error'
+              ? 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
+              : 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+          }`}
+        >
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span className="font-semibold">{banner}</span>
+            {typeof banner === 'object' && banner.type === 'error' ? (
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            )}
+            <span className="font-semibold">{typeof banner === 'object' ? banner.text : banner}</span>
           </div>
-          <button onClick={() => setBanner('')} className="text-emerald-600 hover:text-emerald-800">
+          <button
+            onClick={() => setBanner(null)}
+            className="hover:opacity-80 transition cursor-pointer p-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+            aria-label="Dismiss notification"
+          >
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -579,14 +600,14 @@ export function MailTemplatesView() {
                 className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>New Template</span>
+                <span>{t('add_template')}</span>
               </button>
 
               <div className="h-4 w-[1px] bg-slate-200 dark:bg-slate-800 hidden sm:block" />
 
               <div className="flex items-center gap-1.5">
                 <span className="font-bold text-slate-800 dark:text-slate-100 text-xs">
-                  Email Templates
+                  {t('mail_templates')}
                 </span>
                 <span className="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
                   {filtered.length}
@@ -597,13 +618,13 @@ export function MailTemplatesView() {
             {/* Center: Search & Scope Filters */}
             <div className="flex items-center gap-2 flex-1 max-w-md">
               <div className="relative flex-1">
-                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Search className="w-3.5 h-3.5 absolute start-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
                   placeholder="Search template name, subject..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-8 pr-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full ps-8 pe-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
@@ -636,15 +657,15 @@ export function MailTemplatesView() {
           {/* Templates Table List */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-2xs">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+              <table className="w-full text-start text-xs">
                 <thead>
                   <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/40 text-slate-500 font-semibold">
-                    <th className="px-3 py-2">Template Title</th>
-                    <th className="px-3 py-2">Model Scope</th>
-                    <th className="px-3 py-2">Subject Pattern</th>
-                    <th className="px-3 py-2">Attachments</th>
-                    <th className="px-3 py-2">Retention</th>
-                    <th className="px-3 py-2 text-right">Actions</th>
+                    <th className="px-3 py-2">{t('template_code')}</th>
+                    <th className="px-3 py-2">{t('channel')}</th>
+                    <th className="px-3 py-2">{t('subject')}</th>
+                    <th className="px-3 py-2">{t('attachments')}</th>
+                    <th className="px-3 py-2">{t('retention_purge')}</th>
+                    <th className="px-3 py-2 text-end">{t('action')}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -706,7 +727,7 @@ export function MailTemplatesView() {
                             : `${tmpl.purge_days} Days`}
                         </td>
 
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3 py-2 text-end">
                           <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                             <button
                               type="button"

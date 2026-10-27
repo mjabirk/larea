@@ -208,38 +208,54 @@ class SessionManager:
 
     @staticmethod
     async def revoke_other_sessions(user_id: str, current_token: str) -> int:
-        """Revokes all active sessions for a user except the current one."""
+        """Revokes all active sessions for a user except the current one using a batched Redis pipeline."""
         if not redis_client:
             return 0
             
         user_sessions_key = f"user_sessions:{user_id}"
         all_tokens = await redis_client.smembers(user_sessions_key)
-        
-        revoked_count = 0
-        for token in all_tokens:
-            if token != current_token:
-                await redis_client.delete(f"session:{token}")
-                await redis_client.srem(user_sessions_key, token)
-                revoked_count += 1
+        tokens_to_revoke = [t for t in all_tokens if t != current_token]
+        if not tokens_to_revoke:
+            return 0
+
+        async with redis_client.pipeline(transaction=True) as pipe:
+            for token in tokens_to_revoke:
+                pipe.delete(f"session:{token}")
+                pipe.srem(user_sessions_key, token)
+            await pipe.execute()
                 
-        return revoked_count
+        return len(tokens_to_revoke)
 
     @staticmethod
     async def list_active_sessions(user_id: str) -> List[Dict[str, str]]:
+        """Lists active sessions for a user using a single pipeline round-trip."""
         if not redis_client:
             return []
             
         user_sessions_key = f"user_sessions:{user_id}"
-        all_tokens = await redis_client.smembers(user_sessions_key)
-        
+        all_tokens = list(await redis_client.smembers(user_sessions_key))
+        if not all_tokens:
+            return []
+
+        async with redis_client.pipeline(transaction=False) as pipe:
+            for token in all_tokens:
+                pipe.hgetall(f"session:{token}")
+            results = await pipe.execute()
+
         active = []
-        for token in all_tokens:
-            data = await redis_client.hgetall(f"session:{token}")
+        stale_tokens = []
+        for token, data in zip(all_tokens, results):
             if data:
                 active.append(data)
             else:
-                # Clean stale tokens
-                await redis_client.srem(user_sessions_key, token)
+                stale_tokens.append(token)
+
+        if stale_tokens:
+            async with redis_client.pipeline(transaction=True) as pipe:
+                for token in stale_tokens:
+                    pipe.srem(user_sessions_key, token)
+                await pipe.execute()
+
         return active
 
 

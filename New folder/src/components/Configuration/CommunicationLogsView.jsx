@@ -22,8 +22,10 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useModalEscape } from '../../hooks/useModalEscape';
+import { useLocale } from '../../context/LocaleContext';
 
 export function CommunicationLogsView() {
+  const { t } = useLocale();
   const auth = useAuth();
   const sessionToken =
     auth?.sessionToken ||
@@ -202,7 +204,7 @@ export function CommunicationLogsView() {
 
           <div className="flex items-center flex-wrap gap-2">
             <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute start-2.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 placeholder="Search phone, recipient, text..."
@@ -211,7 +213,7 @@ export function CommunicationLogsView() {
                   setSearch(e.target.value);
                   setPage(1);
                 }}
-                className="w-48 sm:w-60 bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition"
+                className="w-48 sm:w-60 bg-slate-950 border border-slate-800 rounded-lg ps-8 pe-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition"
               />
             </div>
 
@@ -259,17 +261,17 @@ export function CommunicationLogsView() {
       {/* Odoo High-Density Table */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xs">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
+          <table className="w-full text-start text-xs border-collapse">
             <thead>
               <tr className="bg-slate-950/70 border-b border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-semibold h-8">
                 <th className="px-3.5 py-1.5">Timestamp</th>
-                <th className="px-3.5 py-1.5">Channel</th>
-                <th className="px-3.5 py-1.5">Recipient</th>
+                <th className="px-3.5 py-1.5">{t('channel')}</th>
+                <th className="px-3.5 py-1.5">{t('recipient')}</th>
                 <th className="px-3.5 py-1.5">Phone (E.164)</th>
                 <th className="px-3.5 py-1.5">Message / Template Preview</th>
                 <th className="px-3.5 py-1.5">Source Record</th>
-                <th className="px-3.5 py-1.5">Delivery Status</th>
-                <th className="px-3.5 py-1.5 text-right">Actions</th>
+                <th className="px-3.5 py-1.5">{t('status_label')}</th>
+                <th className="px-3.5 py-1.5 text-end">{t('action')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
@@ -332,7 +334,7 @@ export function CommunicationLogsView() {
                     <td className="px-3.5 py-1 whitespace-nowrap">
                       {renderStatusBadge(log.status)}
                     </td>
-                    <td className="px-3.5 py-1 text-right font-sans whitespace-nowrap">
+                    <td className="px-3.5 py-1 text-end font-sans whitespace-nowrap">
                       <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => handleOpenDetail(log)}

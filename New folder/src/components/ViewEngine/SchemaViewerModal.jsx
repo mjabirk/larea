@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { X, Copy, Check, Code, FileJson } from 'lucide-react';
 import {
   ATTENDANCE_MODEL,
@@ -8,7 +8,8 @@ import {
 import { useModalEscape } from '../../hooks/useModalEscape';
 
 export function SchemaViewerModal({ isOpen, onClose }) {
-  useModalEscape(onClose, isOpen);
+  const modalRef = useRef(null);
+  useModalEscape(onClose, isOpen, modalRef);
 
   const [format, setFormat] = useState('xml');
   const [copied, setCopied] = useState(false);
@@ -126,9 +127,13 @@ export function SchemaViewerModal({ isOpen, onClose }) {
   return (
     <div
       className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="schema-viewer-title"
       onClick={onClose}
     >
       <div
+        ref={modalRef}
         className="bg-slate-900 text-slate-100 rounded-xl shadow-2xl border border-slate-700 w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden animate-fadeIn"
         onClick={(e) => e.stopPropagation()}
       >
@@ -139,7 +144,7 @@ export function SchemaViewerModal({ isOpen, onClose }) {
               <Code className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-semibold text-slate-100">
+              <h3 id="schema-viewer-title" className="font-semibold text-slate-100">
                 View Architecture & Schema
               </h3>
               <p className="text-xs text-slate-400">
@@ -153,7 +158,7 @@ export function SchemaViewerModal({ isOpen, onClose }) {
               <button
                 type="button"
                 onClick={() => setFormat('xml')}
-                className={`px-3 py-1 rounded transition cursor-pointer flex items-center gap-1.5 ${
+                className={`px-3 py-1 rounded transition cursor-pointer flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
                   format === 'xml'
                     ? 'bg-blue-600 text-white font-medium'
                     : 'text-slate-400 hover:text-white'
@@ -165,7 +170,7 @@ export function SchemaViewerModal({ isOpen, onClose }) {
               <button
                 type="button"
                 onClick={() => setFormat('json')}
-                className={`px-3 py-1 rounded transition cursor-pointer flex items-center gap-1.5 ${
+                className={`px-3 py-1 rounded transition cursor-pointer flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
                   format === 'json'
                     ? 'bg-[#714B67] text-white font-medium'
                     : 'text-slate-400 hover:text-white'
@@ -179,8 +184,9 @@ export function SchemaViewerModal({ isOpen, onClose }) {
             <button
               type="button"
               onClick={handleCopy}
-              className="p-1.5 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+              className="p-1.5 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
               title="Copy to clipboard"
+              aria-label="Copy code to clipboard"
             >
               {copied ? (
                 <Check className="w-4 h-4 text-emerald-400" />
@@ -192,7 +198,7 @@ export function SchemaViewerModal({ isOpen, onClose }) {
             <button
               type="button"
               onClick={onClose}
-              className="flex items-center gap-1.5 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer group"
+              className="flex items-center gap-1.5 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
               title="Close (Esc)"
               aria-label="Close dialog"
             >

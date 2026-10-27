@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ShieldCheck,
@@ -57,6 +57,85 @@ const PRESET_COLORS = [
   { id: 'teal', label: 'Teal', bg: 'bg-teal-600', ring: 'ring-teal-500' },
 ];
 
+// SOX 404 / ISO 27001 Segregation of Duties (SoD) Conflict Matrix
+const SOD_CONFLICT_RULES = [
+  {
+    id: 'SOD_BANK_VS_PAYROLL',
+    name: 'Employee/Vendor Bank Details vs. Payroll & Payment Approval',
+    risk_level: 'CRITICAL',
+    sox_control: 'SOX-404-FIN-01',
+    set_a: ['employees.create', 'employees.update', 'employees.write', 'hr.salary_manage', 'salary.write', 'salary.manage', 'employees.bank_update', 'banking.manage', 'banking.write', 'banking.update', 'vendors.manage', 'vendors.bank_update'],
+    set_b: ['payroll.manage', 'payroll.approve', 'payroll.post', 'payroll.export_wps', 'payments.approve'],
+    description: 'Personnel with authority to modify employee master records or bank coordinates cannot approve payroll batches.',
+  },
+  {
+    id: 'SOD_IAM_ADMIN_VS_AUDIT',
+    name: 'IAM Role/User Administration vs. Security & Audit Override',
+    risk_level: 'CRITICAL',
+    sox_control: 'SOX-404-ITGC-02',
+    set_a: ['roles.manage', 'roles.update', 'roles.create', 'users.manage', 'users.update', 'users.create'],
+    set_b: ['audit.verify', 'audit.manage', 'audit.override', 'security.override', 'settings.manage'],
+    description: 'Administrators provisioning IAM user credentials or security policies cannot alter or verify cryptographic audit trails.',
+  },
+  {
+    id: 'SOD_ATTENDANCE_VS_PAYROLL',
+    name: 'Attendance Entry/Modification vs. Overtime & Payroll Approval',
+    risk_level: 'HIGH',
+    sox_control: 'SOX-404-OPS-03',
+    set_a: ['attendance_logs.create', 'attendance_logs.update', 'attendance_logs.write', 'attendance.write', 'attendance.create', 'attendance.update'],
+    set_b: ['attendance.approve', 'attendance_logs.approve', 'payroll.manage', 'payroll.approve'],
+    description: 'Operators who create or adjust manual attendance logs cannot approve overtime or finalize payroll batches.',
+  },
+  {
+    id: 'SOD_CONTRACT_MAKER_VS_CHECKER',
+    name: 'Contract Authoring vs. Contract Approval',
+    risk_level: 'HIGH',
+    sox_control: 'SOX-404-HR-04',
+    set_a: ['employee_contracts.create', 'employee_contracts.update', 'employee_contracts.write', 'hr.contracts_manage', 'contracts.manage'],
+    set_b: ['contracts.approve', 'employee_contracts.approve'],
+    description: 'Personnel drafting or configuring employee contracts cannot unilaterally approve or activate contracts.',
+  },
+];
+
+function detectSoDViolations(permissions, isSuper) {
+  if (isSuper || !permissions) return [];
+  const flat = new Set();
+  Object.entries(permissions).forEach(([key, val]) => {
+    if (typeof val === 'object' && val !== null) {
+      Object.entries(val).forEach(([act, allowed]) => {
+        if (allowed) {
+          const cleanAct = act.toLowerCase();
+          flat.add(`${key}.${cleanAct}`.toLowerCase());
+          if (cleanAct === 'update' || cleanAct === 'create') {
+            flat.add(`${key}.write`.toLowerCase());
+          }
+          if (cleanAct === 'manage') {
+            flat.add(`${key}.create`.toLowerCase());
+            flat.add(`${key}.update`.toLowerCase());
+            flat.add(`${key}.write`.toLowerCase());
+          }
+        }
+      });
+    } else if (val === true || val === 1) {
+      flat.add(key.toLowerCase());
+    }
+  });
+
+  const violations = [];
+  SOD_CONFLICT_RULES.forEach((rule) => {
+    const matchedA = rule.set_a.filter((p) => flat.has(p.toLowerCase()));
+    const matchedB = rule.set_b.filter((p) => flat.has(p.toLowerCase()));
+    if (matchedA.length > 0 && matchedB.length > 0) {
+      violations.push({
+        ...rule,
+        matchedA,
+        matchedB,
+      });
+    }
+  });
+  return violations;
+}
+
 export function RolesView() {
   const {
     roles,
@@ -101,7 +180,6 @@ export function RolesView() {
   });
   const [createError, setCreateError] = useState('');
 
-  // Edit form state
   const [editRoleData, setEditRoleData] = useState({
     id: '',
     name: '',
@@ -110,6 +188,16 @@ export function RolesView() {
     badgeColor: 'blue',
   });
   const [editError, setEditError] = useState('');
+  const [sodConflictToast, setSodConflictToast] = useState(null);
+
+  useEffect(() => {
+    const handleSoDConflict = (e) => {
+      setSodConflictToast(e.detail || { message: 'Segregation of Duties conflict detected.' });
+      setTimeout(() => setSodConflictToast(null), 6000);
+    };
+    window.addEventListener('larea-sod-conflict', handleSoDConflict);
+    return () => window.removeEventListener('larea-sod-conflict', handleSoDConflict);
+  }, []);
 
   // Find currently selected role (or fallback to first)
   const selectedRole = useMemo(() => {
@@ -117,6 +205,12 @@ export function RolesView() {
   }, [roles, selectedRoleId]);
 
   const isSuperadmin = selectedRole?.id === 'role_superadmin';
+
+  // Evaluate SoD conflicts for currently selected role
+  const activeRoleConflicts = useMemo(() => {
+    if (!selectedRole) return [];
+    return detectSoDViolations(rolePermissions[selectedRole.id], isSuperadmin);
+  }, [rolePermissions, selectedRole, isSuperadmin]);
 
   // Count assigned users per role
   const roleUserCounts = useMemo(() => {
@@ -827,6 +921,94 @@ export function RolesView() {
                   <span>
                     <strong>Root Superadmin privileges are immutable:</strong> All domain models and CRUD actions are unconditionally permitted to maintain platform governance.
                   </span>
+                </div>
+              )}
+
+              {/* SoD Conflict Warning Banner */}
+              {activeRoleConflicts.length > 0 && (
+                <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800/70 shadow-xs space-y-3 animate-fadeIn">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-rose-800 dark:text-rose-200 font-bold text-xs">
+                      <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+                      <span>SOX 404 Segregation of Duties (SoD) Conflict Detected</span>
+                    </div>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-100 dark:bg-rose-900/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800">
+                      {activeRoleConflicts.length} {activeRoleConflicts.length === 1 ? 'VIOLATION' : 'VIOLATIONS'}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-rose-700 dark:text-rose-300 leading-relaxed">
+                    This role configuration grants mutually exclusive operational permissions that violate internal controls dual-custody policies.
+                  </p>
+
+                  <div className="space-y-2.5 pt-1">
+                    {activeRoleConflicts.map((v) => (
+                      <div
+                        key={v.id}
+                        className="p-3 rounded-lg bg-white/80 dark:bg-slate-900/80 border border-rose-200 dark:border-rose-900/50 text-xs space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-slate-900 dark:text-slate-100">
+                            {v.name}
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase font-mono ${
+                            v.risk_level === 'CRITICAL'
+                              ? 'bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+                              : 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
+                          }`}>
+                            {v.risk_level} • {v.sox_control}
+                          </span>
+                        </div>
+
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                          {v.description}
+                        </p>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-slate-100 dark:border-slate-800/60 font-mono text-[10px]">
+                          <div>
+                            <span className="text-slate-400 font-sans block mb-1">Authoring / Modification Rights:</span>
+                            <div className="flex flex-wrap gap-1">
+                              {v.matchedA.map((p) => (
+                                <span key={p} className="px-1.5 py-0.5 rounded bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800">
+                                  {p}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <span className="text-slate-400 font-sans block mb-1">Approval / Disbursement Rights:</span>
+                            <div className="flex flex-wrap gap-1">
+                              {v.matchedB.map((p) => (
+                                <span key={p} className="px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                                  {p}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Toast Notification for Blocked SoD Update */}
+              {sodConflictToast && (
+                <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-200 flex items-start gap-2.5 animate-slideDown shadow-sm">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <span className="font-bold block">Permission Assignment Blocked by SOX 404 Guard</span>
+                    <span className="text-[11px] leading-tight">
+                      {sodConflictToast.message || 'This action was blocked because it grants mutually exclusive permissions.'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSodConflictToast(null)}
+                    className="text-amber-600 dark:text-amber-400 hover:text-amber-900 cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               )}
 

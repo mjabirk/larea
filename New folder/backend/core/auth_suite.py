@@ -3,6 +3,7 @@ import time
 import secrets
 import json
 import uuid
+import threading
 from typing import Optional, Dict, Any, List
 import pyotp
 import qrcode
@@ -349,6 +350,23 @@ class WindowsSSOEngine:
     3. Active Directory LDAP/LDAPS Synchronization & JIT User Provisioning
     """
     _memory_state_store: Dict[str, Dict[str, Any]] = {}
+    _memory_state_lock = threading.Lock()
+
+    @classmethod
+    def _store_state(cls, state: str, payload: Dict[str, Any]):
+        """Store SSO state in memory with automatic eviction of expired entries (>600s)."""
+        with cls._memory_state_lock:
+            now = int(time.time())
+            expired = [k for k, v in cls._memory_state_store.items() if now - int(v.get("created_at", 0)) > 600]
+            for k in expired:
+                cls._memory_state_store.pop(k, None)
+            cls._memory_state_store[state] = payload
+
+    @classmethod
+    def _pop_state(cls, state: str) -> Optional[Dict[str, Any]]:
+        """Atomically pop SSO state from memory store."""
+        with cls._memory_state_lock:
+            return cls._memory_state_store.pop(state, None)
 
     @staticmethod
     async def get_sso_settings() -> Dict[str, Any]:
@@ -447,9 +465,9 @@ class WindowsSSOEngine:
                 await redis.hset(f"sso_state:{state}", mapping=state_payload)
                 await redis.expire(f"sso_state:{state}", 600)
             except Exception:
-                WindowsSSOEngine._memory_state_store[state] = state_payload
+                WindowsSSOEngine._store_state(state, state_payload)
         else:
-            WindowsSSOEngine._memory_state_store[state] = state_payload
+            WindowsSSOEngine._store_state(state, state_payload)
 
         params = {
             "client_id": client_id,
@@ -492,13 +510,19 @@ class WindowsSSOEngine:
         state_data = None
         if redis:
             try:
-                state_data = await redis.hgetall(f"sso_state:{state}")
-                if state_data:
-                    await redis.delete(f"sso_state:{state}")
-            except Exception:
-                pass
+                # Atomic transaction pipeline: fetch and delete state atomically
+                async with redis.pipeline(transaction=True) as pipe:
+                    pipe.hgetall(f"sso_state:{state}")
+                    pipe.delete(f"sso_state:{state}")
+                    pipe_res = await pipe.execute()
+                raw_data, deleted_count = pipe_res[0], pipe_res[1]
+                # Only accept state if key was actually deleted by this transaction (prevents race/reuse)
+                if raw_data and deleted_count > 0:
+                    state_data = raw_data
+            except Exception as e:
+                logger.warning(f"Atomic Redis state retrieval failed: {e}")
         if not state_data:
-            state_data = WindowsSSOEngine._memory_state_store.pop(state, None)
+            state_data = WindowsSSOEngine._pop_state(state)
 
         if not state_data or not state_data.get("code_verifier"):
             raise ValueError("Invalid or expired SSO state token. Please try signing in again.")
@@ -542,8 +566,19 @@ class WindowsSSOEngine:
             parts = id_token.split(".")
             if len(parts) != 3:
                 raise ValueError("Malformed OIDC id_token.")
+
+            header_padded = parts[0] + "=" * (-len(parts[0]) % 4)
+            header = json.loads(base64.urlsafe_b64decode(header_padded.encode("ascii")).decode("utf-8"))
+
             padded = parts[1] + "=" * (-len(parts[1]) % 4)
             claims = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+
+            # Validate iss claim against https://login.microsoftonline.com/{tenant_id}/v2.0
+            # (or the token's tid when tenant_id == "common")
+            expected_tid = claims.get("tid") if tenant_id == "common" and claims.get("tid") else tenant_id
+            expected_iss = f"https://login.microsoftonline.com/{expected_tid}/v2.0"
+            if claims.get("iss") != expected_iss:
+                raise ValueError(f"OIDC ID token issuer mismatch: expected '{expected_iss}', got '{claims.get('iss')}'.")
 
             # Verify audience, expiration, and nonce
             if claims.get("aud") != client_id:
@@ -552,6 +587,48 @@ class WindowsSSOEngine:
                 raise ValueError("OIDC ID token has expired.")
             if state_data.get("nonce") and claims.get("nonce") != state_data["nonce"]:
                 raise ValueError("OIDC ID token nonce mismatch.")
+
+            # Verify JWT signature against Microsoft's JWKS keys using cryptography
+            kid = header.get("kid")
+            if not kid:
+                raise ValueError("OIDC ID token header missing 'kid'.")
+
+            jwks_url = f"https://login.microsoftonline.com/{expected_tid}/discovery/v2.0/keys"
+            jwks_resp = await client.get(jwks_url)
+            if jwks_resp.status_code != 200:
+                if expected_tid != tenant_id:
+                    jwks_resp = await client.get(f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys")
+                if jwks_resp.status_code != 200:
+                    raise ValueError(f"Failed to fetch Microsoft JWKS keys from {jwks_url}.")
+
+            jwks = jwks_resp.json()
+            matching_key = None
+            for key_obj in jwks.get("keys", []):
+                if key_obj.get("kid") == kid:
+                    matching_key = key_obj
+                    break
+
+            if not matching_key:
+                raise ValueError(f"No matching public key found in Microsoft JWKS for kid '{kid}'.")
+
+            from cryptography.hazmat.primitives.asymmetric import rsa, padding
+            from cryptography.hazmat.primitives import hashes
+            from cryptography.exceptions import InvalidSignature
+
+            n_padded = matching_key["n"] + "=" * (-len(matching_key["n"]) % 4)
+            e_padded = matching_key["e"] + "=" * (-len(matching_key["e"]) % 4)
+            n_int = int.from_bytes(base64.urlsafe_b64decode(n_padded.encode("ascii")), "big")
+            e_int = int.from_bytes(base64.urlsafe_b64decode(e_padded.encode("ascii")), "big")
+            public_key = rsa.RSAPublicNumbers(e=e_int, n=n_int).public_key()
+
+            sig_padded = parts[2] + "=" * (-len(parts[2]) % 4)
+            sig_bytes = base64.urlsafe_b64decode(sig_padded.encode("ascii"))
+            signed_data = f"{parts[0]}.{parts[1]}".encode("ascii")
+
+            try:
+                public_key.verify(sig_bytes, signed_data, padding.PKCS1v15(), hashes.SHA256())
+            except InvalidSignature:
+                raise ValueError("OIDC ID token cryptographic signature verification failed.")
 
             # Optionally enrich and cross-verify via Microsoft Graph /v1.0/me
             graph_profile = {}

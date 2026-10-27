@@ -11,9 +11,11 @@ from backend.core.dependencies import (
     check_permission,
     require_permission,
     verify_record_tenant,
+    build_branch_filter,
 )
 from backend.core.chat_engine import handle_employee_department_sync
 from backend.core.sequences import get_next_employee_number
+from backend.core.dependency_guard import inspect_dependencies
 
 
 logger = logging.getLogger("enterprise.employees")
@@ -115,6 +117,7 @@ async def resolve_audit_author(conn, session: Dict[str, Any]) -> tuple:
 async def list_employees(
     q: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query("active"),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     session: Dict[str, Any] = Depends(get_current_user_session),
@@ -135,10 +138,16 @@ async def list_employees(
         params: List[Any] = []
         idx = 1
 
-        if not session.get("is_superadmin") and org_id:
-            query += f" AND e.organization_id = ${idx}::uuid"
-            params.append(org_id)
-            idx += 1
+        if status_filter == "active":
+            query += " AND e.is_active = true"
+        elif status_filter == "archived":
+            query += " AND e.is_active = false"
+
+        branch_clause, branch_params = build_branch_filter(session, "e", idx)
+        if branch_clause:
+            query += branch_clause
+            params.extend(branch_params)
+            idx += len(branch_params)
 
         if isinstance(q, str) and q.strip():
             query += f""" AND (
@@ -213,11 +222,19 @@ async def create_employee(
 
     # Resolve organization context and generate atomic employee number if missing
     async with pool.acquire() as conn:
-        branch_uuid = uuid.UUID(payload.branch_id) if payload.branch_id else await conn.fetchval("SELECT id FROM branches LIMIT 1;")
-        if not session.get("is_superadmin") and session.get("organization_id"):
+        if payload.organization_id:
+            org_uuid = uuid.UUID(payload.organization_id)
+        elif session.get("organization_id"):
             org_uuid = uuid.UUID(str(session["organization_id"]))
         else:
-            org_uuid = uuid.UUID(payload.organization_id) if payload.organization_id else await conn.fetchval("SELECT id FROM organizations LIMIT 1;")
+            org_uuid = await conn.fetchval("SELECT id FROM organizations ORDER BY created_at ASC LIMIT 1;")
+
+        if payload.branch_id:
+            branch_uuid = uuid.UUID(payload.branch_id)
+        elif session.get("branch_id"):
+            branch_uuid = uuid.UUID(str(session["branch_id"]))
+        else:
+            branch_uuid = await conn.fetchval("SELECT id FROM branches WHERE organization_id = $1 ORDER BY created_at ASC LIMIT 1;", org_uuid)
 
         if not payload.employee_number:
             emp_number = await get_next_employee_number(tenant_id=str(org_uuid) if org_uuid else "default_tenant")
@@ -529,6 +546,11 @@ async def delete_employee(
         client_ip = get_client_ip(request) if request else "127.0.0.1"
         user_id, author_name = await resolve_audit_author(conn, session)
 
+        # Relational Dependency Guard Pre-check
+        violation = await inspect_dependencies(conn, "employees", emp_uuid, emp["full_name"])
+        if violation:
+            raise HTTPException(status_code=409, detail=violation)
+
         async with conn.transaction():
             await conn.execute("DELETE FROM employees WHERE id = $1;", emp_uuid)
 
@@ -541,3 +563,32 @@ async def delete_employee(
             """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name, f"Deleted employee record: {emp['full_name']} ({emp['employee_number']}).", client_ip)
 
     return {"status": "success", "message": "Employee deleted."}
+
+
+@router.post("/{employee_id}/toggle-archive")
+async def toggle_archive_employee(employee_id: str, session: Dict[str, Any] = Depends(get_current_user_session)):
+    require_permission(session, "employees.update")
+    pool = get_db_pool()
+    try:
+        emp_uuid = uuid.UUID(employee_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid employee UUID.")
+
+    async with pool.acquire() as conn:
+        emp = await conn.fetchrow("SELECT full_name, is_active, organization_id FROM employees WHERE id = $1;", emp_uuid)
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found.")
+        verify_record_tenant(emp["organization_id"], session)
+
+        new_state = not bool(emp["is_active"])
+        await conn.execute("UPDATE employees SET is_active = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2;", new_state, emp_uuid)
+
+        # Log action in audit chatter
+        user_id, author_name = await resolve_audit_author(conn, session)
+        await conn.execute("""
+            INSERT INTO audit_logs (id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address)
+            VALUES ($1::uuid, 'employees', $2, $3, $4, $5, $6, '127.0.0.1');
+        """, uuid.uuid4(), str(emp_uuid), 'UNARCHIVE' if new_state else 'ARCHIVE', user_id, author_name,
+           f"Employee profile {'restored to active' if new_state else 'archived and hidden from default views'}.")
+
+        return {"status": "success", "is_active": new_state, "message": f"Employee {emp['full_name']} {'unarchived' if new_state else 'archived'}."}

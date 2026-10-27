@@ -14,6 +14,7 @@ import {
   Trash2,
   FileSpreadsheet
 } from 'lucide-react';
+import { useModalEscape } from '../../hooks/useModalEscape';
 
 export function SendEmailModal({
   isOpen,
@@ -42,7 +43,10 @@ export function SendEmailModal({
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
+  const modalRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  useModalEscape(onClose, isOpen, modalRef);
 
   const getAuthHeaders = () => {
     const token = typeof window !== 'undefined'
@@ -246,8 +250,18 @@ export function SendEmailModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4 animate-fadeIn">
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4 animate-fadeIn"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="send-email-modal-title"
+      onClick={onClose}
+    >
+      <div
+        ref={modalRef}
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]"
+      >
         {/* Header */}
         <div className="px-5 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50/60 dark:bg-slate-800/40">
           <div className="flex items-center gap-2">
@@ -255,7 +269,7 @@ export function SendEmailModal({
               <Mail className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="font-bold text-slate-900 dark:text-white text-sm">
+              <h3 id="send-email-modal-title" className="font-bold text-slate-900 dark:text-white text-sm">
                 Send by Email
               </h3>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
@@ -266,7 +280,8 @@ export function SendEmailModal({
           <button
             type="button"
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+            className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+            aria-label="Close Email Modal"
           >
             <X className="w-4 h-4" />
           </button>
@@ -275,14 +290,14 @@ export function SendEmailModal({
         {/* Form Body */}
         <form onSubmit={handleSend} className="p-5 overflow-y-auto space-y-3.5 text-xs">
           {errorMsg && (
-            <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 font-semibold flex items-center gap-2">
+            <div role="status" aria-live="polite" className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 font-semibold flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{errorMsg}</span>
             </div>
           )}
 
           {successMsg && (
-            <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-2">
+            <div role="status" aria-live="polite" className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 shrink-0" />
               <span>{successMsg}</span>
             </div>
@@ -470,14 +485,14 @@ export function SendEmailModal({
                 type="button"
                 onClick={onClose}
                 disabled={isSending}
-                className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold text-xs transition cursor-pointer"
+                className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold text-xs transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
               >
                 Cancel (Esc)
               </button>
               <button
                 type="submit"
                 disabled={isSending || isUploading}
-                className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs transition cursor-pointer shadow-xs flex items-center gap-1.5 disabled:opacity-50"
+                className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs transition cursor-pointer shadow-xs flex items-center gap-1.5 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
               >
                 <Send className={`w-3.5 h-3.5 ${isSending ? 'animate-spin' : ''}`} />
                 <span>{isSending ? 'Sending via SMTP...' : 'Send Email'}</span>

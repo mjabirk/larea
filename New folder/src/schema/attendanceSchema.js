@@ -44,13 +44,30 @@ export const ATTENDANCE_MODEL = {
       type: 'selection',
       string: 'Status',
       selection: [
-        { value: 'draft', label: 'To Approve' },
+        { value: 'draft', label: 'Draft' },
+        { value: 'pending_approval', label: 'To Approve' },
         { value: 'validated', label: 'Validated' },
         { value: 'refused', label: 'Refused' },
       ],
       default: 'draft',
       widget: 'badge',
     },
+    approval_status: {
+      type: 'selection',
+      string: 'Approval Status',
+      selection: [
+        { value: 'draft', label: 'Draft' },
+        { value: 'pending_approval', label: 'Pending Approval' },
+        { value: 'verified', label: 'Approved' },
+        { value: 'rejected', label: 'Rejected' },
+      ],
+      readonly: true,
+      default: 'draft',
+    },
+    created_by: { type: 'integer', string: 'Created By (Maker)', readonly: true },
+    submitted_by: { type: 'integer', string: 'Submitted By', readonly: true },
+    approved_by: { type: 'integer', string: 'Approved By (Checker)', readonly: true },
+    approved_at: { type: 'datetime', string: 'Approved At', readonly: true },
     work_entry_type_id: {
       type: 'selection',
       string: 'Time Type',
@@ -209,18 +226,25 @@ export const ATTENDANCE_FORM_VIEW = {
     header: {
       buttons: [
         {
+          name: 'action_submit',
+          string: 'Submit for Approval',
+          type: 'warning',
+          icon: 'Send',
+          invisible: "record.state !== 'draft'",
+        },
+        {
           name: 'action_validate',
-          string: 'Validate',
+          string: 'Approve Record',
           type: 'primary',
           icon: 'Check',
-          invisible: "record.state !== 'draft'",
+          invisible: "record.state !== 'pending_approval'",
         },
         {
           name: 'action_refuse',
           string: 'Refuse',
           type: 'secondary',
           icon: 'X',
-          invisible: "!['draft', 'validated'].includes(record.state)",
+          invisible: "!['pending_approval', 'validated'].includes(record.state)",
         },
         {
           name: 'action_reset_to_draft',
@@ -232,7 +256,7 @@ export const ATTENDANCE_FORM_VIEW = {
       ],
       statusbar: {
         field: 'state',
-        visible: ['draft', 'validated', 'refused'],
+        visible: ['draft', 'pending_approval', 'validated', 'refused'],
       },
     },
     sheet: {
@@ -315,4 +339,149 @@ export const ATTENDANCE_FORM_VIEW = {
 };
 
 export const INITIAL_ATTENDANCE_DATA = [];
+
+export const SHIFT_ROSTER_MODEL = {
+  name: 'shift_rosters',
+  string: 'Shift Rosters & Schedules',
+  description: 'Enterprise rotational shift assignments, timing windows, and departmental rostering',
+  fields: {
+    id: { type: 'uuid', string: 'ID', readonly: true },
+    code: { type: 'string', string: 'Roster Code', readonly: true },
+    employee_id: {
+      type: 'many2one',
+      string: 'Employee',
+      relation: 'hr.employee',
+      required: true,
+      widget: 'many2one_avatar_employee',
+    },
+    employee_name: { type: 'string', string: 'Employee Name', required: true },
+    department: { type: 'string', string: 'Department' },
+    shift_name: {
+      type: 'selection',
+      string: 'Shift Name',
+      default: 'Morning Shift (08:00 - 16:00)',
+      selection: [
+        { value: 'Morning Shift (08:00 - 16:00)', label: 'Morning Shift (08:00 - 16:00)' },
+        { value: 'Evening Shift (16:00 - 00:00)', label: 'Evening Shift (16:00 - 00:00)' },
+        { value: 'Night Shift (00:00 - 08:00)', label: 'Night Shift (00:00 - 08:00)' },
+        { value: 'Flexible Core Hours (09:00 - 17:00)', label: 'Flexible Core Hours (09:00 - 17:00)' },
+      ],
+    },
+    start_time: { type: 'datetime', string: 'Start Time', required: true, widget: 'datetime' },
+    end_time: { type: 'datetime', string: 'End Time', required: true, widget: 'datetime' },
+    duration_hours: { type: 'float', string: 'Duration (Hours)', readonly: true, compute: true },
+    location: { type: 'string', string: 'Location', default: 'Doha Head Office' },
+    status: {
+      type: 'selection',
+      string: 'Status',
+      selection: [
+        { value: 'scheduled', label: 'Scheduled' },
+        { value: 'in_progress', label: 'In Progress' },
+        { value: 'completed', label: 'Completed' },
+        { value: 'cancelled', label: 'Cancelled' },
+        { value: 'draft', label: 'Draft' },
+        { value: 'confirmed', label: 'Confirmed' },
+        { value: 'published', label: 'Published' },
+      ],
+      default: 'scheduled',
+      widget: 'badge',
+    },
+    notes: { type: 'text', string: 'Notes & Instructions' },
+  },
+};
+
+export const SHIFT_ROSTER_LIST_VIEW = {
+  id: 'view_shift_roster_tree',
+  type: 'list',
+  name: 'shift_rosters.list',
+  string: 'Shift Rosters',
+  arch: {
+    columns: [
+      { field: 'code', string: 'Code', sortable: true },
+      { field: 'employee_name', string: 'Employee', sortable: true },
+      { field: 'department', string: 'Department', sortable: true },
+      { field: 'shift_name', string: 'Shift', sortable: true },
+      { field: 'start_time', string: 'Start Time', sortable: true },
+      { field: 'end_time', string: 'End Time', sortable: true },
+      { field: 'duration_hours', string: 'Duration', bold: true },
+      { field: 'status', string: 'Status', widget: 'badge' },
+      { field: 'location', string: 'Location' },
+    ],
+  },
+};
+
+export const SHIFT_ROSTER_VIEW_SCHEMA = {
+  model: 'shift_rosters',
+  title: 'Shift Rosters & Department Schedules',
+  default_view: 'gantt',
+  newButtonLabel: '+ Assign Shift',
+  filterChips: [
+    { id: 'all', label: 'All' },
+    { id: 'scheduled', label: 'Scheduled' },
+    { id: 'in_progress', label: 'In Progress' },
+    { id: 'completed', label: 'Completed' },
+    { id: 'cancelled', label: 'Cancelled' },
+    { id: 'draft', label: 'Draft' },
+    { id: 'confirmed', label: 'Confirmed' },
+    { id: 'published', label: 'Published' },
+  ],
+  fields: {
+    id: { type: 'uuid', label: 'ID', readonly: true },
+    code: { type: 'string', label: 'Roster Code', readonly: true },
+    employee_id: { type: 'uuid', label: 'Employee ID', required: true },
+    employee_name: { type: 'string', label: 'Employee', required: true },
+    department: { type: 'string', label: 'Department' },
+    shift_name: { type: 'string', label: 'Shift Name', default: 'Morning Shift (08:00 - 16:00)' },
+    start_time: { type: 'datetime', label: 'Start Time', required: true },
+    end_time: { type: 'datetime', label: 'End Time', required: true },
+    duration_hours: { type: 'float', label: 'Duration (Hours)', readonly: true },
+    location: { type: 'string', label: 'Location' },
+    status: {
+      type: 'selection',
+      label: 'Status',
+      options: [
+        { value: 'scheduled', label: 'Scheduled' },
+        { value: 'in_progress', label: 'In Progress' },
+        { value: 'completed', label: 'Completed' },
+        { value: 'cancelled', label: 'Cancelled' },
+        { value: 'draft', label: 'Draft' },
+        { value: 'confirmed', label: 'Confirmed' },
+        { value: 'published', label: 'Published' },
+      ],
+    },
+    notes: { type: 'text', label: 'Notes & Exceptions' },
+    organization_id: { type: 'uuid', label: 'Organization ID', readonly: true },
+    created_at: { type: 'datetime', label: 'Created At', readonly: true },
+    updated_at: { type: 'datetime', label: 'Updated At', readonly: true },
+  },
+  views: {
+    list: {
+      columns: ['code', 'employee_name', 'department', 'shift_name', 'start_time', 'end_time', 'duration_hours', 'status', 'location'],
+    },
+    gantt: {
+      date_start: 'start_time',
+      date_stop: 'end_time',
+      title: 'employee_name',
+      group_by: 'department',
+    },
+    calendar: {
+      date_start: 'start_time',
+      date_stop: 'end_time',
+      event_title: 'employee_name',
+      color_field: 'status',
+    },
+    form: {
+      statusbar: {
+        field: 'status',
+        buttons: [
+          { id: 'btn_schedule', label: 'Schedule', action: 'schedule', target: 'scheduled', style: 'primary' },
+          { id: 'btn_start', label: 'Start Shift', action: 'start', target: 'in_progress', style: 'warning' },
+          { id: 'btn_complete', label: 'Complete Shift', action: 'complete', target: 'completed', style: 'success' },
+          { id: 'btn_cancel', label: 'Cancel Shift', action: 'cancel', target: 'cancelled', style: 'danger' },
+        ],
+      },
+    },
+  },
+};
+
 

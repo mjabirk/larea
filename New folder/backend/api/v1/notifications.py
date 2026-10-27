@@ -5,7 +5,8 @@ from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
 from pydantic import BaseModel
 
 from backend.core.database import get_db_pool
-from backend.core.dependencies import get_current_user_session, get_client_ip
+from backend.core.dependencies import get_current_user_session, get_client_ip, check_permission
+from backend.core.sequences import uuid7
 
 router = APIRouter(prefix="/api/v1/notifications", tags=["Notifications"])
 
@@ -88,12 +89,23 @@ async def mark_notification_read(
 ):
     """Mark an individual notification as read."""
     pool = get_db_pool()
+    user_id = session.get("user_id")
+    is_superadmin = session.get("is_superadmin", False)
+
     async with pool.acquire() as conn:
-        res = await conn.execute("""
-            UPDATE notifications
-            SET is_read = true
-            WHERE id = $1::uuid;
-        """, notification_id)
+        if is_superadmin:
+            res = await conn.execute("""
+                UPDATE notifications
+                SET is_read = true
+                WHERE id = $1::uuid;
+            """, notification_id)
+        else:
+            res = await conn.execute("""
+                UPDATE notifications
+                SET is_read = true
+                WHERE id = $1::uuid AND (user_id = $2::uuid OR user_id IS NULL);
+            """, notification_id, user_id)
+
         if res == "UPDATE 0":
             raise HTTPException(status_code=404, detail="Notification not found.")
 
@@ -129,8 +141,20 @@ async def delete_notification(
 ):
     """Remove a notification from feed."""
     pool = get_db_pool()
+    user_id = session.get("user_id")
+    is_superadmin = session.get("is_superadmin", False)
+
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM notifications WHERE id = $1::uuid;", notification_id)
+        if is_superadmin:
+            res = await conn.execute("DELETE FROM notifications WHERE id = $1::uuid;", notification_id)
+        else:
+            res = await conn.execute("""
+                DELETE FROM notifications
+                WHERE id = $1::uuid AND (user_id = $2::uuid OR user_id IS NULL);
+            """, notification_id, user_id)
+
+        if res == "DELETE 0":
+            raise HTTPException(status_code=404, detail="Notification not found.")
 
     return {"status": "success", "deleted_id": notification_id}
 
@@ -141,8 +165,16 @@ async def create_notification(
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
     """Publish a new notification event."""
+    current_uid = str(session.get("user_id") or "")
+    if payload.user_id and str(payload.user_id) != current_uid:
+        if not session.get("is_superadmin") and not check_permission(session, "users.manage"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Cannot dispatch notifications to other users without 'users.manage' permission."
+            )
+
     pool = get_db_pool()
-    notif_id = uuid.uuid4()
+    notif_id = uuid7()
     now = datetime.datetime.now(datetime.timezone.utc)
     target_user = payload.user_id or session.get("user_id")
 

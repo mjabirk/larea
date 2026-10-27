@@ -1,20 +1,17 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Users,
   Shield,
   Cpu,
   Banknote,
   SlidersHorizontal,
-  LayoutGrid,
   Search,
-  X,
-  ChevronRight,
-  Sparkles,
   Layers,
-  ArrowRight,
+  Sparkles,
 } from 'lucide-react';
 import { APP_MODULES } from '../../registry/moduleRegistry';
 import { useAccessControl } from '../../context/AccessControlContext';
+import { QuickAccessPanel, STORAGE_KEYS } from './QuickAccessPanel';
 
 const ICON_MAP = {
   Users,
@@ -29,50 +26,115 @@ export function AppGridOverlay({
   onSelectModule,
   onSelectMenu,
   onClose,
+  onOpenCommandPalette,
+  isCommandPaletteOpen = false,
+  enableQuickAccess = false,
 }) {
-  const { hasAppAccess, hasMenuAccess } = useAccessControl();
-  const [searchQuery, setSearchQuery] = useState('');
-  const searchInputRef = useRef(null);
+  const { hasAppAccess } = useAccessControl();
+
+  // Track hovered module to dynamically update QuickAccessPanel contextual sub-menus
+  const [hoveredModuleId, setHoveredModuleId] = useState(activeModuleId || 'hr');
+
+  // Dock position state ('right' | 'left', default 'right')
+  const [dockPosition, setDockPosition] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.DOCK);
+      if (!saved) return 'right';
+      try {
+        const parsed = JSON.parse(saved);
+        return parsed === 'left' ? 'left' : 'right';
+      } catch {
+        return saved === 'left' ? 'left' : 'right';
+      }
+    } catch {
+      return 'right';
+    }
+  });
+
+  // Panel collapsed state on desktop (default false)
+  const [isCollapsed, setIsCollapsed] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.COLLAPSED);
+      if (!saved) return false;
+      try {
+        return JSON.parse(saved) === true;
+      } catch {
+        return saved === 'true';
+      }
+    } catch {
+      return false;
+    }
+  });
+
+  // Mobile/Tablet slide-over drawer state (< lg)
+  const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false);
+
+  // Toggle dock position between Left and Right
+  const handleToggleDock = () => {
+    setDockPosition((prev) => {
+      const next = prev === 'right' ? 'left' : 'right';
+      try {
+        localStorage.setItem(STORAGE_KEYS.DOCK, JSON.stringify(next));
+      } catch (e) {
+        console.error(e);
+      }
+      return next;
+    });
+  };
+
+  // Toggle collapsed state
+  const handleToggleCollapse = () => {
+    setIsCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(STORAGE_KEYS.COLLAPSED, JSON.stringify(next));
+      } catch (e) {
+        console.error(e);
+      }
+      return next;
+    });
+  };
 
   // Filter apps strictly by access control permissions
   const accessibleApps = useMemo(() => {
     return APP_MODULES.filter((app) => hasAppAccess(app.id));
   }, [hasAppAccess]);
 
-  // Filter by search query across name, shortName, description, and sub-menus
-  const filteredApps = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return accessibleApps;
-
-    return accessibleApps.filter((app) => {
-      const matchName = String(app?.name || '').toLowerCase().includes(q);
-      const matchShort = String(app?.shortName || '').toLowerCase().includes(q);
-      const matchDesc = String(app?.description || '').toLowerCase().includes(q);
-      const matchMenus = app?.menus?.some((m) => String(m?.label || '').toLowerCase().includes(q));
-      return matchName || matchShort || matchDesc || matchMenus;
-    });
-  }, [accessibleApps, searchQuery]);
-
-  // Focus search input when launcher opens
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      searchInputRef.current?.focus();
-    }, 60);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // Keyboard navigation: Escape key returns to active workspace
+  // Global keydown handler:
+  // - Guard: ignore key events if CommandPalette is open
+  // - Escape: close drawer if open, otherwise close launcher
+  // - Any printable single character when not focused on input/textarea: open unified Command Palette (Ctrl+K)
   useEffect(() => {
     const handleKeyDown = (e) => {
+      if (isCommandPaletteOpen || document.querySelector('[aria-label="Unified Command Palette"]')) {
+        return;
+      }
+
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose?.();
+        if (enableQuickAccess && isMobileDrawerOpen) {
+          setIsMobileDrawerOpen(false);
+        } else {
+          onClose?.();
+        }
+        return;
+      }
+
+      const targetTagName = e.target?.tagName?.toLowerCase();
+      const isInputOrTextarea =
+        targetTagName === 'input' ||
+        targetTagName === 'textarea' ||
+        e.target?.isContentEditable;
+
+      if (!isInputOrTextarea && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        onOpenCommandPalette?.();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  }, [enableQuickAccess, isCommandPaletteOpen, isMobileDrawerOpen, onClose, onOpenCommandPalette]);
 
   return (
     <div
@@ -80,170 +142,152 @@ export function AppGridOverlay({
       role="region"
       aria-label="Workspace Application Launcher"
     >
-      {/* 1. Clean Centered Hero & Search Bar */}
-      <div className="text-center max-w-2xl mx-auto mb-6 space-y-2.5">
+      {/* 1. Header Row with Title and Circular Search Trigger */}
+      <div className="flex items-center justify-center gap-3 mb-6">
         <h1 className="text-[22px] font-bold text-slate-900 dark:text-white tracking-tight">
           Workspace Launcher
         </h1>
 
-        <p className="text-[13px] text-slate-600 dark:text-slate-400">
-          Select an enterprise module to launch its dedicated workspace or jump directly into sub-models.
-        </p>
-
-        {/* Clean Centered Search Bar */}
-        <div className="pt-1 max-w-md mx-auto relative">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            ref={searchInputRef}
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search accessible applications or sub-models..."
-            className="w-full pl-10 pr-10 h-[40px] rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 text-[14px] focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-xs transition"
-            aria-label="Filter applications"
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              onClick={() => setSearchQuery('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 rounded transition cursor-pointer"
-              aria-label="Clear search"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
+        <button
+          type="button"
+          onClick={() => onOpenCommandPalette?.()}
+          className="w-9 h-9 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:border-blue-500 shadow-2xs flex items-center justify-center transition cursor-pointer"
+          aria-label="Search & Commands (Ctrl+K)"
+          title="Search & Commands (Ctrl+K)"
+        >
+          <Search className="w-4 h-4" />
+        </button>
       </div>
 
-      {/* 2. Responsive Application Cards Grid */}
-      <div className="flex-1 flex flex-col justify-start">
-        {filteredApps.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-center">
-            <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-400 mb-4 shadow-xs">
-              <Search className="w-7 h-7" />
+      {/* 2. Responsive Layout: Main Module Grid + Optional Dockable Quick Access Panel */}
+      <div
+        className={`w-full flex-1 flex flex-col ${
+          enableQuickAccess && dockPosition === 'left'
+            ? 'lg:flex-row-reverse'
+            : enableQuickAccess
+            ? 'lg:flex-row'
+            : ''
+        } gap-6 lg:gap-8 items-start justify-center`}
+      >
+        {/* Main Workspace Launcher Module Grid */}
+        <div className="flex-1 w-full flex flex-col justify-center min-w-0">
+          {accessibleApps.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-400 mb-4 shadow-xs">
+                <Shield className="w-7 h-7" />
+              </div>
+              <h3 className="text-[15px] font-semibold text-slate-800 dark:text-slate-200">
+                No authorized applications
+              </h3>
+              <p className="text-[13px] text-slate-500 dark:text-slate-400 mt-1 max-w-sm">
+                You currently have no security groups granted to launch enterprise applications.
+              </p>
             </div>
-            <h3 className="text-[15px] font-semibold text-slate-800 dark:text-slate-200">
-              No matching applications found
-            </h3>
-            <p className="text-[13px] text-slate-500 dark:text-slate-400 mt-1 max-w-sm">
-              {searchQuery
-                ? `No authorized applications matched your search query "${searchQuery}".`
-                : 'You currently have no security groups granted to launch enterprise applications.'}
-            </p>
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                className="mt-4 px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition cursor-pointer shadow-xs"
-              >
-                Clear Search Filter
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 items-stretch">
-            {filteredApps.map((app) => {
-              const Icon = ICON_MAP[app.iconName] || Layers;
-              const isCurrent = app.id === activeModuleId;
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-6 sm:gap-8 xl:gap-10 max-w-4xl mx-auto py-6 place-items-center w-full">
+              {accessibleApps.map((app) => {
+                const Icon = ICON_MAP[app.iconName] || Layers;
 
-              // Filter sub-menus based on granular permissions
-              const permittedMenus = (app.menus || []).filter((menu) =>
-                hasMenuAccess(menu.id)
-              );
-
-              return (
-                <div
-                  key={app.id}
-                  className={`group relative rounded-2xl border transition-all duration-200 flex flex-col justify-between overflow-hidden shadow-xs hover:shadow-md h-[210px] ${
-                    isCurrent
-                      ? 'bg-white dark:bg-slate-900 border-blue-500 ring-2 ring-blue-500/20'
-                      : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 hover:-translate-y-0.5'
-                  }`}
-                >
-                  {/* Subtle top color accent bar */}
-                  <div
-                    className="h-1.5 w-full transition-opacity opacity-80 group-hover:opacity-100"
-                    style={{ backgroundColor: app.color }}
-                  />
-
-                  <div className="p-4 flex-1 flex flex-col justify-between">
-                    {/* Clickable Card Header & Title */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelectModule(app.id);
-                        if (permittedMenus.length > 0) {
-                          onSelectMenu?.(permittedMenus[0].id);
-                        }
-                        onClose?.();
-                      }}
-                      className="text-left rtl:text-right cursor-pointer group/btn transition focus:outline-none w-full"
+                return (
+                  <button
+                    key={app.id}
+                    type="button"
+                    onMouseEnter={() => enableQuickAccess && setHoveredModuleId(app.id)}
+                    onFocus={() => enableQuickAccess && setHoveredModuleId(app.id)}
+                    onClick={() => {
+                      onSelectModule(app.id);
+                      onClose?.();
+                    }}
+                    className="group flex flex-col items-center gap-3 p-2 rounded-2xl cursor-pointer focus:outline-none"
+                  >
+                    {/* a) Large Squircle Icon Tile */}
+                    <div
+                      className="w-16 h-16 sm:w-20 sm:h-20 rounded-[20px] sm:rounded-[24px] flex items-center justify-center text-white shadow-md group-hover:shadow-xl group-hover:-translate-y-1.5 group-hover:scale-105 transition-all duration-200 ring-1 ring-black/5 dark:ring-white/15"
+                      style={{ backgroundColor: app.color }}
+                      aria-hidden="true"
                     >
-                      <div className="flex items-center justify-between gap-2 mb-2.5">
-                        <div
-                          className="w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-xs group-hover/btn:scale-105 transition-transform"
-                          style={{ backgroundColor: app.color }}
-                          aria-hidden="true"
-                        >
-                          <Icon className="w-5 h-5" />
-                        </div>
-
-                        <div className="flex items-center gap-1.5">
-                          {isCurrent && (
-                            <span className="px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/40 text-[11px] font-semibold">
-                              Active
-                            </span>
-                          )}
-                          <span className="px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-mono text-[10px]">
-                            {app.shortName}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between gap-1">
-                        <h3 className="font-bold text-[15px] text-slate-900 dark:text-white group-hover/btn:text-blue-600 dark:group-hover/btn:text-blue-400 transition truncate">
-                          {app.name}
-                        </h3>
-                        <ChevronRight className="w-4 h-4 text-slate-400 group-hover/btn:text-blue-600 dark:group-hover/btn:text-blue-400 group-hover/btn:translate-x-0.5 rtl:group-hover/btn:-translate-x-0.5 transition shrink-0" />
-                      </div>
-                    </button>
-
-                    {/* Quick-Link Sub-Model Chips */}
-                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80">
-                      <div className="flex flex-wrap gap-1.5 max-h-[88px] overflow-y-auto no-scrollbar">
-                        {permittedMenus.map((menu) => (
-                          <button
-                            key={menu.id}
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onSelectModule(app.id);
-                              onSelectMenu?.(menu.id);
-                              onClose?.();
-                            }}
-                            className="px-2.5 py-1 rounded-lg bg-slate-100/90 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-600/30 text-slate-700 dark:text-slate-300 hover:text-blue-700 dark:hover:text-blue-200 border border-slate-200 dark:border-slate-700/60 text-[12px] font-medium leading-normal transition cursor-pointer flex items-center gap-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-500"
-                            title={`Jump to ${menu.label}`}
-                          >
-                            <span>{menu.label}</span>
-                            <ArrowRight className="w-2.5 h-2.5 opacity-50 group-hover:opacity-100" />
-                          </button>
-                        ))}
-                      </div>
+                      <Icon className="w-8 h-8 sm:w-9 sm:h-9 stroke-[1.8]" />
                     </div>
-                  </div>
-                </div>
-              );
-            })}
+
+                    {/* b) Module Name Below Icon */}
+                    <span className="text-[13px] sm:text-[14px] font-semibold text-slate-800 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400 text-center leading-snug transition-colors">
+                      {app.name}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Desktop Dockable Quick Access Panel (Rendered ONLY when enableQuickAccess is true) */}
+        {enableQuickAccess && (
+          <div className="hidden lg:flex shrink-0 sticky top-8">
+            <QuickAccessPanel
+              activeModuleId={activeModuleId}
+              hoveredModuleId={hoveredModuleId}
+              onSelectModule={onSelectModule}
+              onSelectMenu={onSelectMenu}
+              onClose={onClose}
+              dockPosition={dockPosition}
+              onToggleDock={handleToggleDock}
+              isCollapsed={isCollapsed}
+              onToggleCollapse={handleToggleCollapse}
+              isMobile={false}
+            />
           </div>
         )}
       </div>
 
-      {/* 3. Clean Keyboard Shortcuts Footer (Debug/developer text removed) */}
-      <div className="mt-auto pt-8 pb-4 text-center text-xs text-slate-500 dark:text-slate-400 flex items-center justify-center gap-4">
+      {/* 3. Floating Quick Access Pill Button for Mobile / Tablet (< lg) (Rendered ONLY when enableQuickAccess is true) */}
+      {enableQuickAccess && (
+        <div className="lg:hidden fixed bottom-6 right-6 z-40">
+          <button
+            type="button"
+            onClick={() => setIsMobileDrawerOpen(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-blue-600 hover:bg-blue-500 text-white shadow-lg hover:shadow-xl font-semibold text-xs transition-all duration-200 cursor-pointer active:scale-95"
+            aria-label="Open Quick Access Panel"
+          >
+            <Sparkles className="w-4 h-4" />
+            <span>Quick Access</span>
+          </button>
+        </div>
+      )}
+
+      {/* 4. Slide-over Drawer for Mobile / Tablet (< lg) (Rendered ONLY when enableQuickAccess is true) */}
+      {enableQuickAccess && isMobileDrawerOpen && (
+        <div className="lg:hidden fixed inset-0 z-50 flex justify-end">
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 bg-black/50 backdrop-blur-xs transition-opacity animate-fadeIn"
+            onClick={() => setIsMobileDrawerOpen(false)}
+            aria-hidden="true"
+          />
+          {/* Drawer Panel */}
+          <div className="relative w-full max-w-sm sm:max-w-md bg-white dark:bg-slate-900 h-full shadow-2xl flex flex-col z-10 animate-fadeIn">
+            <QuickAccessPanel
+              activeModuleId={activeModuleId}
+              hoveredModuleId={hoveredModuleId}
+              onSelectModule={onSelectModule}
+              onSelectMenu={onSelectMenu}
+              onClose={onClose}
+              dockPosition={dockPosition}
+              onToggleDock={handleToggleDock}
+              isCollapsed={false}
+              onToggleCollapse={handleToggleCollapse}
+              isMobile={true}
+              onCloseMobileDrawer={() => setIsMobileDrawerOpen(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* 5. Clean Keyboard Shortcuts Footer */}
+      <div className="mt-auto pt-8 pb-4 text-center text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center justify-center gap-2 sm:gap-4">
         <span>
           Press <kbd className="px-1.5 py-0.5 bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded text-slate-700 dark:text-slate-300 font-mono text-[11px]">Esc</kbd> or click 9-dots icon to return
         </span>
-        <span>•</span>
+        <span className="hidden sm:inline">•</span>
         <span>
           Press <kbd className="px-1.5 py-0.5 bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded text-slate-700 dark:text-slate-300 font-mono text-[11px]">Ctrl + K</kbd> for Command Palette
         </span>

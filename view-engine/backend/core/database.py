@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, List
 import asyncpg
 import bcrypt
 from backend.core.config import settings
-from backend.core.audit import build_canonical_payload, format_canonical_timestamp, compute_row_hash
+from backend.core.audit import build_canonical_payload, format_canonical_timestamp, compute_row_hash, record_audit_log
 
 logger = logging.getLogger("enterprise.db")
 
@@ -74,6 +74,51 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
     """Non-blocking bcrypt password verification offloaded to worker thread."""
     return await asyncio.to_thread(verify_password, plain_password, hashed_password)
+
+async def log_audit_event(
+    conn,
+    entity_type: str,
+    entity_id: Any,
+    action: str,
+    session: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = "127.0.0.1",
+    note: Optional[str] = None,
+    changes: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Shared helper to log structured, cryptographically linked SOX 404 / ISO 27001 entries to audit_logs.
+    Resolves session tenant_id, caller user_id (safely validated against users table), and author name.
+    """
+    sess = session or {}
+    raw_tid = sess.get("organization_id") or sess.get("tenant_id")
+    tenant_id = str(raw_tid) if raw_tid else "default_tenant"
+
+    user_id = None
+    raw_uid = sess.get("user_id") or sess.get("id")
+    if raw_uid:
+        try:
+            parsed_id = uuid.UUID(str(raw_uid))
+            exists = await conn.fetchval("SELECT id FROM users WHERE id = $1;", parsed_id)
+            if exists:
+                user_id = parsed_id
+        except Exception:
+            pass
+
+    author_name = sess.get("full_name") or sess.get("username") or "Authorized User"
+
+    return await record_audit_log(
+        conn=conn,
+        entity_type=str(entity_type),
+        entity_id=str(entity_id),
+        action=str(action),
+        tenant_id=tenant_id,
+        changed_by_user_id=user_id,
+        changed_by_name=author_name,
+        changes=changes,
+        note=note,
+        ip_address=client_ip or "127.0.0.1",
+    )
+
 
 # ==============================================================================
 # SCHEMA INITIALIZATION & SYSTEM SEEDING
@@ -145,8 +190,10 @@ async def init_schema():
                 base_currency VARCHAR(10) DEFAULT 'USD',
                 default_timezone VARCHAR(50) DEFAULT 'UTC',
                 default_locale VARCHAR(10) DEFAULT 'en',
+                is_active BOOLEAN DEFAULT true,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+            ALTER TABLE organizations ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
         """)
 
         # 4. Branches table
@@ -158,8 +205,10 @@ async def init_schema():
                 code VARCHAR(50),
                 city VARCHAR(100),
                 ip_allowlist JSONB DEFAULT '["127.0.0.1/32"]'::jsonb,
+                is_active BOOLEAN DEFAULT true,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+            ALTER TABLE branches ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
         """)
 
         # 5. Users table
@@ -200,6 +249,8 @@ async def init_schema():
             ALTER TABLE users ADD COLUMN IF NOT EXISTS windows_upn VARCHAR(255);
             ALTER TABLE users ADD COLUMN IF NOT EXISTS ad_sam_account VARCHAR(150);
             ALTER TABLE users ADD COLUMN IF NOT EXISTS auto_sso_enabled BOOLEAN DEFAULT false;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_company_ids JSONB DEFAULT '[]'::jsonb;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_branch_ids JSONB DEFAULT '[]'::jsonb;
             CREATE INDEX IF NOT EXISTS idx_users_windows_upn ON users(LOWER(windows_upn));
             CREATE INDEX IF NOT EXISTS idx_users_external_id ON users(external_id);
 
@@ -319,6 +370,8 @@ async def init_schema():
             ALTER TABLE employees ADD COLUMN IF NOT EXISTS zk_palm_count INT DEFAULT 0;
             UPDATE employees SET zk_emp_code = REPLACE(employee_number, 'EMP-', '') WHERE zk_emp_code IS NULL;
             CREATE INDEX IF NOT EXISTS idx_employees_zk_code ON employees(zk_emp_code);
+            CREATE INDEX IF NOT EXISTS idx_employees_org_id ON employees(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_employees_branch_id ON employees(branch_id);
         """)
 
         # 8. Encrypted Employee Document Vault table (Physical filesystem storage)
@@ -393,6 +446,9 @@ async def init_schema():
             CREATE INDEX IF NOT EXISTS idx_attendance_org_checkin ON attendance_logs(organization_id, check_in DESC);
             ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS employee_id UUID REFERENCES employees(id) ON DELETE RESTRICT;
             ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS department VARCHAR(100);
+            ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+            CREATE INDEX IF NOT EXISTS idx_attendance_logs_org_id ON attendance_logs(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_attendance_logs_branch_id ON attendance_logs(branch_id);
 
             -- SOX 404 Maker-Checker Dual Control columns & constraint for attendance_logs
             ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
@@ -485,6 +541,8 @@ async def init_schema():
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_zk_terminals_sn ON zkteco_terminals(sn);
+            CREATE INDEX IF NOT EXISTS idx_zkteco_terminals_org_id ON zkteco_terminals(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_zkteco_terminals_branch_id ON zkteco_terminals(branch_id);
 
             CREATE TABLE IF NOT EXISTS zkteco_biometric_templates (
                 id UUID PRIMARY KEY,
@@ -574,6 +632,9 @@ async def init_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_contracts_emp ON employee_contracts(employee_id);
             CREATE INDEX IF NOT EXISTS idx_contracts_status ON employee_contracts(status);
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+            CREATE INDEX IF NOT EXISTS idx_employee_contracts_org_id ON employee_contracts(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_employee_contracts_branch_id ON employee_contracts(branch_id);
             ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS amendment_of_id UUID REFERENCES employee_contracts(id) ON DELETE SET NULL;
             ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS amendment_reason TEXT;
             ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS revision_number INT DEFAULT 1;
@@ -638,6 +699,10 @@ async def init_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_payroll_batches_ym ON payroll_batches(salary_year_month DESC);
             CREATE INDEX IF NOT EXISTS idx_payroll_batches_status ON payroll_batches(status);
+            ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+            ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS branch_ids JSONB DEFAULT '["all"]'::jsonb;
+            CREATE INDEX IF NOT EXISTS idx_payroll_batches_org_id ON payroll_batches(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_payroll_batches_branch_id ON payroll_batches(branch_id);
             ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS posted_at TIMESTAMPTZ;
             ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS posted_by VARCHAR(255);
             ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS reversal_of_id UUID REFERENCES payroll_batches(id) ON DELETE SET NULL;
@@ -840,6 +905,9 @@ async def init_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_leave_requests_emp_date ON leave_requests(employee_id, start_date);
             CREATE INDEX IF NOT EXISTS idx_leave_requests_status ON leave_requests(approval_status);
+            ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+            CREATE INDEX IF NOT EXISTS idx_leave_requests_org_id ON leave_requests(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_leave_requests_branch_id ON leave_requests(branch_id);
         """)
 
         # Seed default Qatar Labour Law leave_types
@@ -1583,6 +1651,7 @@ async def init_schema():
 
             CREATE TABLE IF NOT EXISTS whatsapp_configs (
                 id UUID PRIMARY KEY,
+                organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
                 name VARCHAR(100) NOT NULL,
                 waba_id VARCHAR(100) NOT NULL,
                 phone_number_id VARCHAR(100) NOT NULL,
@@ -1595,7 +1664,9 @@ async def init_schema():
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+            ALTER TABLE whatsapp_configs ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE;
             CREATE INDEX IF NOT EXISTS idx_wa_configs_default ON whatsapp_configs(is_default);
+            CREATE INDEX IF NOT EXISTS idx_wa_configs_org ON whatsapp_configs(organization_id);
 
             CREATE TABLE IF NOT EXISTS whatsapp_templates (
                 id UUID PRIMARY KEY,
@@ -1641,6 +1712,7 @@ async def init_schema():
 
             CREATE TABLE IF NOT EXISTS automation_triggers (
                 id UUID PRIMARY KEY,
+                organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
                 name VARCHAR(150) NOT NULL,
                 event_type VARCHAR(50) NOT NULL,
                 channel VARCHAR(20) NOT NULL,
@@ -1650,7 +1722,9 @@ async def init_schema():
                 active BOOLEAN DEFAULT true,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+            ALTER TABLE automation_triggers ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE;
             CREATE INDEX IF NOT EXISTS idx_auto_triggers_event ON automation_triggers(event_type, active);
+            CREATE INDEX IF NOT EXISTS idx_auto_triggers_org ON automation_triggers(organization_id);
         """)
 
         # Seed default SMS Gateway & WhatsApp Configuration & Templates (demo data)
@@ -2254,6 +2328,245 @@ async def init_schema():
                 );
             """)
 
+        # 43. Multi-Company Architecture Deduplication & Consolidation Migration
+        await consolidate_organizations_migration(conn)
+
+        # 44. Archiving & Soft-Delete Support (is_active columns & indexes)
+        await conn.execute("""
+            -- Add is_active column if not present
+            ALTER TABLE organizations ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE branches ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE salary_rules ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE zkteco_terminals ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE leave_types ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+
+            -- Indexes for active filtering performance
+            CREATE INDEX IF NOT EXISTS idx_organizations_active ON organizations(is_active);
+            CREATE INDEX IF NOT EXISTS idx_branches_active ON branches(organization_id, is_active);
+            CREATE INDEX IF NOT EXISTS idx_users_active ON users(organization_id, is_active);
+            CREATE INDEX IF NOT EXISTS idx_employees_active ON employees(organization_id, is_active);
+            CREATE INDEX IF NOT EXISTS idx_zk_terminals_active ON zkteco_terminals(is_active);
+        """)
+
         logger.info("PostgreSQL schema initialization, mail, notifications, SMS, WhatsApp, Chat, RLS & SOX 404 / ISO 27001 triggers completed.")
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+
+async def consolidate_organizations_migration(conn):
+    """
+    Consolidation and Deduplication Migration:
+    1. Identify or create 2 primary companies:
+       - Primary Holding: 'Apex Holdings Q.P.S.C.'
+       - Subsidiary: 'Larea Industrial & Contracting W.L.L.'
+    2. Re-link existing users, branches, employees, and payroll batches pointing to redundant organization IDs.
+    3. Delete all orphan/redundant organization rows so ONLY the 2 official companies remain.
+    4. Populate allowed_company_ids and allowed_branch_ids for superadmins.
+    """
+    logger.info("Starting multi-company deduplication and consolidation migration...")
+
+    # 1. Identify or create primary holding company (Apex Holdings Q.P.S.C.)
+    primary_apex = await conn.fetchrow("""
+        SELECT id, legal_name FROM organizations 
+        WHERE legal_name ILIKE '%Apex Holdings%' OR legal_name ILIKE '%Apex Global%'
+        ORDER BY (
+            (SELECT COUNT(*) FROM branches WHERE organization_id = organizations.id) +
+            (SELECT COUNT(*) FROM users WHERE organization_id = organizations.id)
+        ) DESC, created_at ASC
+        LIMIT 1;
+    """)
+
+    if not primary_apex:
+        primary_org_id = uuid.uuid4()
+        await conn.execute("""
+            INSERT INTO organizations (id, legal_name, tax_id, base_currency, default_timezone, default_locale)
+            VALUES ($1, 'Apex Holdings Q.P.S.C.', 'QA-90281726-CR', 'QAR', 'Asia/Qatar', 'en');
+        """, primary_org_id)
+    else:
+        primary_org_id = primary_apex["id"]
+        await conn.execute("""
+            UPDATE organizations 
+            SET legal_name = 'Apex Holdings Q.P.S.C.', 
+                tax_id = COALESCE(tax_id, 'QA-90281726-CR'), 
+                base_currency = 'QAR', 
+                default_timezone = 'Asia/Qatar', 
+                default_locale = 'en'
+            WHERE id = $1;
+        """, primary_org_id)
+
+    # Ensure primary org has at least one branch
+    p_branch = await conn.fetchval("SELECT id FROM branches WHERE organization_id = $1 LIMIT 1;", primary_org_id)
+    if not p_branch:
+        p_branch = uuid.uuid4()
+        await conn.execute("""
+            INSERT INTO branches (id, organization_id, name, code, city, ip_allowlist)
+            VALUES ($1, $2, 'Doha Main Branch', 'DOH-HQ', 'Doha', '["127.0.0.1/32"]'::jsonb);
+        """, p_branch, primary_org_id)
+
+    # 2. Identify or create subsidiary company: Larea Industrial & Contracting W.L.L.
+    subsidiary_larea = await conn.fetchrow("""
+        SELECT id, legal_name FROM organizations 
+        WHERE legal_name ILIKE '%Larea%'
+        ORDER BY created_at ASC LIMIT 1;
+    """)
+
+    if not subsidiary_larea:
+        subsidiary_org_id = uuid.uuid4()
+        await conn.execute("""
+            INSERT INTO organizations (id, legal_name, tax_id, base_currency, default_timezone, default_locale)
+            VALUES ($1, 'Larea Industrial & Contracting W.L.L.', 'QA-3849102-CR', 'QAR', 'Asia/Qatar', 'en');
+        """, subsidiary_org_id)
+    else:
+        subsidiary_org_id = subsidiary_larea["id"]
+        await conn.execute("""
+            UPDATE organizations 
+            SET legal_name = 'Larea Industrial & Contracting W.L.L.', 
+                tax_id = COALESCE(tax_id, 'QA-3849102-CR'), 
+                base_currency = 'QAR', 
+                default_timezone = 'Asia/Qatar', 
+                default_locale = 'en'
+            WHERE id = $1;
+        """, subsidiary_org_id)
+
+    # Ensure subsidiary has an initial operating branch
+    s_branch = await conn.fetchval("SELECT id FROM branches WHERE organization_id = $1 LIMIT 1;", subsidiary_org_id)
+    if not s_branch:
+        s_branch = uuid.uuid4()
+        await conn.execute("""
+            INSERT INTO branches (id, organization_id, name, code, city, ip_allowlist)
+            VALUES ($1, $2, 'Industrial Area Fabrication Yard', 'IND-01', 'Doha', '["127.0.0.1/32", "10.0.4.0/24"]'::jsonb);
+        """, s_branch, subsidiary_org_id)
+
+    # 3. Re-link existing users pointing to redundant organization IDs to primary_org_id
+    await conn.execute("""
+        UPDATE users 
+        SET organization_id = $1
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    await conn.execute("""
+        UPDATE users u
+        SET branch_id = (SELECT b.id FROM branches b WHERE b.organization_id = u.organization_id ORDER BY b.created_at ASC LIMIT 1)
+        WHERE u.branch_id IS NULL OR u.branch_id NOT IN (SELECT id FROM branches WHERE organization_id = u.organization_id);
+    """)
+
+    # Re-link existing employees
+    await conn.execute("""
+        UPDATE employees 
+        SET organization_id = $1
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    await conn.execute("""
+        UPDATE employees e
+        SET branch_id = (SELECT b.id FROM branches b WHERE b.organization_id = e.organization_id ORDER BY b.created_at ASC LIMIT 1)
+        WHERE e.branch_id IS NULL OR e.branch_id NOT IN (SELECT id FROM branches WHERE organization_id = e.organization_id);
+    """)
+
+    # Re-link payroll batches
+    await conn.execute("""
+        UPDATE payroll_batches 
+        SET organization_id = $1
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    await conn.execute("""
+        UPDATE payroll_batches pb
+        SET branch_id = (SELECT b.id FROM branches b WHERE b.organization_id = pb.organization_id ORDER BY b.created_at ASC LIMIT 1)
+        WHERE pb.branch_id IS NULL OR pb.branch_id NOT IN (SELECT id FROM branches WHERE organization_id = pb.organization_id);
+    """)
+
+    # Re-link attendance logs
+    await conn.execute("""
+        UPDATE attendance_logs a
+        SET organization_id = COALESCE(e.organization_id, $1),
+            branch_id = COALESCE(e.branch_id, (SELECT b.id FROM branches b WHERE b.organization_id = COALESCE(e.organization_id, $1) LIMIT 1))
+        FROM employees e
+        WHERE a.employee_id = e.id AND (a.organization_id IS NULL OR a.organization_id NOT IN ($1, $2));
+    """, primary_org_id, subsidiary_org_id)
+
+    await conn.execute("""
+        UPDATE attendance_logs
+        SET organization_id = $1,
+            branch_id = COALESCE(branch_id, (SELECT id FROM branches WHERE organization_id = $1 LIMIT 1))
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    # Re-link leave requests
+    await conn.execute("""
+        UPDATE leave_requests l
+        SET organization_id = COALESCE(e.organization_id, $1),
+            branch_id = COALESCE(e.branch_id, (SELECT b.id FROM branches b WHERE b.organization_id = COALESCE(e.organization_id, $1) LIMIT 1))
+        FROM employees e
+        WHERE l.employee_id = e.id AND (l.organization_id IS NULL OR l.organization_id NOT IN ($1, $2));
+    """, primary_org_id, subsidiary_org_id)
+
+    await conn.execute("""
+        UPDATE leave_requests
+        SET organization_id = $1,
+            branch_id = COALESCE(branch_id, (SELECT id FROM branches WHERE organization_id = $1 LIMIT 1))
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    # Re-link employee contracts
+    await conn.execute("""
+        UPDATE employee_contracts c
+        SET organization_id = COALESCE(e.organization_id, $1),
+            branch_id = COALESCE(e.branch_id, (SELECT b.id FROM branches b WHERE b.organization_id = COALESCE(e.organization_id, $1) LIMIT 1))
+        FROM employees e
+        WHERE c.employee_id = e.id AND (c.organization_id IS NULL OR c.organization_id NOT IN ($1, $2));
+    """, primary_org_id, subsidiary_org_id)
+
+    await conn.execute("""
+        UPDATE employee_contracts
+        SET organization_id = $1,
+            branch_id = COALESCE(branch_id, (SELECT id FROM branches WHERE organization_id = $1 LIMIT 1))
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    # Re-link zkteco terminals
+    await conn.execute("""
+        UPDATE zkteco_terminals
+        SET organization_id = $1,
+            branch_id = COALESCE(branch_id, (SELECT id FROM branches WHERE organization_id = $1 LIMIT 1))
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    # Re-link other auxiliary tables
+    for tbl in ["shift_rosters", "payroll_adjustments", "whatsapp_configs", "automation_triggers"]:
+        try:
+            await conn.execute(f"""
+                UPDATE {tbl} SET organization_id = $1 
+                WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+            """, primary_org_id, subsidiary_org_id)
+        except Exception:
+            pass
+
+    # 4. Clean up orphan/redundant branches
+    await conn.execute("""
+        DELETE FROM branches 
+        WHERE organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    # 5. Delete all orphan/redundant organization rows so ONLY the 2 official companies remain
+    await conn.execute("""
+        DELETE FROM organizations 
+        WHERE id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    # 6. Populate allowed_company_ids and allowed_branch_ids for superadmins
+    all_comp_ids = json.dumps([str(primary_org_id), str(subsidiary_org_id)])
+    all_br_rows = await conn.fetch("SELECT id FROM branches WHERE organization_id IN ($1, $2);", primary_org_id, subsidiary_org_id)
+    all_br_ids = json.dumps([str(r["id"]) for r in all_br_rows])
+
+    await conn.execute("""
+        UPDATE users 
+        SET allowed_company_ids = $1::jsonb,
+            allowed_branch_ids = $2::jsonb
+        WHERE is_superadmin = true;
+    """, all_comp_ids, all_br_ids)
+
+    logger.info("Multi-company deduplication migration completed: 2 official companies active.")
+

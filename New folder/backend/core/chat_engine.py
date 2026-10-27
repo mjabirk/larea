@@ -7,6 +7,7 @@ import logging
 import asyncio
 import datetime
 import mimetypes
+import threading
 from typing import Optional, Dict, Any, List, Set
 
 from fastapi import WebSocket
@@ -34,47 +35,52 @@ class VapidKeyManager:
     
     _private_key_pem: Optional[str] = None
     _public_key_b64: Optional[str] = None
+    _vapid_lock: threading.Lock = threading.Lock()
 
     @classmethod
     def initialize(cls):
-        priv_path = os.path.join(VAPID_STORAGE_DIR, "vapid_private.pem")
-        pub_path = os.path.join(VAPID_STORAGE_DIR, "vapid_public.txt")
-
-        if os.path.exists(priv_path) and os.path.exists(pub_path):
-            try:
-                with open(priv_path, "r", encoding="utf-8") as f:
-                    cls._private_key_pem = f.read()
-                with open(pub_path, "r", encoding="utf-8") as f:
-                    cls._public_key_b64 = f.read().strip()
-                logger.info("Loaded existing VAPID key pair from storage.")
+        with cls._vapid_lock:
+            if cls._private_key_pem and cls._public_key_b64:
                 return
+
+            priv_path = os.path.join(VAPID_STORAGE_DIR, "vapid_private.pem")
+            pub_path = os.path.join(VAPID_STORAGE_DIR, "vapid_public.txt")
+
+            if os.path.exists(priv_path) and os.path.exists(pub_path):
+                try:
+                    with open(priv_path, "r", encoding="utf-8") as f:
+                        cls._private_key_pem = f.read()
+                    with open(pub_path, "r", encoding="utf-8") as f:
+                        cls._public_key_b64 = f.read().strip()
+                    logger.info("Loaded existing VAPID key pair from storage.")
+                    return
+                except Exception as e:
+                    logger.warning(f"Error loading existing VAPID keys, regenerating: {e}")
+
+            # Generate new EC SECP256R1 key pair
+            private_key = ec.generate_private_key(ec.SECP256R1())
+            pem_bytes = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            )
+            cls._private_key_pem = pem_bytes.decode("utf-8")
+
+            # Uncompressed point format (65 bytes starting with 0x04)
+            public_bytes = private_key.public_key().public_bytes(
+                encoding=serialization.Encoding.X962,
+                format=serialization.PublicFormat.UncompressedPoint
+            )
+            cls._public_key_b64 = base64.urlsafe_b64encode(public_bytes).rstrip(b"=").decode("ascii")
+
+            try:
+                with open(priv_path, "w", encoding="utf-8") as f:
+                    f.write(cls._private_key_pem)
+                with open(pub_path, "w", encoding="utf-8") as f:
+                    f.write(cls._public_key_b64)
+                logger.info("Generated and saved new VAPID key pair.")
             except Exception as e:
-                logger.warning(f"Error loading existing VAPID keys, regenerating: {e}")
-
-        # Generate new EC SECP256R1 key pair
-        private_key = ec.generate_private_key(ec.SECP256R1())
-        pem_bytes = private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()
-        )
-        cls._private_key_pem = pem_bytes.decode("utf-8")
-
-        # Uncompressed point format (65 bytes starting with 0x04)
-        public_bytes = private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.X962,
-            format=serialization.PublicFormat.UncompressedPoint
-        )
-        cls._public_key_b64 = base64.urlsafe_b64encode(public_bytes).rstrip(b"=").decode("ascii")
-
-        try:
-            with open(priv_path, "w", encoding="utf-8") as f:
-                f.write(cls._private_key_pem)
-            with open(pub_path, "w", encoding="utf-8") as f:
-                f.write(cls._public_key_b64)
-            logger.info("Generated and saved new VAPID key pair.")
-        except Exception as e:
-            logger.error(f"Failed to persist VAPID keys to disk: {e}")
+                logger.error(f"Failed to persist VAPID keys to disk: {e}")
 
     @classmethod
     def get_public_key(cls) -> str:
@@ -263,10 +269,27 @@ class ConnectionManager:
                 disconnected.append(ws)
 
         if disconnected:
+            is_last = False
             async with self.lock:
                 for ws in disconnected:
                     if u_str in self.active_connections:
                         self.active_connections[u_str].discard(ws)
+                        if not self.active_connections[u_str]:
+                            del self.active_connections[u_str]
+                            is_last = True
+                    self.socket_users.pop(ws, None)
+                    rooms = self.socket_rooms.pop(ws, set())
+                    for cid in rooms:
+                        if cid in self.channel_rooms:
+                            self.channel_rooms[cid].discard(ws)
+                            if not self.channel_rooms[cid]:
+                                del self.channel_rooms[cid]
+            if is_last:
+                await self.broadcast_all({
+                    "type": "USER_PRESENCE",
+                    "userId": u_str,
+                    "status": "offline"
+                }, exclude_user=u_str)
 
         return sent
 
@@ -398,30 +421,34 @@ class ChatConnectionManager:
         self.channel_subscriptions: Dict[str, Set[WebSocket]] = {}
         # user_id -> set of active WebSockets (for presence & direct alerts)
         self.user_sockets: Dict[str, Set[WebSocket]] = {}
+        self._lock = threading.Lock()
 
     async def connect(self, websocket: WebSocket, channel_id: str, user_id: str):
         if websocket.client_state == WebSocketState.CONNECTING:
             await websocket.accept()
         c_id = str(channel_id)
         u_id = str(user_id)
-        self.channel_subscriptions.setdefault(c_id, set()).add(websocket)
-        self.user_sockets.setdefault(u_id, set()).add(websocket)
+        with self._lock:
+            self.channel_subscriptions.setdefault(c_id, set()).add(websocket)
+            self.user_sockets.setdefault(u_id, set()).add(websocket)
 
     def disconnect(self, websocket: WebSocket, channel_id: str, user_id: str):
         c_id = str(channel_id)
         u_id = str(user_id)
-        if c_id in self.channel_subscriptions:
-            self.channel_subscriptions[c_id].discard(websocket)
-            if not self.channel_subscriptions[c_id]:
-                del self.channel_subscriptions[c_id]
-        if u_id in self.user_sockets:
-            self.user_sockets[u_id].discard(websocket)
-            if not self.user_sockets[u_id]:
-                del self.user_sockets[u_id]
+        with self._lock:
+            if c_id in self.channel_subscriptions:
+                self.channel_subscriptions[c_id].discard(websocket)
+                if not self.channel_subscriptions[c_id]:
+                    del self.channel_subscriptions[c_id]
+            if u_id in self.user_sockets:
+                self.user_sockets[u_id].discard(websocket)
+                if not self.user_sockets[u_id]:
+                    del self.user_sockets[u_id]
 
     async def broadcast_to_channel(self, channel_id: str, message_payload: dict):
         c_id = str(channel_id)
-        subscribers = list(self.channel_subscriptions.get(c_id, []))
+        with self._lock:
+            subscribers = list(self.channel_subscriptions.get(c_id, []))
         for socket in subscribers:
             try:
                 await socket.send_json(message_payload)
@@ -429,7 +456,8 @@ class ChatConnectionManager:
                 pass
 
     def is_user_online(self, user_id: str) -> bool:
-        return bool(self.user_sockets.get(str(user_id)))
+        with self._lock:
+            return bool(self.user_sockets.get(str(user_id)))
 
 
 chat_ws_manager = ChatConnectionManager()
@@ -831,10 +859,11 @@ async def dispatch_web_push(user_id: str, title: str, body: str, url: str = "/ch
             return None
 
     loop = asyncio.get_running_loop()
-    for s in subs:
-        result = await loop.run_in_executor(None, _send_sync, s)
-        if result:
-            expired_sub_ids.append(result)
+    tasks = [loop.run_in_executor(None, _send_sync, s) for s in subs]
+    results = await asyncio.gather(*tasks, return_exceptions=False)
+    for r in results:
+        if r:
+            expired_sub_ids.append(r)
 
     # Prune expired subscriptions
     if expired_sub_ids:

@@ -10,6 +10,7 @@ from backend.core.dependencies import (
     require_permission,
     check_permission,
     verify_record_tenant,
+    build_branch_filter,
 )
 from backend.core.audit import record_audit_log
 from backend.core.sequences import uuid7, get_next_attendance_code
@@ -109,10 +110,13 @@ async def list_attendance_logs(
     params: List[Any] = []
     idx = 1
 
-    if not session.get("is_superadmin") and org_id:
-        query += f" AND a.organization_id = ${idx}::uuid"
-        params.append(org_id)
-        idx += 1
+    branch_clause, branch_params = build_branch_filter(
+        session, "a", idx, branch_col="COALESCE(a.branch_id, e.branch_id)"
+    )
+    if branch_clause:
+        query += branch_clause
+        params.extend(branch_params)
+        idx += len(branch_params)
 
     if q and q.strip():
         query += f""" AND (

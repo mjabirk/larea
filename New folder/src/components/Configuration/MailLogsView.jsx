@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useModalEscape } from '../../hooks/useModalEscape';
 import {
   Mail,
   RefreshCw,
@@ -21,8 +22,10 @@ import {
   Sparkles,
   Inbox
 } from 'lucide-react';
+import { useLocale } from '../../context/LocaleContext';
 
 export function MailLogsView() {
+  const { t } = useLocale();
   const [messages, setMessages] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
@@ -40,8 +43,11 @@ export function MailLogsView() {
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
 
   const [resendingId, setResendingId] = useState(null);
-  const [banner, setBanner] = useState('');
+  const [banner, setBanner] = useState(null);
   const [purgeLoading, setPurgeLoading] = useState(false);
+
+  const modalRef = useRef(null);
+  useModalEscape(() => setIsDetailModalOpen(false), isDetailModalOpen, modalRef);
 
   const getAuthHeaders = () => {
     const token = typeof window !== 'undefined'
@@ -108,17 +114,18 @@ export function MailLogsView() {
       });
       const data = await res.json();
       if (data.status === 'sent') {
-        setBanner('Email successfully re-dispatched!');
+        setBanner({ text: 'Email successfully re-dispatched!', type: 'success' });
       } else {
-        alert('Resend attempt failed: ' + (data.error || 'Unknown error'));
+        setBanner({ text: 'Resend attempt failed: ' + (data.error || 'Unknown error'), type: 'error' });
       }
-      setTimeout(() => setBanner(''), 3000);
+      setTimeout(() => setBanner(null), 3500);
       fetchMessages();
       if (selectedMessage && selectedMessage.id === id) {
         openMessageDetail(id);
       }
     } catch (err) {
-      alert('Resend request error: ' + err.message);
+      setBanner({ text: 'Resend request error: ' + err.message, type: 'error' });
+      setTimeout(() => setBanner(null), 4000);
     } finally {
       setResendingId(null);
     }
@@ -132,14 +139,15 @@ export function MailLogsView() {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
-      setBanner('Mail log and disk files removed.');
-      setTimeout(() => setBanner(''), 3000);
+      setBanner({ text: 'Mail log and disk files removed.', type: 'success' });
+      setTimeout(() => setBanner(null), 3000);
       if (isDetailModalOpen && selectedMessage?.id === id) {
         setIsDetailModalOpen(false);
       }
       fetchMessages();
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      setBanner({ text: 'Delete failed: ' + err.message, type: 'error' });
+      setTimeout(() => setBanner(null), 4000);
     }
   };
 
@@ -151,25 +159,19 @@ export function MailLogsView() {
         headers: getAuthHeaders(),
       });
       const data = await res.json();
-      setBanner(`Retention Purge Complete: Purged ${data.purged_messages} message(s), ${data.purged_files} disk file(s).`);
-      setTimeout(() => setBanner(''), 4000);
+      setBanner({
+        text: `Retention Purge Complete: Purged ${data.purged_messages} message(s), ${data.purged_files} disk file(s).`,
+        type: 'success',
+      });
+      setTimeout(() => setBanner(null), 4000);
       fetchMessages();
     } catch (err) {
-      alert('Retention purge failed: ' + err.message);
+      setBanner({ text: 'Retention purge failed: ' + err.message, type: 'error' });
+      setTimeout(() => setBanner(null), 4000);
     } finally {
       setPurgeLoading(false);
     }
   };
-
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape' && isDetailModalOpen) {
-        setIsDetailModalOpen(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isDetailModalOpen]);
 
   const startRecord = (currentPage - 1) * pageSize + (totalCount > 0 ? 1 : 0);
   const endRecord = Math.min(currentPage * pageSize, totalCount);
@@ -184,6 +186,35 @@ export function MailLogsView() {
 
   return (
     <div className="space-y-3 animate-fadeIn">
+      {/* Toast Notification Banner */}
+      {banner && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`p-3 rounded-xl border text-xs flex items-center justify-between shadow-xs ${
+            typeof banner === 'object' && banner.type === 'error'
+              ? 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
+              : 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {typeof banner === 'object' && banner.type === 'error' ? (
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            )}
+            <span className="font-semibold">{typeof banner === 'object' ? banner.text : banner}</span>
+          </div>
+          <button
+            onClick={() => setBanner(null)}
+            className="hover:opacity-80 transition cursor-pointer p-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+            aria-label="Dismiss notification"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* 1. Slim Top Control Bar (44px) */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center justify-between shadow-2xs gap-3">
         {/* Left: Purge Action + Title */}
@@ -214,7 +245,7 @@ export function MailLogsView() {
         {/* Center: Search & Filter Chips */}
         <div className="flex items-center gap-2 flex-1 max-w-lg">
           <div className="relative flex-1">
-            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search className="w-3.5 h-3.5 absolute start-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
               placeholder="Search subject or email address..."
@@ -223,7 +254,7 @@ export function MailLogsView() {
                 setSearchQuery(e.target.value);
                 setCurrentPage(1);
               }}
-              className="w-full pl-8 pr-2.5 py-1 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full ps-8 pe-2.5 py-1 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
 
@@ -301,17 +332,17 @@ export function MailLogsView() {
       {/* 2. Odoo-Style High Density Log Table (32px row height) */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-2xs">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
+          <table className="w-full text-start text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50/80 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700/80 text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider h-8">
                 <th className="px-3 py-1 font-semibold">Date / Time</th>
-                <th className="px-3 py-1 font-semibold">Direction</th>
-                <th className="px-3 py-1 font-semibold">Recipients (To / From)</th>
-                <th className="px-3 py-1 font-semibold">Subject</th>
-                <th className="px-3 py-1 font-semibold">Status</th>
-                <th className="px-3 py-1 font-semibold">Files</th>
+                <th className="px-3 py-1 font-semibold">{t('channel')}</th>
+                <th className="px-3 py-1 font-semibold">{t('recipient')}</th>
+                <th className="px-3 py-1 font-semibold">{t('subject')}</th>
+                <th className="px-3 py-1 font-semibold">{t('status_label')}</th>
+                <th className="px-3 py-1 font-semibold">{t('attachments')}</th>
                 <th className="px-3 py-1 font-semibold">Linked Record</th>
-                <th className="px-3 py-1 font-semibold text-right">Actions</th>
+                <th className="px-3 py-1 font-semibold text-end">{t('action')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
@@ -401,7 +432,7 @@ export function MailLogsView() {
                         {m.record_model ? `${m.record_model.split('.')[1] || m.record_model}` : '—'}
                       </td>
 
-                      <td className="px-3 py-1 text-right" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-3 py-1 text-end" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
                           <button
                             type="button"
@@ -443,8 +474,18 @@ export function MailLogsView() {
 
       {/* 3. Detailed Email Payload & Attachment Drawer Modal */}
       {isDetailModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4 animate-fadeIn">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4 animate-fadeIn"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="mail-log-detail-title"
+          onClick={() => setIsDetailModalOpen(false)}
+        >
+          <div
+            ref={modalRef}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]"
+          >
             {/* Modal Header */}
             <div className="px-5 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50/60 dark:bg-slate-800/40">
               <div className="flex items-center gap-2">
@@ -452,7 +493,7 @@ export function MailLogsView() {
                   <Mail className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-slate-900 dark:text-white text-sm">
+                  <h3 id="mail-log-detail-title" className="font-bold text-slate-900 dark:text-white text-sm">
                     {selectedMessage?.subject || 'Email Summary'}
                   </h3>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
@@ -463,7 +504,8 @@ export function MailLogsView() {
               <button
                 type="button"
                 onClick={() => setIsDetailModalOpen(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                aria-label="Close detail modal"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -510,7 +552,7 @@ export function MailLogsView() {
                   </div>
                   {selectedMessage.purge_after && (
                     <div className="col-span-2 pt-1 border-t border-slate-200 dark:border-slate-700">
-                      <span className="text-slate-400 text-[10px] uppercase font-semibold mr-1">Scheduled Retention Purge:</span>
+                      <span className="text-slate-400 text-[10px] uppercase font-semibold me-1">Scheduled Retention Purge:</span>
                       <span className="font-mono text-amber-600 dark:text-amber-400">{selectedMessage.purge_after}</span>
                     </div>
                   )}
@@ -601,7 +643,7 @@ export function MailLogsView() {
                       type="button"
                       onClick={() => handleResend(selectedMessage.id)}
                       disabled={resendingId === selectedMessage.id}
-                      className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs transition cursor-pointer shadow-xs flex items-center gap-1.5"
+                      className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs transition cursor-pointer shadow-xs flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
                     >
                       <Send className={`w-3.5 h-3.5 ${resendingId === selectedMessage.id ? 'animate-spin' : ''}`} />
                       <span>{resendingId === selectedMessage.id ? 'Resending...' : 'Resend Email'}</span>
@@ -609,7 +651,7 @@ export function MailLogsView() {
                     <button
                       type="button"
                       onClick={() => setIsDetailModalOpen(false)}
-                      className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold text-xs transition cursor-pointer"
+                      className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold text-xs transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
                     >
                       Close (Esc)
                     </button>

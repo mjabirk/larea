@@ -100,16 +100,29 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
         };
     });
 
+    // General UI Settings (Quick Access Panel toggle - persisted to localStorage and PostgreSQL system_metadata cfg:ui_settings)
+    const [uiSettings, setUiSettings] = useState(() => {
+        try {
+            const saved = localStorage.getItem('larea_enable_quick_access');
+            return {
+                enable_quick_access: saved !== null ? JSON.parse(saved) === true : false,
+            };
+        } catch (e) {
+            return { enable_quick_access: false };
+        }
+    });
+
     const [newDept, setNewDept] = useState('');
 
     useEffect(() => {
         let isMounted = true;
         const loadSettings = async () => {
             try {
-                const [wpsRes, hrRes, ssoRes] = await Promise.all([
+                const [wpsRes, hrRes, ssoRes, uiRes] = await Promise.all([
                     fetch('/api/v1/settings/qatar_wps_config', { headers: getAuthHeaders() }),
                     fetch('/api/v1/settings/qatar_hr_config', { headers: getAuthHeaders() }),
                     fetch('/api/v1/system/sso-settings', { headers: getAuthHeaders() }),
+                    fetch('/api/v1/settings/ui_settings', { headers: getAuthHeaders() }),
                 ]);
 
                 if (wpsRes.ok) {
@@ -138,6 +151,15 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                         }));
                     }
                 }
+
+                if (uiRes.ok) {
+                    const uiData = await uiRes.json();
+                    if (uiData?.value && typeof uiData.value === 'object' && isMounted) {
+                        const isEnabled = Boolean(uiData.value.enable_quick_access);
+                        setUiSettings({ enable_quick_access: isEnabled });
+                        localStorage.setItem('larea_enable_quick_access', JSON.stringify(isEnabled));
+                    }
+                }
             } catch (err) {
                 console.warn('Failed to load settings from PostgreSQL:', err);
             }
@@ -149,10 +171,85 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
         };
     }, []);
 
+    const handleToggleQuickAccess = async (isChecked) => {
+        setUiSettings({ enable_quick_access: isChecked });
+        localStorage.setItem('larea_enable_quick_access', JSON.stringify(isChecked));
+        window.dispatchEvent(new Event('storage'));
+        window.dispatchEvent(new Event('larea_settings_updated'));
+
+        try {
+            const res = await fetch('/api/v1/settings/ui_settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ value: { enable_quick_access: isChecked } }),
+            });
+            if (res.ok) {
+                setSavedBanner(`Quick Access Panel ${isChecked ? 'enabled' : 'disabled'} and synchronized to system metadata.`);
+            } else {
+                setSavedBanner(`Quick Access setting saved locally (${isChecked ? 'enabled' : 'disabled'}).`);
+            }
+        } catch (err) {
+            console.warn('Failed to persist UI settings to PostgreSQL:', err);
+            setSavedBanner(`Quick Access setting saved locally (${isChecked ? 'enabled' : 'disabled'}).`);
+        }
+        setTimeout(() => setSavedBanner(''), 3500);
+    };
+
+    const renderUiSettingsCard = () => (
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xs space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
+                <div>
+                    <div className="inline-flex items-center gap-1.5 text-blue-600 dark:text-blue-400 text-xs font-bold uppercase tracking-wider">
+                        <SlidersHorizontal className="w-4 h-4" />
+                        <span>General UI & Navigation Settings</span>
+                    </div>
+                    <h2 className="text-lg font-bold text-slate-900 dark:text-white mt-1">
+                        Workspace Launcher & Navigation Preferences
+                    </h2>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        Customize interface ergonomics and dockable shortcuts across enterprise workspaces.
+                    </p>
+                </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
+                <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                        type="checkbox"
+                        checked={Boolean(uiSettings.enable_quick_access)}
+                        onChange={(e) => handleToggleQuickAccess(e.target.checked)}
+                        className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 mt-1 cursor-pointer"
+                    />
+                    <div className="space-y-0.5">
+                        <span className="font-semibold text-slate-800 dark:text-slate-200 text-sm block">
+                            Enable Quick Access Panel
+                        </span>
+                        <span className="text-xs text-slate-500 dark:text-slate-400 block leading-relaxed">
+                            Display a dockable side panel in the Workspace Launcher with pinned workspaces, recent sub-menus, and contextual active module links. Disabled by default for a clean, distraction-free boxless app launcher.
+                        </span>
+                    </div>
+                </label>
+            </div>
+        </div>
+    );
+
     // Route to dedicated sub-components if selected
     if (activeMenuId === 'salary_rules') return <SalaryRulesView />;
     if (activeMenuId === 'api_keys') return <APIKeysView />;
-    if (activeMenuId === 'orgs') return <OrganizationsView />;
+    if (activeMenuId === 'orgs') {
+        return (
+            <div className="max-w-5xl mx-auto space-y-6 animate-fadeIn">
+                {savedBanner && (
+                    <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>{savedBanner}</span>
+                    </div>
+                )}
+                {renderUiSettingsCard()}
+                <OrganizationsView />
+            </div>
+        );
+    }
     if (activeMenuId === 'mail_servers') return <MailServersView />;
     if (activeMenuId === 'mail_templates') return <MailTemplatesView />;
     if (activeMenuId === 'mail_logs') return <MailLogsView />;
@@ -315,10 +412,12 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
 
             {/* 2. HR, QATAR LABOUR LAW & EXPIRY ALERT RULES */}
             {(activeMenuId === 'hr_config' || activeMenuId === 'compliance_alerts') && (
-                <form
-                    onSubmit={handleSaveHr}
-                    className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xs space-y-6"
-                >
+                <>
+                    {renderUiSettingsCard()}
+                    <form
+                        onSubmit={handleSaveHr}
+                        className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xs space-y-6"
+                    >
                     <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
                         <div>
                             <div className="inline-flex items-center gap-1.5 text-blue-600 dark:text-blue-400 text-xs font-bold uppercase tracking-wider">
@@ -420,6 +519,7 @@ export function ConfigurationView({ activeMenuId = 'wps_config' }) {
                         </div>
                     </div>
                 </form>
+            </>
             )}
 
             {/* 3. WINDOWS SINGLE SIGN-ON & IDENTITY FEDERATION (ENTRA OIDC / KERBEROS / AD LDAP) */}

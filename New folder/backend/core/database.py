@@ -1,3 +1,4 @@
+import os
 import asyncio
 import json
 import logging
@@ -7,6 +8,7 @@ from typing import Optional, Dict, Any, List
 import asyncpg
 import bcrypt
 from backend.core.config import settings
+from backend.core.audit import build_canonical_payload, format_canonical_timestamp, compute_row_hash, record_audit_log
 
 logger = logging.getLogger("enterprise.db")
 
@@ -73,11 +75,60 @@ async def verify_password_async(plain_password: str, hashed_password: str) -> bo
     """Non-blocking bcrypt password verification offloaded to worker thread."""
     return await asyncio.to_thread(verify_password, plain_password, hashed_password)
 
+async def log_audit_event(
+    conn,
+    entity_type: str,
+    entity_id: Any,
+    action: str,
+    session: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = "127.0.0.1",
+    note: Optional[str] = None,
+    changes: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Shared helper to log structured, cryptographically linked SOX 404 / ISO 27001 entries to audit_logs.
+    Resolves session tenant_id, caller user_id (safely validated against users table), and author name.
+    """
+    sess = session or {}
+    raw_tid = sess.get("organization_id") or sess.get("tenant_id")
+    tenant_id = str(raw_tid) if raw_tid else "default_tenant"
+
+    user_id = None
+    raw_uid = sess.get("user_id") or sess.get("id")
+    if raw_uid:
+        try:
+            parsed_id = uuid.UUID(str(raw_uid))
+            exists = await conn.fetchval("SELECT id FROM users WHERE id = $1;", parsed_id)
+            if exists:
+                user_id = parsed_id
+        except Exception:
+            pass
+
+    author_name = sess.get("full_name") or sess.get("username") or "Authorized User"
+
+    return await record_audit_log(
+        conn=conn,
+        entity_type=str(entity_type),
+        entity_id=str(entity_id),
+        action=str(action),
+        tenant_id=tenant_id,
+        changed_by_user_id=user_id,
+        changed_by_name=author_name,
+        changes=changes,
+        note=note,
+        ip_address=client_ip or "127.0.0.1",
+    )
+
+
 # ==============================================================================
 # SCHEMA INITIALIZATION & SYSTEM SEEDING
 # ==============================================================================
 async def init_schema():
     """Ensure required tables, constraints, and default roles exist."""
+    should_seed_demo = (
+        getattr(settings, "APP_ENV", "development") == "development"
+        and os.getenv("SEED_DEMO_DATA", "true").lower() == "true"
+    )
     pool = get_db_pool()
     async with pool.acquire() as conn:
         # 1. System Metadata table (centralized initialization state)
@@ -139,8 +190,10 @@ async def init_schema():
                 base_currency VARCHAR(10) DEFAULT 'USD',
                 default_timezone VARCHAR(50) DEFAULT 'UTC',
                 default_locale VARCHAR(10) DEFAULT 'en',
+                is_active BOOLEAN DEFAULT true,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+            ALTER TABLE organizations ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
         """)
 
         # 4. Branches table
@@ -152,8 +205,10 @@ async def init_schema():
                 code VARCHAR(50),
                 city VARCHAR(100),
                 ip_allowlist JSONB DEFAULT '["127.0.0.1/32"]'::jsonb,
+                is_active BOOLEAN DEFAULT true,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+            ALTER TABLE branches ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
         """)
 
         # 5. Users table
@@ -194,8 +249,32 @@ async def init_schema():
             ALTER TABLE users ADD COLUMN IF NOT EXISTS windows_upn VARCHAR(255);
             ALTER TABLE users ADD COLUMN IF NOT EXISTS ad_sam_account VARCHAR(150);
             ALTER TABLE users ADD COLUMN IF NOT EXISTS auto_sso_enabled BOOLEAN DEFAULT false;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_company_ids JSONB DEFAULT '[]'::jsonb;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_branch_ids JSONB DEFAULT '[]'::jsonb;
             CREATE INDEX IF NOT EXISTS idx_users_windows_upn ON users(LOWER(windows_upn));
             CREATE INDEX IF NOT EXISTS idx_users_external_id ON users(external_id);
+
+            -- SOX 404 Maker-Checker Dual Control columns & constraint for roles
+            ALTER TABLE roles ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE roles ADD COLUMN IF NOT EXISTS submitted_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE roles ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE roles ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+            ALTER TABLE roles ADD COLUMN IF NOT EXISTS approval_status VARCHAR(30) DEFAULT 'approved';
+
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'chk_roles_maker_checker'
+                ) THEN
+                    ALTER TABLE roles ADD CONSTRAINT chk_roles_maker_checker
+                    CHECK (
+                        approved_by IS NULL OR (
+                            (created_by IS NULL OR approved_by <> created_by) AND
+                            (submitted_by IS NULL OR approved_by <> submitted_by)
+                        )
+                    );
+                END IF;
+            END $$;
         """)
 
         # 6. Persistent API Keys table (headless biometrics & daemon authentication)
@@ -291,6 +370,8 @@ async def init_schema():
             ALTER TABLE employees ADD COLUMN IF NOT EXISTS zk_palm_count INT DEFAULT 0;
             UPDATE employees SET zk_emp_code = REPLACE(employee_number, 'EMP-', '') WHERE zk_emp_code IS NULL;
             CREATE INDEX IF NOT EXISTS idx_employees_zk_code ON employees(zk_emp_code);
+            CREATE INDEX IF NOT EXISTS idx_employees_org_id ON employees(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_employees_branch_id ON employees(branch_id);
         """)
 
         # 8. Encrypted Employee Document Vault table (Physical filesystem storage)
@@ -311,10 +392,11 @@ async def init_schema():
             CREATE INDEX IF NOT EXISTS idx_employee_docs_emp ON employee_documents(employee_id);
         """)
 
-        # 9. Audit Logs & Record Chatter table (Field-level tracking & notes)
+        # 9. Audit Logs & Record Chatter table (Field-level tracking, notes, SOX 404 / ISO 27001 Cryptographic Hash Chain)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS audit_logs (
                 id UUID PRIMARY KEY,
+                tenant_id VARCHAR(100) DEFAULT 'default_tenant',
                 entity_type VARCHAR(50) NOT NULL,
                 entity_id VARCHAR(100) NOT NULL,
                 action VARCHAR(20) NOT NULL,
@@ -323,10 +405,18 @@ async def init_schema():
                 changes JSONB,
                 note TEXT,
                 ip_address VARCHAR(45),
+                prev_hash VARCHAR(64),
+                row_hash VARCHAR(64),
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(100) DEFAULT 'default_tenant';
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS prev_hash VARCHAR(64);
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS row_hash VARCHAR(64);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_row_hash ON audit_logs(row_hash);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_chain ON audit_logs(tenant_id, created_at ASC);
         """)
 
         # 10. Attendance Logs table (Relational employee foreign key & inherited department)
@@ -356,9 +446,57 @@ async def init_schema():
             CREATE INDEX IF NOT EXISTS idx_attendance_org_checkin ON attendance_logs(organization_id, check_in DESC);
             ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS employee_id UUID REFERENCES employees(id) ON DELETE RESTRICT;
             ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS department VARCHAR(100);
+            ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+            CREATE INDEX IF NOT EXISTS idx_attendance_logs_org_id ON attendance_logs(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_attendance_logs_branch_id ON attendance_logs(branch_id);
+
+            -- SOX 404 Maker-Checker Dual Control columns & constraint for attendance_logs
+            ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS submitted_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+            ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS approval_status VARCHAR(30) DEFAULT 'draft';
+
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'chk_attendance_maker_checker'
+                ) THEN
+                    ALTER TABLE attendance_logs ADD CONSTRAINT chk_attendance_maker_checker
+                    CHECK (
+                        approved_by IS NULL OR (
+                            (created_by IS NULL OR approved_by <> created_by) AND
+                            (submitted_by IS NULL OR approved_by <> submitted_by)
+                        )
+                    );
+                END IF;
+            END $$;
         """)
 
-        # 10b. ZKTeco ADMS Biometric Hardware & Access Control tables
+        # 10b. Shift Rosters & Department Schedules
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS shift_rosters (
+                id UUID PRIMARY KEY,
+                code VARCHAR(50) UNIQUE NOT NULL,
+                employee_id UUID REFERENCES employees(id) ON DELETE CASCADE,
+                employee_name VARCHAR(255) NOT NULL,
+                department VARCHAR(100),
+                shift_name VARCHAR(100) NOT NULL DEFAULT 'Morning Shift (08:00 - 16:00)',
+                start_time TIMESTAMPTZ NOT NULL,
+                end_time TIMESTAMPTZ NOT NULL,
+                duration_hours NUMERIC(5, 2) DEFAULT 8.0,
+                location VARCHAR(150),
+                status VARCHAR(30) DEFAULT 'scheduled',
+                notes TEXT,
+                organization_id UUID REFERENCES organizations(id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_shift_rosters_emp_start ON shift_rosters(employee_id, start_time);
+            CREATE INDEX IF NOT EXISTS idx_shift_rosters_org_start ON shift_rosters(organization_id, start_time DESC);
+        """)
+
+        # 10c. ZKTeco ADMS Biometric Hardware & Access Control tables
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS zkteco_access_groups (
                 id UUID PRIMARY KEY,
@@ -403,6 +541,8 @@ async def init_schema():
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_zk_terminals_sn ON zkteco_terminals(sn);
+            CREATE INDEX IF NOT EXISTS idx_zkteco_terminals_org_id ON zkteco_terminals(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_zkteco_terminals_branch_id ON zkteco_terminals(branch_id);
 
             CREATE TABLE IF NOT EXISTS zkteco_biometric_templates (
                 id UUID PRIMARY KEY,
@@ -492,6 +632,34 @@ async def init_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_contracts_emp ON employee_contracts(employee_id);
             CREATE INDEX IF NOT EXISTS idx_contracts_status ON employee_contracts(status);
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+            CREATE INDEX IF NOT EXISTS idx_employee_contracts_org_id ON employee_contracts(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_employee_contracts_branch_id ON employee_contracts(branch_id);
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS amendment_of_id UUID REFERENCES employee_contracts(id) ON DELETE SET NULL;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS amendment_reason TEXT;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS revision_number INT DEFAULT 1;
+
+            -- SOX 404 Maker-Checker Dual Control columns & constraint for employee_contracts
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS submitted_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS approval_status VARCHAR(30) DEFAULT 'draft';
+
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'chk_contracts_maker_checker'
+                ) THEN
+                    ALTER TABLE employee_contracts ADD CONSTRAINT chk_contracts_maker_checker
+                    CHECK (
+                        approved_by IS NULL OR (
+                            (created_by IS NULL OR approved_by <> created_by) AND
+                            (submitted_by IS NULL OR approved_by <> submitted_by)
+                        )
+                    );
+                END IF;
+            END $$;
         """)
 
         # 13. Contract Benefit Lines table (Dynamic package breakdown per contract)
@@ -531,6 +699,14 @@ async def init_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_payroll_batches_ym ON payroll_batches(salary_year_month DESC);
             CREATE INDEX IF NOT EXISTS idx_payroll_batches_status ON payroll_batches(status);
+            ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+            ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS branch_ids JSONB DEFAULT '["all"]'::jsonb;
+            CREATE INDEX IF NOT EXISTS idx_payroll_batches_org_id ON payroll_batches(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_payroll_batches_branch_id ON payroll_batches(branch_id);
+            ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS posted_at TIMESTAMPTZ;
+            ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS posted_by VARCHAR(255);
+            ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS reversal_of_id UUID REFERENCES payroll_batches(id) ON DELETE SET NULL;
+            ALTER TABLE payroll_batches ADD COLUMN IF NOT EXISTS reversal_reason TEXT;
         """)
 
         # 15. Payslips table (Individual employee computation & Qatar WPS audit)
@@ -629,17 +805,7 @@ async def init_schema():
                     ot_calculation_basis, ot_multiplier_pct, calculation_mode,
                     included_benefit_rules, subtype, is_active
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    entry_type = EXCLUDED.entry_type,
-                    unit_label = EXCLUDED.unit_label,
-                    default_unit_rate = EXCLUDED.default_unit_rate,
-                    ot_calculation_basis = EXCLUDED.ot_calculation_basis,
-                    ot_multiplier_pct = EXCLUDED.ot_multiplier_pct,
-                    calculation_mode = EXCLUDED.calculation_mode,
-                    included_benefit_rules = EXCLUDED.included_benefit_rules,
-                    subtype = EXCLUDED.subtype,
-                    is_active = EXCLUDED.is_active;
+                ON CONFLICT (id) DO NOTHING;
             """, tr_id, tr_name, tr_type, tr_unit, tr_rate, tr_basis, tr_mult, tr_mode, tr_inc, tr_sub, tr_active)
 
         # 17. Multi-level approved variable benefits, overtime, task piece-rates & deductions
@@ -677,6 +843,27 @@ async def init_schema():
             ALTER TABLE payroll_adjustments ADD COLUMN IF NOT EXISTS rule_id VARCHAR(50);
             CREATE INDEX IF NOT EXISTS idx_payroll_adj_ym_emp ON payroll_adjustments(salary_year_month, employee_id);
             CREATE INDEX IF NOT EXISTS idx_payroll_adj_status ON payroll_adjustments(approval_status);
+
+            -- SOX 404 Maker-Checker Dual Control columns & constraint for payroll_adjustments
+            ALTER TABLE payroll_adjustments ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE payroll_adjustments ADD COLUMN IF NOT EXISTS submitted_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE payroll_adjustments ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE payroll_adjustments ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'chk_adjustments_maker_checker'
+                ) THEN
+                    ALTER TABLE payroll_adjustments ADD CONSTRAINT chk_adjustments_maker_checker
+                    CHECK (
+                        approved_by IS NULL OR (
+                            (created_by IS NULL OR approved_by <> created_by) AND
+                            (submitted_by IS NULL OR approved_by <> submitted_by)
+                        )
+                    );
+                END IF;
+            END $$;
 
             CREATE TABLE IF NOT EXISTS leave_types (
                 id VARCHAR(50) PRIMARY KEY,
@@ -718,6 +905,9 @@ async def init_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_leave_requests_emp_date ON leave_requests(employee_id, start_date);
             CREATE INDEX IF NOT EXISTS idx_leave_requests_status ON leave_requests(approval_status);
+            ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+            CREATE INDEX IF NOT EXISTS idx_leave_requests_org_id ON leave_requests(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_leave_requests_branch_id ON leave_requests(branch_id);
         """)
 
         # Seed default Qatar Labour Law leave_types
@@ -733,20 +923,14 @@ async def init_schema():
             await conn.execute("""
                 INSERT INTO leave_types (id, name, max_days_per_year, pay_percentage, deduction_basis_rules, requires_attachment, is_active)
                 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    max_days_per_year = EXCLUDED.max_days_per_year,
-                    pay_percentage = EXCLUDED.pay_percentage,
-                    deduction_basis_rules = EXCLUDED.deduction_basis_rules,
-                    requires_attachment = EXCLUDED.requires_attachment,
-                    is_active = EXCLUDED.is_active;
+                ON CONFLICT (id) DO NOTHING;
             """, lt_id, lt_name, lt_max, lt_pct, lt_ded, lt_att, lt_act)
 
         # Seed baseline salary rules if not present
         seed_rules = [
             ("ALW_HOUSING", "Housing Allowance", "allowance", "percentage_of_base", 0.00, 25.00, False, "HOUSING", True),
             ("ALW_TRANSPORT", "Transport Allowance", "allowance", "fixed_amount", 1000.00, 0.00, False, "TRANSPORT", True),
-            ("ALW_PHONE", "Mobile & Telecom Utility", "allowance", "fixed_amount", 300.00, 0.00, False, "TELECOM", True),
+            ("ALW_PHONE", "Mobile & Telecom Utility", "allowance", "grade_based", 300.00, 0.00, False, "TELECOM", True),
             ("ALW_FOOD", "Food & Subsistence Allowance", "allowance", "fixed_amount", 500.00, 0.00, False, "FOOD", True),
             ("DED_PENSION", "Statutory Pension / Social Insurance", "deduction", "percentage_of_base", 0.00, 5.00, False, "GOSI", True),
         ]
@@ -754,15 +938,7 @@ async def init_schema():
             await conn.execute("""
                 INSERT INTO salary_rules (id, name, category, calculation_type, default_amount, percentage_rate, is_taxable, wps_code, is_active)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    category = EXCLUDED.category,
-                    calculation_type = EXCLUDED.calculation_type,
-                    default_amount = EXCLUDED.default_amount,
-                    percentage_rate = EXCLUDED.percentage_rate,
-                    is_taxable = EXCLUDED.is_taxable,
-                    wps_code = EXCLUDED.wps_code,
-                    is_active = EXCLUDED.is_active;
+                ON CONFLICT (id) DO NOTHING;
             """, r_id, r_name, r_cat, r_calc, r_def, r_pct, r_tax, r_wps, r_act)
 
         # Seed employee grades
@@ -776,19 +952,15 @@ async def init_schema():
             await conn.execute("""
                 INSERT INTO employee_grades (id, code, name, rank_order, description, is_active)
                 VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (id) DO UPDATE SET
-                    code = EXCLUDED.code,
-                    name = EXCLUDED.name,
-                    rank_order = EXCLUDED.rank_order,
-                    description = EXCLUDED.description,
-                    is_active = EXCLUDED.is_active;
+                ON CONFLICT (id) DO NOTHING;
             """, g_id, g_code, g_name, g_rank, g_desc, g_act)
 
         # Update existing seeded employees where grade_id IS NULL
-        await conn.execute("""
-            UPDATE employees SET grade_id = 'GRADE_1' WHERE employee_number IN ('EMP-1001', 'EMP-1003') AND grade_id IS NULL;
-            UPDATE employees SET grade_id = 'GRADE_2' WHERE employee_number = 'EMP-1002' AND grade_id IS NULL;
-        """)
+        if should_seed_demo:
+            await conn.execute("""
+                UPDATE employees SET grade_id = 'GRADE_1' WHERE employee_number IN ('EMP-1001', 'EMP-1003') AND grade_id IS NULL;
+                UPDATE employees SET grade_id = 'GRADE_2' WHERE employee_number = 'EMP-1002' AND grade_id IS NULL;
+            """)
 
         # Seed baseline grade rates in salary_rule_grade_rates
         seed_grade_rates = [
@@ -809,10 +981,8 @@ async def init_schema():
             await conn.execute("""
                 INSERT INTO salary_rule_grade_rates (rule_id, grade_id, amount)
                 VALUES ($1, $2, $3)
-                ON CONFLICT (rule_id, grade_id) DO UPDATE SET amount = EXCLUDED.amount;
+                ON CONFLICT (rule_id, grade_id) DO NOTHING;
             """, r_id, g_id, amt)
-
-        await conn.execute("UPDATE salary_rules SET calculation_type = 'grade_based' WHERE id = 'ALW_PHONE';")
 
         # Seed default ZKTeco access group
         await conn.execute("""
@@ -821,49 +991,50 @@ async def init_schema():
             ON CONFLICT (name) DO NOTHING;
         """)
 
-        # Seed initial ZKTeco terminals if empty
-        term_cnt = await conn.fetchval("SELECT COUNT(*) FROM zkteco_terminals;")
-        if term_cnt == 0:
-            seed_terminals = [
-                (
-                    uuid.uuid4(),
-                    "ZK-QAT-HQ01",
-                    "Terminal #01 (Doha HQ Main Gate)",
-                    "192.168.10.104",
-                    True,
-                    "10",
-                    "39",
-                    "12"
-                ),
-                (
-                    uuid.uuid4(),
-                    "ZK-QAT-RL02",
-                    "Terminal #02 (Ras Laffan Site Gate)",
-                    "172.16.80.22",
-                    False,
-                    "10",
-                    "39",
-                    "unknown"
-                ),
-                (
-                    uuid.uuid4(),
-                    "ZK-QAT-WH03",
-                    "Terminal #03 (Industrial Area Warehouse)",
-                    "10.0.4.12",
-                    False,
-                    "10",
-                    "39",
-                    "unknown"
-                ),
-            ]
-            for t_id, t_sn, t_alias, t_lan_ip, t_enroll, t_fp, t_face, t_palm in seed_terminals:
-                await conn.execute("""
-                    INSERT INTO zkteco_terminals (
-                        id, sn, alias, lan_ip_address, is_enrollment_terminal, fp_algo, face_algo, palm_algo, group_id, state
-                    ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, '00000000-0000-0000-0000-000000000001'::uuid, 'active'
-                    ) ON CONFLICT (sn) DO NOTHING;
-                """, t_id, t_sn, t_alias, t_lan_ip, t_enroll, t_fp, t_face, t_palm)
+        # Seed initial ZKTeco terminals if empty (demo data)
+        if should_seed_demo:
+            term_cnt = await conn.fetchval("SELECT COUNT(*) FROM zkteco_terminals;")
+            if term_cnt == 0:
+                seed_terminals = [
+                    (
+                        uuid.uuid4(),
+                        "ZK-QAT-HQ01",
+                        "Terminal #01 (Doha HQ Main Gate)",
+                        "192.168.10.104",
+                        True,
+                        "10",
+                        "39",
+                        "12"
+                    ),
+                    (
+                        uuid.uuid4(),
+                        "ZK-QAT-RL02",
+                        "Terminal #02 (Ras Laffan Site Gate)",
+                        "172.16.80.22",
+                        False,
+                        "10",
+                        "39",
+                        "unknown"
+                    ),
+                    (
+                        uuid.uuid4(),
+                        "ZK-QAT-WH03",
+                        "Terminal #03 (Industrial Area Warehouse)",
+                        "10.0.4.12",
+                        False,
+                        "10",
+                        "39",
+                        "unknown"
+                    ),
+                ]
+                for t_id, t_sn, t_alias, t_lan_ip, t_enroll, t_fp, t_face, t_palm in seed_terminals:
+                    await conn.execute("""
+                        INSERT INTO zkteco_terminals (
+                            id, sn, alias, lan_ip_address, is_enrollment_terminal, fp_algo, face_algo, palm_algo, group_id, state
+                        ) VALUES (
+                            $1, $2, $3, $4, $5, $6, $7, $8, '00000000-0000-0000-0000-000000000001'::uuid, 'active'
+                        ) ON CONFLICT (sn) DO NOTHING;
+                    """, t_id, t_sn, t_alias, t_lan_ip, t_enroll, t_fp, t_face, t_palm)
 
         # 14. Seed Baseline System Roles if not already present
         default_roles = [
@@ -953,183 +1124,177 @@ async def init_schema():
             await conn.execute("""
                 INSERT INTO roles (id, name, code, description, badge_color, is_system, permissions, menu_access)
                 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    code = EXCLUDED.code,
-                    description = EXCLUDED.description,
-                    badge_color = EXCLUDED.badge_color,
-                    is_system = EXCLUDED.is_system,
-                    permissions = EXCLUDED.permissions,
-                    menu_access = EXCLUDED.menu_access;
+                ON CONFLICT (id) DO NOTHING;
             """, r_id, r_name, r_code, r_desc, r_badge, r_sys, r_perms, r_menu)
 
-        # 11. Seed Baseline International Employees if table is empty
-        emp_count = await conn.fetchval("SELECT COUNT(*) FROM employees;")
-        if emp_count == 0:
-            branch_id = await conn.fetchval("SELECT id FROM branches LIMIT 1;")
-            org_id = await conn.fetchval("SELECT id FROM organizations LIMIT 1;")
-            admin_user_id = await conn.fetchval("SELECT id FROM users WHERE is_superadmin = true LIMIT 1;")
-            
-            # Sample date math relative to now (October 2026)
-            seed_emps = [
-                {
-                    "id": "e1111111-1111-1111-1111-111111111111",
-                    "employee_number": "EMP-1001",
-                    "first_name": "Tariq",
-                    "last_name": "Al-Mansoor",
-                    "full_name": "Tariq Al-Mansoor",
-                    "display_name_local": "طَارِق المَنْصُور",
-                    "gender": "Male",
-                    "date_of_birth": "1988-06-14",
-                    "marital_status": "Married",
-                    "nationality": "Qatar",
-                    "job_title": "Senior Petroleum Ops Engineer",
-                    "department_id": "Operations",
-                    "employment_type": "Full-Time",
-                    "hire_date": "2021-03-01",
-                    "probation_end_date": "2021-06-01",
-                    "contract_end_date": "2027-03-01",
-                    "status": "Active",
-                    "national_id_number": "28863401923",
-                    "national_id_expiry": "2026-10-30", # Expiring in 18 days!
-                    "passport_number": "P-908234A",
-                    "passport_expiry": "2029-08-15",
-                    "visa_number": "V-998234",
-                    "visa_expiry": "2026-11-05", # Expiring in 24 days!
-                    "work_permit_status": "Valid",
-                    "work_email": "tariq.mansoor@company.local",
-                    "personal_email": "tariq.mansoor@gmail.com",
-                    "phone_country_code": "+974",
-                    "phone_number": "55123456",
-                    "emergency_contact_name": "Nouf Al-Mansoor",
-                    "emergency_contact_phone": "+974 55998877",
-                    "emergency_contact_relation": "Spouse",
-                    "base_salary": 28500.00,
-                    "currency": "QAR",
-                    "payment_method": "Bank Transfer / WPS",
-                    "bank_name": "Qatar National Bank (QNB)",
-                    "bank_iban": "QA55QNBA000000001234567890123",
-                    "bank_swift": "QNBAQAQA",
-                },
-                {
-                    "id": "e2222222-2222-2222-2222-222222222222",
-                    "employee_number": "EMP-1002",
-                    "first_name": "Fatima",
-                    "last_name": "Al-Kuwari",
-                    "full_name": "Fatima Al-Kuwari",
-                    "display_name_local": "فَاطِمَة الكُواري",
-                    "gender": "Female",
-                    "date_of_birth": "1992-11-20",
-                    "marital_status": "Single",
-                    "nationality": "Qatar",
-                    "job_title": "HR Compliance & Immigration Lead",
-                    "department_id": "Human Resources",
-                    "employment_type": "Full-Time",
-                    "hire_date": "2022-08-15",
-                    "probation_end_date": "2022-11-15",
-                    "contract_end_date": "2028-08-15",
-                    "status": "Active",
-                    "national_id_number": "29263409182",
-                    "national_id_expiry": "2028-04-12",
-                    "passport_number": "P-661209B",
-                    "passport_expiry": "2031-01-20",
-                    "visa_number": "V-554109",
-                    "visa_expiry": "2028-04-12",
-                    "work_permit_status": "Valid",
-                    "work_email": "fatima.kuwari@company.local",
-                    "personal_email": "fatima.k@outlook.com",
-                    "phone_country_code": "+974",
-                    "phone_number": "66432109",
-                    "emergency_contact_name": "Khalid Al-Kuwari",
-                    "emergency_contact_phone": "+974 66112233",
-                    "emergency_contact_relation": "Brother",
-                    "base_salary": 24000.00,
-                    "currency": "QAR",
-                    "payment_method": "Bank Transfer / WPS",
-                    "bank_name": "Commercial Bank of Qatar (CBQ)",
-                    "bank_iban": "QA12CBQA000000009876543210987",
-                    "bank_swift": "CBQAQAQA",
-                },
-                {
-                    "id": "e3333333-3333-3333-3333-333333333333",
-                    "employee_number": "EMP-1003",
-                    "first_name": "Johnathan",
-                    "last_name": "Vance",
-                    "full_name": "Johnathan Vance",
-                    "display_name_local": "جُونَاثَان فَانْس",
-                    "gender": "Male",
-                    "date_of_birth": "1985-04-03",
-                    "marital_status": "Married",
-                    "nationality": "United Kingdom",
-                    "job_title": "Biometrics Infrastructure Architect",
-                    "department_id": "Operations",
-                    "employment_type": "Contractor",
-                    "hire_date": "2023-01-10",
-                    "probation_end_date": "2023-04-10",
-                    "contract_end_date": "2026-12-31",
-                    "status": "Active",
-                    "national_id_number": "28582601293",
-                    "national_id_expiry": "2026-10-24", # Expiring in 12 days!
-                    "passport_number": "GB-90812739",
-                    "passport_expiry": "2030-05-18",
-                    "visa_number": "V-110293",
-                    "visa_expiry": "2026-10-24", # Expiring in 12 days!
-                    "work_permit_status": "Renewal Pending",
-                    "work_email": "johnathan.vance@company.local",
-                    "personal_email": "jvance.eng@gmail.com",
-                    "phone_country_code": "+974",
-                    "phone_number": "33987654",
-                    "emergency_contact_name": "Claire Vance",
-                    "emergency_contact_phone": "+44 7700 900123",
-                    "emergency_contact_relation": "Spouse",
-                    "base_salary": 32000.00,
-                    "currency": "QAR",
-                    "payment_method": "Bank Transfer / WPS",
-                    "bank_name": "HSBC Middle East",
-                    "bank_iban": "QA78BBME000000004561237890456",
-                    "bank_swift": "BBMEQAQA",
-                }
-            ]
+        # 11. Seed Baseline International Employees if table is empty (demo data)
+        if should_seed_demo:
+            emp_count = await conn.fetchval("SELECT COUNT(*) FROM employees;")
+            if emp_count == 0:
+                branch_id = await conn.fetchval("SELECT id FROM branches LIMIT 1;")
+                org_id = await conn.fetchval("SELECT id FROM organizations LIMIT 1;")
+                admin_user_id = await conn.fetchval("SELECT id FROM users WHERE is_superadmin = true LIMIT 1;")
+                
+                # Sample date math relative to now (October 2026)
+                seed_emps = [
+                    {
+                        "id": "e1111111-1111-1111-1111-111111111111",
+                        "employee_number": "EMP-1001",
+                        "first_name": "Tariq",
+                        "last_name": "Al-Mansoor",
+                        "full_name": "Tariq Al-Mansoor",
+                        "display_name_local": "طَارِق المَنْصُور",
+                        "gender": "Male",
+                        "date_of_birth": "1988-06-14",
+                        "marital_status": "Married",
+                        "nationality": "Qatar",
+                        "job_title": "Senior Petroleum Ops Engineer",
+                        "department_id": "Operations",
+                        "employment_type": "Full-Time",
+                        "hire_date": "2021-03-01",
+                        "probation_end_date": "2021-06-01",
+                        "contract_end_date": "2027-03-01",
+                        "status": "Active",
+                        "national_id_number": "28863401923",
+                        "national_id_expiry": "2026-10-30", # Expiring in 18 days!
+                        "passport_number": "P-908234A",
+                        "passport_expiry": "2029-08-15",
+                        "visa_number": "V-998234",
+                        "visa_expiry": "2026-11-05", # Expiring in 24 days!
+                        "work_permit_status": "Valid",
+                        "work_email": "tariq.mansoor@company.local",
+                        "personal_email": "tariq.mansoor@gmail.com",
+                        "phone_country_code": "+974",
+                        "phone_number": "55123456",
+                        "emergency_contact_name": "Nouf Al-Mansoor",
+                        "emergency_contact_phone": "+974 55998877",
+                        "emergency_contact_relation": "Spouse",
+                        "base_salary": 28500.00,
+                        "currency": "QAR",
+                        "payment_method": "Bank Transfer / WPS",
+                        "bank_name": "Qatar National Bank (QNB)",
+                        "bank_iban": "QA55QNBA000000001234567890123",
+                        "bank_swift": "QNBAQAQA",
+                    },
+                    {
+                        "id": "e2222222-2222-2222-2222-222222222222",
+                        "employee_number": "EMP-1002",
+                        "first_name": "Fatima",
+                        "last_name": "Al-Kuwari",
+                        "full_name": "Fatima Al-Kuwari",
+                        "display_name_local": "فَاطِمَة الكُواري",
+                        "gender": "Female",
+                        "date_of_birth": "1992-11-20",
+                        "marital_status": "Single",
+                        "nationality": "Qatar",
+                        "job_title": "HR Compliance & Immigration Lead",
+                        "department_id": "Human Resources",
+                        "employment_type": "Full-Time",
+                        "hire_date": "2022-08-15",
+                        "probation_end_date": "2022-11-15",
+                        "contract_end_date": "2028-08-15",
+                        "status": "Active",
+                        "national_id_number": "29263409182",
+                        "national_id_expiry": "2028-04-12",
+                        "passport_number": "P-661209B",
+                        "passport_expiry": "2031-01-20",
+                        "visa_number": "V-554109",
+                        "visa_expiry": "2028-04-12",
+                        "work_permit_status": "Valid",
+                        "work_email": "fatima.kuwari@company.local",
+                        "personal_email": "fatima.k@outlook.com",
+                        "phone_country_code": "+974",
+                        "phone_number": "66432109",
+                        "emergency_contact_name": "Khalid Al-Kuwari",
+                        "emergency_contact_phone": "+974 66112233",
+                        "emergency_contact_relation": "Brother",
+                        "base_salary": 24000.00,
+                        "currency": "QAR",
+                        "payment_method": "Bank Transfer / WPS",
+                        "bank_name": "Commercial Bank of Qatar (CBQ)",
+                        "bank_iban": "QA12CBQA000000009876543210987",
+                        "bank_swift": "CBQAQAQA",
+                    },
+                    {
+                        "id": "e3333333-3333-3333-3333-333333333333",
+                        "employee_number": "EMP-1003",
+                        "first_name": "Johnathan",
+                        "last_name": "Vance",
+                        "full_name": "Johnathan Vance",
+                        "display_name_local": "جُونَاثَان فَانْس",
+                        "gender": "Male",
+                        "date_of_birth": "1985-04-03",
+                        "marital_status": "Married",
+                        "nationality": "United Kingdom",
+                        "job_title": "Biometrics Infrastructure Architect",
+                        "department_id": "Operations",
+                        "employment_type": "Contractor",
+                        "hire_date": "2023-01-10",
+                        "probation_end_date": "2023-04-10",
+                        "contract_end_date": "2026-12-31",
+                        "status": "Active",
+                        "national_id_number": "28582601293",
+                        "national_id_expiry": "2026-10-24", # Expiring in 12 days!
+                        "passport_number": "GB-90812739",
+                        "passport_expiry": "2030-05-18",
+                        "visa_number": "V-110293",
+                        "visa_expiry": "2026-10-24", # Expiring in 12 days!
+                        "work_permit_status": "Renewal Pending",
+                        "work_email": "johnathan.vance@company.local",
+                        "personal_email": "jvance.eng@gmail.com",
+                        "phone_country_code": "+974",
+                        "phone_number": "33987654",
+                        "emergency_contact_name": "Claire Vance",
+                        "emergency_contact_phone": "+44 7700 900123",
+                        "emergency_contact_relation": "Spouse",
+                        "base_salary": 32000.00,
+                        "currency": "QAR",
+                        "payment_method": "Bank Transfer / WPS",
+                        "bank_name": "HSBC Middle East",
+                        "bank_iban": "QA78BBME000000004561237890456",
+                        "bank_swift": "BBMEQAQA",
+                    }
+                ]
 
-            _parse_d = lambda s: datetime.date.fromisoformat(s) if s else None
-            for e in seed_emps:
-                await conn.execute("""
-                    INSERT INTO employees (
-                        id, employee_number, first_name, last_name, full_name, display_name_local,
-                        gender, date_of_birth, marital_status, nationality, job_title, department_id,
-                        branch_id, employment_type, hire_date, probation_end_date, contract_end_date, status,
-                        national_id_number, national_id_expiry, passport_number, passport_expiry,
-                        visa_number, visa_expiry, work_permit_status, work_email, personal_email,
-                        phone_country_code, phone_number, emergency_contact_name, emergency_contact_phone,
-                        emergency_contact_relation, base_salary, currency, payment_method, bank_name,
-                        bank_iban, bank_swift, organization_id
-                    ) VALUES (
-                        $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                        $13::uuid, $14, $15, $16, $17, $18, $19, $20,
-                        $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                        $32, $33, $34, $35, $36, $37, $38, $39::uuid
-                    ) ON CONFLICT (employee_number) DO NOTHING;
-                """,
-                    e["id"], e["employee_number"], e["first_name"], e["last_name"], e["full_name"],
-                    e["display_name_local"], e["gender"], _parse_d(e["date_of_birth"]), e["marital_status"],
-                    e["nationality"], e["job_title"], e["department_id"], branch_id, e["employment_type"],
-                    _parse_d(e["hire_date"]), _parse_d(e["probation_end_date"]), _parse_d(e["contract_end_date"]), e["status"],
-                    e["national_id_number"], _parse_d(e["national_id_expiry"]), e["passport_number"], _parse_d(e["passport_expiry"]),
-                    e["visa_number"], _parse_d(e["visa_expiry"]), e["work_permit_status"], e["work_email"],
-                    e["personal_email"], e["phone_country_code"], e["phone_number"], e["emergency_contact_name"],
-                    e["emergency_contact_phone"], e["emergency_contact_relation"], e["base_salary"],
-                    e["currency"], e["payment_method"], e["bank_name"], e["bank_iban"], e["bank_swift"], org_id
-                )
+                _parse_d = lambda s: datetime.date.fromisoformat(s) if s else None
+                for e in seed_emps:
+                    await conn.execute("""
+                        INSERT INTO employees (
+                            id, employee_number, first_name, last_name, full_name, display_name_local,
+                            gender, date_of_birth, marital_status, nationality, job_title, department_id,
+                            branch_id, employment_type, hire_date, probation_end_date, contract_end_date, status,
+                            national_id_number, national_id_expiry, passport_number, passport_expiry,
+                            visa_number, visa_expiry, work_permit_status, work_email, personal_email,
+                            phone_country_code, phone_number, emergency_contact_name, emergency_contact_phone,
+                            emergency_contact_relation, base_salary, currency, payment_method, bank_name,
+                            bank_iban, bank_swift, organization_id
+                        ) VALUES (
+                            $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                            $13::uuid, $14, $15, $16, $17, $18, $19, $20,
+                            $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
+                            $32, $33, $34, $35, $36, $37, $38, $39::uuid
+                        ) ON CONFLICT (employee_number) DO NOTHING;
+                    """,
+                        e["id"], e["employee_number"], e["first_name"], e["last_name"], e["full_name"],
+                        e["display_name_local"], e["gender"], _parse_d(e["date_of_birth"]), e["marital_status"],
+                        e["nationality"], e["job_title"], e["department_id"], branch_id, e["employment_type"],
+                        _parse_d(e["hire_date"]), _parse_d(e["probation_end_date"]), _parse_d(e["contract_end_date"]), e["status"],
+                        e["national_id_number"], _parse_d(e["national_id_expiry"]), e["passport_number"], _parse_d(e["passport_expiry"]),
+                        e["visa_number"], _parse_d(e["visa_expiry"]), e["work_permit_status"], e["work_email"],
+                        e["personal_email"], e["phone_country_code"], e["phone_number"], e["emergency_contact_name"],
+                        e["emergency_contact_phone"], e["emergency_contact_relation"], e["base_salary"],
+                        e["currency"], e["payment_method"], e["bank_name"], e["bank_iban"], e["bank_swift"], org_id
+                    )
 
-                # Seed initial audit log for each employee
-                await conn.execute("""
-                    INSERT INTO audit_logs (
-                        id, entity_type, entity_id, action, changed_by_name, note, ip_address
-                    ) VALUES (
-                        $1::uuid, 'employees', $2, 'CREATE', 'System Provisioner',
-                        'Initial employee master record imported into International HR directory.', '127.0.0.1'
-                    );
-                """, str(uuid.uuid4()), e["id"])
+                    # Seed initial audit log for each employee
+                    await conn.execute("""
+                        INSERT INTO audit_logs (
+                            id, entity_type, entity_id, action, changed_by_name, note, ip_address
+                        ) VALUES (
+                            $1::uuid, 'employees', $2, 'CREATE', 'System Provisioner',
+                            'Initial employee master record imported into International HR directory.', '127.0.0.1'
+                        );
+                    """, str(uuid.uuid4()), e["id"])
 
         # ==============================================================================
         # 18. NOTIFICATIONS ENGINE SCHEMA
@@ -1226,60 +1391,61 @@ async def init_schema():
         # ==============================================================================
         # 20. SEED BASELINE MAIL SERVERS & TEMPLATES
         # ==============================================================================
-        mail_srv_count = await conn.fetchval("SELECT COUNT(*) FROM mail_servers;")
-        if mail_srv_count == 0:
-            from backend.core.mail_engine import encrypt_mail_password
-            default_servers = [
-                (
-                    "00000000-0000-0000-0000-000000000010",
-                    "Corporate SMTP Relay (Doha HQ)",
-                    "outgoing",
-                    "SMTP",
-                    "smtp.company.local",
-                    587,
-                    "STARTTLS",
-                    "notifications@company.local",
-                    encrypt_mail_password("ApexSecurePass2026!"),
-                    "notifications@company.local",
-                    "Apex Global Enterprises HR",
-                    True,
-                    True,
-                    "days",
-                    60,
-                    "ready",
-                    None
-                ),
-                (
-                    "00000000-0000-0000-0000-000000000011",
-                    "HR Incoming Inquiries (IMAP)",
-                    "incoming",
-                    "IMAP",
-                    "imap.company.local",
-                    993,
-                    "SSL_TLS",
-                    "hr.desk@company.local",
-                    encrypt_mail_password("ApexInboxPass2026!"),
-                    "hr.desk@company.local",
-                    "HR Service Desk",
-                    False,
-                    True,
-                    "days",
-                    90,
-                    "ready",
-                    None
-                )
-            ]
-            for s_id, s_name, s_type, s_proto, s_host, s_port, s_enc, s_user, s_pwd, s_from, s_from_n, s_def, s_act, s_pmode, s_pdays, s_stat, s_err in default_servers:
-                await conn.execute("""
-                    INSERT INTO mail_servers (
-                        id, name, server_type, protocol, host, port, encryption,
-                        username, password_encrypted, from_email, from_name,
-                        is_default, active, auto_purge_mode, auto_purge_days,
-                        last_connection_status, last_connection_error
-                    ) VALUES (
-                        $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
-                    ) ON CONFLICT (id) DO NOTHING;
-                """, s_id, s_name, s_type, s_proto, s_host, s_port, s_enc, s_user, s_pwd, s_from, s_from_n, s_def, s_act, s_pmode, s_pdays, s_stat, s_err)
+        if should_seed_demo:
+            mail_srv_count = await conn.fetchval("SELECT COUNT(*) FROM mail_servers;")
+            if mail_srv_count == 0:
+                from backend.core.mail_engine import encrypt_mail_password
+                default_servers = [
+                    (
+                        "00000000-0000-0000-0000-000000000010",
+                        "Corporate SMTP Relay (Doha HQ)",
+                        "outgoing",
+                        "SMTP",
+                        "smtp.company.local",
+                        587,
+                        "STARTTLS",
+                        "notifications@company.local",
+                        encrypt_mail_password("ApexSecurePass2026!"),
+                        "notifications@company.local",
+                        "Apex Global Enterprises HR",
+                        True,
+                        True,
+                        "days",
+                        60,
+                        "ready",
+                        None
+                    ),
+                    (
+                        "00000000-0000-0000-0000-000000000011",
+                        "HR Incoming Inquiries (IMAP)",
+                        "incoming",
+                        "IMAP",
+                        "imap.company.local",
+                        993,
+                        "SSL_TLS",
+                        "hr.desk@company.local",
+                        encrypt_mail_password("ApexInboxPass2026!"),
+                        "hr.desk@company.local",
+                        "HR Service Desk",
+                        False,
+                        True,
+                        "days",
+                        90,
+                        "ready",
+                        None
+                    )
+                ]
+                for s_id, s_name, s_type, s_proto, s_host, s_port, s_enc, s_user, s_pwd, s_from, s_from_n, s_def, s_act, s_pmode, s_pdays, s_stat, s_err in default_servers:
+                    await conn.execute("""
+                        INSERT INTO mail_servers (
+                            id, name, server_type, protocol, host, port, encryption,
+                            username, password_encrypted, from_email, from_name,
+                            is_default, active, auto_purge_mode, auto_purge_days,
+                            last_connection_status, last_connection_error
+                        ) VALUES (
+                            $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+                        ) ON CONFLICT (id) DO NOTHING;
+                    """, s_id, s_name, s_type, s_proto, s_host, s_port, s_enc, s_user, s_pwd, s_from, s_from_n, s_def, s_act, s_pmode, s_pdays, s_stat, s_err)
 
         mail_tmpl_count = await conn.fetchval("SELECT COUNT(*) FROM mail_templates;")
         if mail_tmpl_count == 0:
@@ -1406,60 +1572,61 @@ async def init_schema():
                     ) ON CONFLICT (id) DO NOTHING;
                 """, t_id, t_name, t_scope, t_subj, t_body, t_rep, t_hook, t_pov, t_pdays)
 
-        # Seed baseline notifications if table is empty
-        notif_count = await conn.fetchval("SELECT COUNT(*) FROM notifications;")
-        if notif_count == 0:
-            admin_user_id = await conn.fetchval("SELECT id FROM users WHERE is_superadmin = true LIMIT 1;")
-            if admin_user_id:
-                sample_notifs = [
-                    (
-                        uuid.uuid4(),
-                        admin_user_id,
-                        "WPS Payroll Batch Verified",
-                        "October 2026 payroll batch has been calculated and verified ready for bank disbursement.",
-                        "payroll",
-                        "batches",
-                        False,
-                        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=15)
-                    ),
-                    (
-                        uuid.uuid4(),
-                        admin_user_id,
-                        "Residency Permit Expiry Warning",
-                        "Johnathan Vance (EMP-1003) Qatar ID & Visa expires in 12 days. Renewal pending.",
-                        "compliance",
-                        "compliance_alerts",
-                        False,
-                        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
-                    ),
-                    (
-                        uuid.uuid4(),
-                        admin_user_id,
-                        "Annual Leave Approval Pending",
-                        "Leave request for Tariq Al-Mansoor (14 days) requires Level 2 managerial approval.",
-                        "approval",
-                        "leaves",
-                        False,
-                        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=5)
-                    ),
-                    (
-                        uuid.uuid4(),
-                        admin_user_id,
-                        "Biometric ADMS Terminal Synchronized",
-                        "Doha HQ Main Gate terminal ZK-QAT-HQ01 completed real-time punch ingestion.",
-                        "info",
-                        "terminals",
-                        True,
-                        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
-                    )
-                ]
-                for n_id, n_uid, n_title, n_msg, n_type, n_link, n_read, n_created in sample_notifs:
-                    await conn.execute("""
-                        INSERT INTO notifications (
-                            id, user_id, title, message, type, link_url, is_read, created_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                        ON CONFLICT (id) DO NOTHING;
-                    """, n_id, n_uid, n_title, n_msg, n_type, n_link, n_read, n_created)
+        # Seed baseline notifications if table is empty (demo data)
+        if should_seed_demo:
+            notif_count = await conn.fetchval("SELECT COUNT(*) FROM notifications;")
+            if notif_count == 0:
+                admin_user_id = await conn.fetchval("SELECT id FROM users WHERE is_superadmin = true LIMIT 1;")
+                if admin_user_id:
+                    sample_notifs = [
+                        (
+                            uuid.uuid4(),
+                            admin_user_id,
+                            "WPS Payroll Batch Verified",
+                            "October 2026 payroll batch has been calculated and verified ready for bank disbursement.",
+                            "payroll",
+                            "batches",
+                            False,
+                            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=15)
+                        ),
+                        (
+                            uuid.uuid4(),
+                            admin_user_id,
+                            "Residency Permit Expiry Warning",
+                            "Johnathan Vance (EMP-1003) Qatar ID & Visa expires in 12 days. Renewal pending.",
+                            "compliance",
+                            "compliance_alerts",
+                            False,
+                            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
+                        ),
+                        (
+                            uuid.uuid4(),
+                            admin_user_id,
+                            "Annual Leave Approval Pending",
+                            "Leave request for Tariq Al-Mansoor (14 days) requires Level 2 managerial approval.",
+                            "approval",
+                            "leaves",
+                            False,
+                            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=5)
+                        ),
+                        (
+                            uuid.uuid4(),
+                            admin_user_id,
+                            "Biometric ADMS Terminal Synchronized",
+                            "Doha HQ Main Gate terminal ZK-QAT-HQ01 completed real-time punch ingestion.",
+                            "info",
+                            "terminals",
+                            True,
+                            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+                        )
+                    ]
+                    for n_id, n_uid, n_title, n_msg, n_type, n_link, n_read, n_created in sample_notifs:
+                        await conn.execute("""
+                            INSERT INTO notifications (
+                                id, user_id, title, message, type, link_url, is_read, created_at
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                            ON CONFLICT (id) DO NOTHING;
+                        """, n_id, n_uid, n_title, n_msg, n_type, n_link, n_read, n_created)
 
         # ==============================================================================
         # 21. SMS GATEWAYS, WHATSAPP BUSINESS & AUTOMATION TRIGGERS SCHEMA
@@ -1484,6 +1651,7 @@ async def init_schema():
 
             CREATE TABLE IF NOT EXISTS whatsapp_configs (
                 id UUID PRIMARY KEY,
+                organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
                 name VARCHAR(100) NOT NULL,
                 waba_id VARCHAR(100) NOT NULL,
                 phone_number_id VARCHAR(100) NOT NULL,
@@ -1496,7 +1664,9 @@ async def init_schema():
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+            ALTER TABLE whatsapp_configs ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE;
             CREATE INDEX IF NOT EXISTS idx_wa_configs_default ON whatsapp_configs(is_default);
+            CREATE INDEX IF NOT EXISTS idx_wa_configs_org ON whatsapp_configs(organization_id);
 
             CREATE TABLE IF NOT EXISTS whatsapp_templates (
                 id UUID PRIMARY KEY,
@@ -1542,6 +1712,7 @@ async def init_schema():
 
             CREATE TABLE IF NOT EXISTS automation_triggers (
                 id UUID PRIMARY KEY,
+                organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
                 name VARCHAR(150) NOT NULL,
                 event_type VARCHAR(50) NOT NULL,
                 channel VARCHAR(20) NOT NULL,
@@ -1551,141 +1722,144 @@ async def init_schema():
                 active BOOLEAN DEFAULT true,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+            ALTER TABLE automation_triggers ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE;
             CREATE INDEX IF NOT EXISTS idx_auto_triggers_event ON automation_triggers(event_type, active);
+            CREATE INDEX IF NOT EXISTS idx_auto_triggers_org ON automation_triggers(organization_id);
         """)
 
-        # Seed default SMS Gateway if none exist
-        sms_gw_count = await conn.fetchval("SELECT COUNT(*) FROM sms_gateways;")
-        default_gw_id = uuid.UUID("00000000-0000-0000-0000-000000000030")
-        twilio_gw_id = uuid.UUID("00000000-0000-0000-0000-000000000031")
-        if sms_gw_count == 0:
-            await conn.execute("""
-                INSERT INTO sms_gateways (
-                    id, name, provider_type, endpoint_url, http_method, request_format,
-                    headers_json, body_template, sender_id, is_default, active
-                ) VALUES (
-                    $1, 'Ooredoo Bulk SMS (Qatar National Gateway)', 'generic_http',
-                    'https://messaging.ooredoo.qa/b2c/http/sendSMS?username=apex_corp&password=secret_token&sender={{sender_id}}&destination={{to}}&message={{message}}',
-                    'GET', 'url_params',
-                    '{"Content-Type": "application/x-www-form-urlencoded"}',
-                    NULL, 'APEXCORP', true, true
-                ) ON CONFLICT (id) DO NOTHING;
-            """, default_gw_id)
+        # Seed default SMS Gateway & WhatsApp Configuration & Templates (demo data)
+        if should_seed_demo:
+            sms_gw_count = await conn.fetchval("SELECT COUNT(*) FROM sms_gateways;")
+            default_gw_id = uuid.UUID("00000000-0000-0000-0000-000000000030")
+            twilio_gw_id = uuid.UUID("00000000-0000-0000-0000-000000000031")
+            if sms_gw_count == 0:
+                await conn.execute("""
+                    INSERT INTO sms_gateways (
+                        id, name, provider_type, endpoint_url, http_method, request_format,
+                        headers_json, body_template, sender_id, is_default, active
+                    ) VALUES (
+                        $1, 'Ooredoo Bulk SMS (Qatar National Gateway)', 'generic_http',
+                        'https://messaging.ooredoo.qa/b2c/http/sendSMS?username=apex_corp&password=secret_token&sender={{sender_id}}&destination={{to}}&message={{message}}',
+                        'GET', 'url_params',
+                        '{"Content-Type": "application/x-www-form-urlencoded"}',
+                        NULL, 'APEXCORP', true, true
+                    ) ON CONFLICT (id) DO NOTHING;
+                """, default_gw_id)
 
-            await conn.execute("""
-                INSERT INTO sms_gateways (
-                    id, name, provider_type, endpoint_url, http_method, request_format,
-                    headers_json, body_template, sender_id, is_default, active
-                ) VALUES (
-                    $1, 'Twilio Global SMS Gateway', 'twilio',
-                    'https://api.twilio.com/2010-04-01/Accounts/ACmock_account_sid_2026/Messages.json',
-                    'POST', 'form_data',
-                    '{"Authorization": "Basic QUNtb2NrOm1vY2tfdG9rZW4="}',
-                    '{"To": "{{to}}", "From": "{{sender_id}}", "Body": "{{message}}"}',
-                    '+14155552671', false, true
-                ) ON CONFLICT (id) DO NOTHING;
-            """, twilio_gw_id)
+                await conn.execute("""
+                    INSERT INTO sms_gateways (
+                        id, name, provider_type, endpoint_url, http_method, request_format,
+                        headers_json, body_template, sender_id, is_default, active
+                    ) VALUES (
+                        $1, 'Twilio Global SMS Gateway', 'twilio',
+                        'https://api.twilio.com/2010-04-01/Accounts/ACmock_account_sid_2026/Messages.json',
+                        'POST', 'form_data',
+                        '{"Authorization": "Basic QUNtb2NrOm1vY2tfdG9rZW4="}',
+                        '{"To": "{{to}}", "From": "{{sender_id}}", "Body": "{{message}}"}',
+                        '+14155552671', false, true
+                    ) ON CONFLICT (id) DO NOTHING;
+                """, twilio_gw_id)
 
-        # Seed default WhatsApp Configuration & Templates
-        wa_cfg_count = await conn.fetchval("SELECT COUNT(*) FROM whatsapp_configs;")
-        if wa_cfg_count == 0:
-            wa_cfg_id = uuid.UUID("00000000-0000-0000-0000-000000000040")
-            # Encrypt default dummy token
-            from backend.core.mail_engine import encrypt_mail_password
-            enc_token = encrypt_mail_password("EAAGmockPermanentSystemUserTokenForApexGlobal2026MetaCloudApi")
-            await conn.execute("""
-                INSERT INTO whatsapp_configs (
-                    id, name, waba_id, phone_number_id, business_phone_number,
-                    access_token_encrypted, webhook_verify_token, api_version, is_default, active
-                ) VALUES (
-                    $1, 'Apex Global Official WhatsApp Business', '109283746501928',
-                    '100928374650192', '+974 4400 5500', $2,
-                    'apex_enterprise_webhook_token_2026', 'v20.0', true, true
-                ) ON CONFLICT (id) DO NOTHING;
-            """, wa_cfg_id, enc_token)
+            # Seed default WhatsApp Configuration & Templates
+            wa_cfg_count = await conn.fetchval("SELECT COUNT(*) FROM whatsapp_configs;")
+            if wa_cfg_count == 0:
+                wa_cfg_id = uuid.UUID("00000000-0000-0000-0000-000000000040")
+                # Encrypt default dummy token
+                from backend.core.mail_engine import encrypt_mail_password
+                enc_token = encrypt_mail_password("EAAGmockPermanentSystemUserTokenForApexGlobal2026MetaCloudApi")
+                await conn.execute("""
+                    INSERT INTO whatsapp_configs (
+                        id, name, waba_id, phone_number_id, business_phone_number,
+                        access_token_encrypted, webhook_verify_token, api_version, is_default, active
+                    ) VALUES (
+                        $1, 'Apex Global Official WhatsApp Business', '109283746501928',
+                        '100928374650192', '+974 4400 5500', $2,
+                        'apex_enterprise_webhook_token_2026', 'v20.0', true, true
+                    ) ON CONFLICT (id) DO NOTHING;
+                """, wa_cfg_id, enc_token)
 
-            # Seed default approved WhatsApp templates
-            tmpl1_id = uuid.UUID("00000000-0000-0000-0000-000000000050")
-            tmpl2_id = uuid.UUID("00000000-0000-0000-0000-000000000051")
-            tmpl3_id = uuid.UUID("00000000-0000-0000-0000-000000000052")
+                # Seed default approved WhatsApp templates
+                tmpl1_id = uuid.UUID("00000000-0000-0000-0000-000000000050")
+                tmpl2_id = uuid.UUID("00000000-0000-0000-0000-000000000051")
+                tmpl3_id = uuid.UUID("00000000-0000-0000-0000-000000000052")
 
-            await conn.execute("""
-                INSERT INTO whatsapp_templates (
-                    id, config_id, template_name, category, language, header_type,
-                    header_text, body_text, footer_text, buttons_json, meta_template_id,
-                    approval_status, model_scope, variable_mapping_json
-                ) VALUES (
-                    $1, $2, 'payslip_notice_v1', 'UTILITY', 'en_US', 'DOCUMENT',
-                    NULL,
-                    'Dear {{1}},\n\nYour official salary statement for the month of {{2}} has been confirmed and disbursed via WPS. Your net payment is {{3}} QAR.\n\nPlease find your official payslip attached.',
-                    'Apex Global Enterprises • WPS Payroll',
-                    '[{"type": "QUICK_REPLY", "text": "Acknowledge Receipt"}, {"type": "URL", "text": "View Portal", "url": "https://erp.company.local/portal"}]',
-                    'meta_tmpl_98234710293847', 'APPROVED', 'payroll.payslip',
-                    '{"1": "employee_name", "2": "month", "3": "net_salary"}'
-                ) ON CONFLICT (id) DO NOTHING;
-            """, tmpl1_id, wa_cfg_id)
+                await conn.execute("""
+                    INSERT INTO whatsapp_templates (
+                        id, config_id, template_name, category, language, header_type,
+                        header_text, body_text, footer_text, buttons_json, meta_template_id,
+                        approval_status, model_scope, variable_mapping_json
+                    ) VALUES (
+                        $1, $2, 'payslip_notice_v1', 'UTILITY', 'en_US', 'DOCUMENT',
+                        NULL,
+                        'Dear {{1}},\n\nYour official salary statement for the month of {{2}} has been confirmed and disbursed via WPS. Your net payment is {{3}} QAR.\n\nPlease find your official payslip attached.',
+                        'Apex Global Enterprises • WPS Payroll',
+                        '[{"type": "QUICK_REPLY", "text": "Acknowledge Receipt"}, {"type": "URL", "text": "View Portal", "url": "https://erp.company.local/portal"}]',
+                        'meta_tmpl_98234710293847', 'APPROVED', 'payroll.payslip',
+                        '{"1": "employee_name", "2": "month", "3": "net_salary"}'
+                    ) ON CONFLICT (id) DO NOTHING;
+                """, tmpl1_id, wa_cfg_id)
 
-            await conn.execute("""
-                INSERT INTO whatsapp_templates (
-                    id, config_id, template_name, category, language, header_type,
-                    header_text, body_text, footer_text, buttons_json, meta_template_id,
-                    approval_status, model_scope, variable_mapping_json
-                ) VALUES (
-                    $1, $2, 'leave_status_update_v1', 'UTILITY', 'en_US', 'NONE',
-                    NULL,
-                    'Dear {{1}},\n\nYour leave request for {{2}} ({{3}} days, {{4}} to {{5}}) has been {{6}}.\n\nRemarks: {{7}}.',
-                    'HR Department • Leave Administration',
-                    '[{"type": "QUICK_REPLY", "text": "Confirm Status"}]',
-                    'meta_tmpl_19283746501928', 'APPROVED', 'hr.leave',
-                    '{"1": "employee_name", "2": "leave_type", "3": "total_days", "4": "start_date", "5": "end_date", "6": "approval_status", "7": "remarks"}'
-                ) ON CONFLICT (id) DO NOTHING;
-            """, tmpl2_id, wa_cfg_id)
+                await conn.execute("""
+                    INSERT INTO whatsapp_templates (
+                        id, config_id, template_name, category, language, header_type,
+                        header_text, body_text, footer_text, buttons_json, meta_template_id,
+                        approval_status, model_scope, variable_mapping_json
+                    ) VALUES (
+                        $1, $2, 'leave_status_update_v1', 'UTILITY', 'en_US', 'NONE',
+                        NULL,
+                        'Dear {{1}},\n\nYour leave request for {{2}} ({{3}} days, {{4}} to {{5}}) has been {{6}}.\n\nRemarks: {{7}}.',
+                        'HR Department • Leave Administration',
+                        '[{"type": "QUICK_REPLY", "text": "Confirm Status"}]',
+                        'meta_tmpl_19283746501928', 'APPROVED', 'hr.leave',
+                        '{"1": "employee_name", "2": "leave_type", "3": "total_days", "4": "start_date", "5": "end_date", "6": "approval_status", "7": "remarks"}'
+                    ) ON CONFLICT (id) DO NOTHING;
+                """, tmpl2_id, wa_cfg_id)
 
-            await conn.execute("""
-                INSERT INTO whatsapp_templates (
-                    id, config_id, template_name, category, language, header_type,
-                    header_text, body_text, footer_text, buttons_json, meta_template_id,
-                    approval_status, model_scope, variable_mapping_json
-                ) VALUES (
-                    $1, $2, 'contract_renewal_notice_v1', 'UTILITY', 'en_US', 'NONE',
-                    NULL,
-                    'Dear {{1}},\n\nThis is a notification regarding your employment contract (Ref: {{2}}). Please review your renewed terms with the HR Compliance Office before {{3}}.',
-                    'HR Compliance Office • Apex Global',
-                    NULL,
-                    'meta_tmpl_56473829104829', 'APPROVED', 'hr.contract',
-                    '{"1": "employee_name", "2": "contract_reference", "3": "expiry_date"}'
-                ) ON CONFLICT (id) DO NOTHING;
-            """, tmpl3_id, wa_cfg_id)
+                await conn.execute("""
+                    INSERT INTO whatsapp_templates (
+                        id, config_id, template_name, category, language, header_type,
+                        header_text, body_text, footer_text, buttons_json, meta_template_id,
+                        approval_status, model_scope, variable_mapping_json
+                    ) VALUES (
+                        $1, $2, 'contract_renewal_notice_v1', 'UTILITY', 'en_US', 'NONE',
+                        NULL,
+                        'Dear {{1}},\n\nThis is a notification regarding your employment contract (Ref: {{2}}). Please review your renewed terms with the HR Compliance Office before {{3}}.',
+                        'HR Compliance Office • Apex Global',
+                        NULL,
+                        'meta_tmpl_56473829104829', 'APPROVED', 'hr.contract',
+                        '{"1": "employee_name", "2": "contract_reference", "3": "expiry_date"}'
+                    ) ON CONFLICT (id) DO NOTHING;
+                """, tmpl3_id, wa_cfg_id)
 
-            # Seed default Automation Triggers
-            trig1_id = uuid.UUID("00000000-0000-0000-0000-000000000060")
-            trig2_id = uuid.UUID("00000000-0000-0000-0000-000000000061")
-            trig3_id = uuid.UUID("00000000-0000-0000-0000-000000000062")
+                # Seed default Automation Triggers
+                trig1_id = uuid.UUID("00000000-0000-0000-0000-000000000060")
+                trig2_id = uuid.UUID("00000000-0000-0000-0000-000000000061")
+                trig3_id = uuid.UUID("00000000-0000-0000-0000-000000000062")
 
-            await conn.execute("""
-                INSERT INTO automation_triggers (
-                    id, name, event_type, channel, whatsapp_template_id, sms_gateway_id, sms_body_template, active
-                ) VALUES (
-                    $1, 'Leave Approved - WhatsApp Notification', 'leave_approved', 'whatsapp', $2, NULL, NULL, true
-                ) ON CONFLICT (id) DO NOTHING;
-            """, trig1_id, tmpl2_id)
+                await conn.execute("""
+                    INSERT INTO automation_triggers (
+                        id, name, event_type, channel, whatsapp_template_id, sms_gateway_id, sms_body_template, active
+                    ) VALUES (
+                        $1, 'Leave Approved - WhatsApp Notification', 'leave_approved', 'whatsapp', $2, NULL, NULL, true
+                    ) ON CONFLICT (id) DO NOTHING;
+                """, trig1_id, tmpl2_id)
 
-            await conn.execute("""
-                INSERT INTO automation_triggers (
-                    id, name, event_type, channel, whatsapp_template_id, sms_gateway_id, sms_body_template, active
-                ) VALUES (
-                    $1, 'Leave Rejected - SMS Alert', 'leave_rejected', 'sms', NULL, $2,
-                    'Dear {{employee_name}}, your leave request has been rejected. Reason: {{rejection_reason}}.', true
-                ) ON CONFLICT (id) DO NOTHING;
-            """, trig2_id, default_gw_id)
+                await conn.execute("""
+                    INSERT INTO automation_triggers (
+                        id, name, event_type, channel, whatsapp_template_id, sms_gateway_id, sms_body_template, active
+                    ) VALUES (
+                        $1, 'Leave Rejected - SMS Alert', 'leave_rejected', 'sms', NULL, $2,
+                        'Dear {{employee_name}}, your leave request has been rejected. Reason: {{rejection_reason}}.', true
+                    ) ON CONFLICT (id) DO NOTHING;
+                """, trig2_id, default_gw_id)
 
-            await conn.execute("""
-                INSERT INTO automation_triggers (
-                    id, name, event_type, channel, whatsapp_template_id, sms_gateway_id, sms_body_template, active
-                ) VALUES (
-                    $1, 'Payslip Confirmed - WhatsApp PDF Delivery', 'payslip_confirmed', 'whatsapp', $2, NULL, NULL, true
-                ) ON CONFLICT (id) DO NOTHING;
-            """, trig3_id, tmpl1_id)
+                await conn.execute("""
+                    INSERT INTO automation_triggers (
+                        id, name, event_type, channel, whatsapp_template_id, sms_gateway_id, sms_body_template, active
+                    ) VALUES (
+                        $1, 'Payslip Confirmed - WhatsApp PDF Delivery', 'payslip_confirmed', 'whatsapp', $2, NULL, NULL, true
+                    ) ON CONFLICT (id) DO NOTHING;
+                """, trig3_id, tmpl1_id)
 
         # 34. Departments (Enterprise Organizational Units)
         await conn.execute("""
@@ -1856,5 +2030,543 @@ async def init_schema():
                     ON CONFLICT (channel_id, user_id) DO UPDATE SET is_auto_assigned = true;
                 """, uuid.uuid4(), dept_chan_id, mu["id"])
 
-        logger.info("PostgreSQL schema initialization, mail, notifications, SMS, WhatsApp & Chat seeding completed.")
+        # 39. SOX 404 / ISO 27001 Compliance: Backfill Legacy Audit Chain
+        unhashed = await conn.fetch("""
+            SELECT id, tenant_id, entity_type, entity_id, action, changed_by_user_id,
+                   changes, note, created_at
+            FROM audit_logs
+            WHERE row_hash IS NULL
+            ORDER BY created_at ASC, id ASC;
+        """)
+        if unhashed:
+            for r in unhashed:
+                t_id = r["tenant_id"] or "default_tenant"
+                latest_h = await conn.fetchval("""
+                    SELECT row_hash FROM audit_logs
+                    WHERE tenant_id = $1 AND row_hash IS NOT NULL
+                    ORDER BY created_at DESC, id DESC LIMIT 1;
+                """, t_id)
+                p_hash = latest_h if latest_h else "GENESIS"
+                c_payload = build_canonical_payload(changes=r["changes"], note=r["note"])
+                dt_str = format_canonical_timestamp(r["created_at"]) if r["created_at"] else ""
+                u_str = str(r["changed_by_user_id"]) if r["changed_by_user_id"] else "SYSTEM"
+                act = str(r["action"] or "").upper()
+                res = f"{r['entity_type']}:{r['entity_id']}"
+                r_hash = compute_row_hash(t_id, p_hash, dt_str, u_str, act, res, c_payload)
+                await conn.execute("""
+                    UPDATE audit_logs
+                    SET tenant_id = $1, prev_hash = $2, row_hash = $3
+                    WHERE id = $4;
+                """, t_id, p_hash, r_hash, r["id"])
+
+        # 40. PostgreSQL Database-Level Tamper Protection & Immutability Triggers
+        await conn.execute("""
+            -- A. Audit Logs Append-Only Tamper Protection
+            CREATE OR REPLACE FUNCTION prevent_audit_log_tampering()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: audit_logs is an append-only cryptographic ledger. UPDATE, DELETE, and TRUNCATE operations are strictly prohibited.'
+                    USING ERRCODE = '55000';
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_audit_logs_tamper_protection ON audit_logs;
+            CREATE TRIGGER trg_audit_logs_tamper_protection
+            BEFORE UPDATE OR DELETE ON audit_logs
+            FOR EACH ROW
+            EXECUTE FUNCTION prevent_audit_log_tampering();
+
+            DROP TRIGGER IF EXISTS trg_audit_logs_truncate_protection ON audit_logs;
+            CREATE TRIGGER trg_audit_logs_truncate_protection
+            BEFORE TRUNCATE ON audit_logs
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION prevent_audit_log_tampering();
+
+            -- B. Audit Logs Automatic Hash Chain Fallback for Raw SQL Inserts
+            CREATE OR REPLACE FUNCTION enforce_audit_log_hash_chain()
+            RETURNS TRIGGER AS $$
+            DECLARE
+                latest_h VARCHAR(64);
+                canonical_data TEXT;
+                dt_str TEXT;
+                uid_str TEXT;
+            BEGIN
+                IF NEW.tenant_id IS NULL OR NEW.tenant_id = '' THEN
+                    NEW.tenant_id := 'default_tenant';
+                END IF;
+
+                IF NEW.prev_hash IS NULL OR NEW.prev_hash = '' THEN
+                    SELECT row_hash INTO latest_h
+                    FROM audit_logs
+                    WHERE tenant_id = NEW.tenant_id AND row_hash IS NOT NULL
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1;
+                    
+                    IF latest_h IS NULL OR latest_h = '' THEN
+                        NEW.prev_hash := 'GENESIS';
+                    ELSE
+                        NEW.prev_hash := latest_h;
+                    END IF;
+                END IF;
+
+                IF NEW.created_at IS NULL THEN
+                    NEW.created_at := CURRENT_TIMESTAMP;
+                END IF;
+
+                IF NEW.row_hash IS NULL OR NEW.row_hash = '' THEN
+                    dt_str := to_char(NEW.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US+00:00');
+                    uid_str := COALESCE(NEW.changed_by_user_id::text, 'SYSTEM');
+                    canonical_data := NEW.tenant_id || NEW.prev_hash || dt_str || uid_str || UPPER(COALESCE(NEW.action, '')) || (NEW.entity_type || ':' || NEW.entity_id) || COALESCE(NEW.changes::text, '{}');
+                    NEW.row_hash := encode(sha256(canonical_data::bytea), 'hex');
+                END IF;
+
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_audit_logs_hash_chain ON audit_logs;
+            CREATE TRIGGER trg_audit_logs_hash_chain
+            BEFORE INSERT ON audit_logs
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_audit_log_hash_chain();
+
+            -- C. Contracts Immutability: Block modification of core terms once active/approved
+            CREATE OR REPLACE FUNCTION enforce_contract_immutability()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF TG_OP = 'DELETE' THEN
+                    IF OLD.status IN ('active', 'approved', 'posted') THEN
+                        RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot delete contract % with status %. Active/approved contracts are immutable records.', OLD.contract_reference, OLD.status
+                            USING ERRCODE = '55000';
+                    END IF;
+                    RETURN OLD;
+                END IF;
+
+                IF TG_OP = 'UPDATE' THEN
+                    IF OLD.status IN ('active', 'approved', 'posted') THEN
+                        -- Allow lifecycle transitions if core terms remain untouched
+                        IF NEW.status IN ('expired', 'superseded', 'amended', 'cancelled', 'terminated') AND
+                           NEW.wage_base = OLD.wage_base AND
+                           NEW.currency = OLD.currency AND
+                           NEW.start_date = OLD.start_date AND
+                           NEW.employee_id = OLD.employee_id AND
+                           NEW.contract_reference = OLD.contract_reference THEN
+                            RETURN NEW;
+                        END IF;
+
+                        -- Block direct changes to core terms
+                        IF NEW.wage_base != OLD.wage_base OR
+                           NEW.currency != OLD.currency OR
+                           NEW.start_date != OLD.start_date OR
+                           NEW.employee_id != OLD.employee_id OR
+                           NEW.contract_reference != OLD.contract_reference THEN
+                            RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Core terms of % contract % cannot be modified directly. Please create an amendment revision.', OLD.status, OLD.contract_reference
+                                USING ERRCODE = '55000';
+                        END IF;
+                    END IF;
+                    RETURN NEW;
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_contract_immutability ON employee_contracts;
+            CREATE TRIGGER trg_contract_immutability
+            BEFORE UPDATE OR DELETE ON employee_contracts
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_contract_immutability();
+
+            -- D. Contract Benefit Lines Immutability
+            CREATE OR REPLACE FUNCTION enforce_contract_benefit_immutability()
+            RETURNS TRIGGER AS $$
+            DECLARE
+                c_status VARCHAR;
+            BEGIN
+                SELECT status INTO c_status FROM employee_contracts WHERE id = OLD.contract_id;
+                IF c_status IN ('active', 'approved', 'posted') THEN
+                    RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot modify or delete benefit lines of an active/approved contract (status: %). Use the contract amendment workflow.', c_status
+                        USING ERRCODE = '55000';
+                END IF;
+                IF TG_OP = 'DELETE' THEN
+                    RETURN OLD;
+                ELSE
+                    RETURN NEW;
+                END IF;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_contract_benefit_immutability ON contract_benefit_lines;
+            CREATE TRIGGER trg_contract_benefit_immutability
+            BEFORE UPDATE OR DELETE ON contract_benefit_lines
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_contract_benefit_immutability();
+
+            -- E. Payroll Batches Immutability: Block modification of financial figures once locked/posted
+            CREATE OR REPLACE FUNCTION enforce_payroll_immutability()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF TG_OP = 'DELETE' THEN
+                    IF OLD.status IN ('locked', 'exported', 'posted', 'approved') THEN
+                        RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot delete % payroll batch %. Sealed financial records are immutable.', OLD.status, OLD.batch_code
+                            USING ERRCODE = '55000';
+                    END IF;
+                    RETURN OLD;
+                END IF;
+
+                IF TG_OP = 'UPDATE' THEN
+                    IF OLD.status IN ('locked', 'exported', 'posted', 'approved') THEN
+                        IF NEW.total_base_salary != OLD.total_base_salary OR
+                           NEW.total_allowances != OLD.total_allowances OR
+                           NEW.total_deductions != OLD.total_deductions OR
+                           NEW.total_net_salary != OLD.total_net_salary OR
+                           NEW.salary_year_month != OLD.salary_year_month THEN
+                            RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Financial figures of % payroll batch % are immutable.', OLD.status, OLD.batch_code
+                                USING ERRCODE = '55000';
+                        END IF;
+                    END IF;
+                    RETURN NEW;
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_payroll_batch_immutability ON payroll_batches;
+            CREATE TRIGGER trg_payroll_batch_immutability
+            BEFORE UPDATE OR DELETE ON payroll_batches
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_payroll_immutability();
+
+            -- F. Payslips Immutability
+            CREATE OR REPLACE FUNCTION enforce_payslip_immutability()
+            RETURNS TRIGGER AS $$
+            DECLARE
+                b_status VARCHAR;
+                b_code VARCHAR;
+            BEGIN
+                SELECT status, batch_code INTO b_status, b_code FROM payroll_batches WHERE id = OLD.batch_id;
+                IF b_status IN ('locked', 'exported', 'posted', 'approved') THEN
+                    RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot modify or delete payslips in % payroll batch %.', b_status, b_code
+                        USING ERRCODE = '55000';
+                END IF;
+                IF TG_OP = 'DELETE' THEN
+                    RETURN OLD;
+                ELSE
+                    RETURN NEW;
+                END IF;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_payslip_immutability ON payslips;
+            CREATE TRIGGER trg_payslip_immutability
+            BEFORE UPDATE OR DELETE ON payslips
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_payslip_immutability();
+
+            -- G. Payroll Adjustments Immutability
+            CREATE OR REPLACE FUNCTION enforce_payroll_adjustment_immutability()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF TG_OP = 'DELETE' THEN
+                    IF OLD.approval_status = 'approved' THEN
+                        RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot delete approved payroll adjustment %.', OLD.code
+                            USING ERRCODE = '55000';
+                    END IF;
+                    RETURN OLD;
+                END IF;
+
+                IF TG_OP = 'UPDATE' THEN
+                    IF OLD.approval_status = 'approved' THEN
+                        IF NEW.approval_status NOT IN ('approved', 'reversed') OR
+                           NEW.computed_amount != OLD.computed_amount OR
+                           NEW.employee_id != OLD.employee_id OR
+                           NEW.salary_year_month != OLD.salary_year_month THEN
+                            RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Financial figures of approved adjustment % are immutable.', OLD.code
+                                USING ERRCODE = '55000';
+                        END IF;
+                    END IF;
+                    RETURN NEW;
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_payroll_adjustment_immutability ON payroll_adjustments;
+            CREATE TRIGGER trg_payroll_adjustment_immutability
+            BEFORE UPDATE OR DELETE ON payroll_adjustments
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_payroll_adjustment_immutability();
+        """)
+
+        # 41. High-Volume Indexing & Declarative Monthly Range Partitioning Infrastructure
+        from backend.core.partitioning import setup_partitioning_infrastructure
+        await setup_partitioning_infrastructure(conn)
+
+        # 42. PostgreSQL Row-Level Security (RLS) Tenant Isolation Policies
+        tenant_scoped_tables = [
+            "employees",
+            "attendance_logs",
+            "shift_rosters",
+            "employee_contracts",
+            "payroll_batches",
+            "payroll_adjustments",
+            "leave_requests",
+            "zkteco_terminals"
+        ]
+        for tbl in tenant_scoped_tables:
+            await conn.execute(f"""
+                ALTER TABLE {tbl} ENABLE ROW LEVEL SECURITY;
+                ALTER TABLE {tbl} FORCE ROW LEVEL SECURITY;
+                DROP POLICY IF EXISTS tenant_isolation_policy ON {tbl};
+                CREATE POLICY tenant_isolation_policy ON {tbl}
+                FOR ALL
+                USING (
+                    current_setting('app.current_role', true) = 'role_superadmin' 
+                    OR current_setting('app.current_tenant_id', true) = '' 
+                    OR current_setting('app.current_tenant_id', true) IS NULL 
+                    OR organization_id IS NULL 
+                    OR organization_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                );
+            """)
+
+        # 43. Multi-Company Architecture Deduplication & Consolidation Migration
+        await consolidate_organizations_migration(conn)
+
+        # 44. Archiving & Soft-Delete Support (is_active columns & indexes)
+        await conn.execute("""
+            -- Add is_active column if not present
+            ALTER TABLE organizations ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE branches ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE salary_rules ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE zkteco_terminals ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE leave_types ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+            ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+
+            -- Indexes for active filtering performance
+            CREATE INDEX IF NOT EXISTS idx_organizations_active ON organizations(is_active);
+            CREATE INDEX IF NOT EXISTS idx_branches_active ON branches(organization_id, is_active);
+            CREATE INDEX IF NOT EXISTS idx_users_active ON users(organization_id, is_active);
+            CREATE INDEX IF NOT EXISTS idx_employees_active ON employees(organization_id, is_active);
+            CREATE INDEX IF NOT EXISTS idx_zk_terminals_active ON zkteco_terminals(is_active);
+        """)
+
+        logger.info("PostgreSQL schema initialization, mail, notifications, SMS, WhatsApp, Chat, RLS & SOX 404 / ISO 27001 triggers completed.")
+
+
+async def consolidate_organizations_migration(conn):
+    """
+    Consolidation and Deduplication Migration:
+    1. Identify or create 2 primary companies:
+       - Primary Holding: 'Apex Holdings Q.P.S.C.'
+       - Subsidiary: 'Larea Industrial & Contracting W.L.L.'
+    2. Re-link existing users, branches, employees, and payroll batches pointing to redundant organization IDs.
+    3. Delete all orphan/redundant organization rows so ONLY the 2 official companies remain.
+    4. Populate allowed_company_ids and allowed_branch_ids for superadmins.
+    """
+    logger.info("Starting multi-company deduplication and consolidation migration...")
+
+    # 1. Identify or create primary holding company (Apex Holdings Q.P.S.C.)
+    primary_apex = await conn.fetchrow("""
+        SELECT id, legal_name FROM organizations 
+        WHERE legal_name ILIKE '%Apex Holdings%' OR legal_name ILIKE '%Apex Global%'
+        ORDER BY (
+            (SELECT COUNT(*) FROM branches WHERE organization_id = organizations.id) +
+            (SELECT COUNT(*) FROM users WHERE organization_id = organizations.id)
+        ) DESC, created_at ASC
+        LIMIT 1;
+    """)
+
+    if not primary_apex:
+        primary_org_id = uuid.uuid4()
+        await conn.execute("""
+            INSERT INTO organizations (id, legal_name, tax_id, base_currency, default_timezone, default_locale)
+            VALUES ($1, 'Apex Holdings Q.P.S.C.', 'QA-90281726-CR', 'QAR', 'Asia/Qatar', 'en');
+        """, primary_org_id)
+    else:
+        primary_org_id = primary_apex["id"]
+        await conn.execute("""
+            UPDATE organizations 
+            SET legal_name = 'Apex Holdings Q.P.S.C.', 
+                tax_id = COALESCE(tax_id, 'QA-90281726-CR'), 
+                base_currency = 'QAR', 
+                default_timezone = 'Asia/Qatar', 
+                default_locale = 'en'
+            WHERE id = $1;
+        """, primary_org_id)
+
+    # Ensure primary org has at least one branch
+    p_branch = await conn.fetchval("SELECT id FROM branches WHERE organization_id = $1 LIMIT 1;", primary_org_id)
+    if not p_branch:
+        p_branch = uuid.uuid4()
+        await conn.execute("""
+            INSERT INTO branches (id, organization_id, name, code, city, ip_allowlist)
+            VALUES ($1, $2, 'Doha Main Branch', 'DOH-HQ', 'Doha', '["127.0.0.1/32"]'::jsonb);
+        """, p_branch, primary_org_id)
+
+    # 2. Identify or create subsidiary company: Larea Industrial & Contracting W.L.L.
+    subsidiary_larea = await conn.fetchrow("""
+        SELECT id, legal_name FROM organizations 
+        WHERE legal_name ILIKE '%Larea%'
+        ORDER BY created_at ASC LIMIT 1;
+    """)
+
+    if not subsidiary_larea:
+        subsidiary_org_id = uuid.uuid4()
+        await conn.execute("""
+            INSERT INTO organizations (id, legal_name, tax_id, base_currency, default_timezone, default_locale)
+            VALUES ($1, 'Larea Industrial & Contracting W.L.L.', 'QA-3849102-CR', 'QAR', 'Asia/Qatar', 'en');
+        """, subsidiary_org_id)
+    else:
+        subsidiary_org_id = subsidiary_larea["id"]
+        await conn.execute("""
+            UPDATE organizations 
+            SET legal_name = 'Larea Industrial & Contracting W.L.L.', 
+                tax_id = COALESCE(tax_id, 'QA-3849102-CR'), 
+                base_currency = 'QAR', 
+                default_timezone = 'Asia/Qatar', 
+                default_locale = 'en'
+            WHERE id = $1;
+        """, subsidiary_org_id)
+
+    # Ensure subsidiary has an initial operating branch
+    s_branch = await conn.fetchval("SELECT id FROM branches WHERE organization_id = $1 LIMIT 1;", subsidiary_org_id)
+    if not s_branch:
+        s_branch = uuid.uuid4()
+        await conn.execute("""
+            INSERT INTO branches (id, organization_id, name, code, city, ip_allowlist)
+            VALUES ($1, $2, 'Industrial Area Fabrication Yard', 'IND-01', 'Doha', '["127.0.0.1/32", "10.0.4.0/24"]'::jsonb);
+        """, s_branch, subsidiary_org_id)
+
+    # 3. Re-link existing users pointing to redundant organization IDs to primary_org_id
+    await conn.execute("""
+        UPDATE users 
+        SET organization_id = $1
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    await conn.execute("""
+        UPDATE users u
+        SET branch_id = (SELECT b.id FROM branches b WHERE b.organization_id = u.organization_id ORDER BY b.created_at ASC LIMIT 1)
+        WHERE u.branch_id IS NULL OR u.branch_id NOT IN (SELECT id FROM branches WHERE organization_id = u.organization_id);
+    """)
+
+    # Re-link existing employees
+    await conn.execute("""
+        UPDATE employees 
+        SET organization_id = $1
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    await conn.execute("""
+        UPDATE employees e
+        SET branch_id = (SELECT b.id FROM branches b WHERE b.organization_id = e.organization_id ORDER BY b.created_at ASC LIMIT 1)
+        WHERE e.branch_id IS NULL OR e.branch_id NOT IN (SELECT id FROM branches WHERE organization_id = e.organization_id);
+    """)
+
+    # Re-link payroll batches
+    await conn.execute("""
+        UPDATE payroll_batches 
+        SET organization_id = $1
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    await conn.execute("""
+        UPDATE payroll_batches pb
+        SET branch_id = (SELECT b.id FROM branches b WHERE b.organization_id = pb.organization_id ORDER BY b.created_at ASC LIMIT 1)
+        WHERE pb.branch_id IS NULL OR pb.branch_id NOT IN (SELECT id FROM branches WHERE organization_id = pb.organization_id);
+    """)
+
+    # Re-link attendance logs
+    await conn.execute("""
+        UPDATE attendance_logs a
+        SET organization_id = COALESCE(e.organization_id, $1),
+            branch_id = COALESCE(e.branch_id, (SELECT b.id FROM branches b WHERE b.organization_id = COALESCE(e.organization_id, $1) LIMIT 1))
+        FROM employees e
+        WHERE a.employee_id = e.id AND (a.organization_id IS NULL OR a.organization_id NOT IN ($1, $2));
+    """, primary_org_id, subsidiary_org_id)
+
+    await conn.execute("""
+        UPDATE attendance_logs
+        SET organization_id = $1,
+            branch_id = COALESCE(branch_id, (SELECT id FROM branches WHERE organization_id = $1 LIMIT 1))
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    # Re-link leave requests
+    await conn.execute("""
+        UPDATE leave_requests l
+        SET organization_id = COALESCE(e.organization_id, $1),
+            branch_id = COALESCE(e.branch_id, (SELECT b.id FROM branches b WHERE b.organization_id = COALESCE(e.organization_id, $1) LIMIT 1))
+        FROM employees e
+        WHERE l.employee_id = e.id AND (l.organization_id IS NULL OR l.organization_id NOT IN ($1, $2));
+    """, primary_org_id, subsidiary_org_id)
+
+    await conn.execute("""
+        UPDATE leave_requests
+        SET organization_id = $1,
+            branch_id = COALESCE(branch_id, (SELECT id FROM branches WHERE organization_id = $1 LIMIT 1))
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    # Re-link employee contracts
+    await conn.execute("""
+        UPDATE employee_contracts c
+        SET organization_id = COALESCE(e.organization_id, $1),
+            branch_id = COALESCE(e.branch_id, (SELECT b.id FROM branches b WHERE b.organization_id = COALESCE(e.organization_id, $1) LIMIT 1))
+        FROM employees e
+        WHERE c.employee_id = e.id AND (c.organization_id IS NULL OR c.organization_id NOT IN ($1, $2));
+    """, primary_org_id, subsidiary_org_id)
+
+    await conn.execute("""
+        UPDATE employee_contracts
+        SET organization_id = $1,
+            branch_id = COALESCE(branch_id, (SELECT id FROM branches WHERE organization_id = $1 LIMIT 1))
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    # Re-link zkteco terminals
+    await conn.execute("""
+        UPDATE zkteco_terminals
+        SET organization_id = $1,
+            branch_id = COALESCE(branch_id, (SELECT id FROM branches WHERE organization_id = $1 LIMIT 1))
+        WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    # Re-link other auxiliary tables
+    for tbl in ["shift_rosters", "payroll_adjustments", "whatsapp_configs", "automation_triggers"]:
+        try:
+            await conn.execute(f"""
+                UPDATE {tbl} SET organization_id = $1 
+                WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
+            """, primary_org_id, subsidiary_org_id)
+        except Exception:
+            pass
+
+    # 4. Clean up orphan/redundant branches
+    await conn.execute("""
+        DELETE FROM branches 
+        WHERE organization_id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    # 5. Delete all orphan/redundant organization rows so ONLY the 2 official companies remain
+    await conn.execute("""
+        DELETE FROM organizations 
+        WHERE id NOT IN ($1, $2);
+    """, primary_org_id, subsidiary_org_id)
+
+    # 6. Populate allowed_company_ids and allowed_branch_ids for superadmins
+    all_comp_ids = json.dumps([str(primary_org_id), str(subsidiary_org_id)])
+    all_br_rows = await conn.fetch("SELECT id FROM branches WHERE organization_id IN ($1, $2);", primary_org_id, subsidiary_org_id)
+    all_br_ids = json.dumps([str(r["id"]) for r in all_br_rows])
+
+    await conn.execute("""
+        UPDATE users 
+        SET allowed_company_ids = $1::jsonb,
+            allowed_branch_ids = $2::jsonb
+        WHERE is_superadmin = true;
+    """, all_comp_ids, all_br_ids)
+
+    logger.info("Multi-company deduplication migration completed: 2 official companies active.")
 

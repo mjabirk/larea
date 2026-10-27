@@ -32,7 +32,7 @@ const getAuthenticatedUserId = () => {
 };
 
 export function TenancyProvider({ children }) {
-  const { isAuthenticated, isLoading, token } = useAuth();
+  const { isAuthenticated, isLoading, token, session } = useAuth();
   const [tenancyState, setTenancyState] = useState(EMPTY_TENANCY_DATA);
 
   // Attendance Records Store
@@ -47,10 +47,39 @@ export function TenancyProvider({ children }) {
 
   const [isTenancyLoading, setIsTenancyLoading] = useState(false);
 
+  // Multi-Branch Selection & Reactive Invalidation
+  const [selectedBranchIds, setSelectedBranchIds] = useState(() => {
+    try {
+      const saved = typeof window !== 'undefined' ? localStorage.getItem('enterprise_selected_branch_ids') : null;
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {}
+    return ['all'];
+  });
+  const [tenantEpoch, setTenantEpoch] = useState(0);
+
+  const isAllBranchesSelected = useMemo(() => {
+    return selectedBranchIds.includes('all') || selectedBranchIds.length === 0;
+  }, [selectedBranchIds]);
+
+  const activeBranchId = useMemo(() => {
+    if (isAllBranchesSelected) return 'all';
+    if (selectedBranchIds.length === 1) return selectedBranchIds[0];
+    return 'all';
+  }, [isAllBranchesSelected, selectedBranchIds]);
+
   const getAuthHeaders = useCallback((customToken = null) => {
     const activeToken = customToken || token;
-    return activeToken ? { Authorization: `Bearer ${activeToken}` } : {};
-  }, [token]);
+    const headers = activeToken ? { Authorization: `Bearer ${activeToken}` } : {};
+    if (tenancyState.activeOrgId) headers['X-Organization-Id'] = tenancyState.activeOrgId;
+    headers['X-Branch-Ids'] = selectedBranchIds.join(',');
+    if (!isAllBranchesSelected && selectedBranchIds.length === 1) {
+      headers['X-Branch-Id'] = selectedBranchIds[0];
+    }
+    return headers;
+  }, [token, tenancyState.activeOrgId, selectedBranchIds, isAllBranchesSelected]);
 
   // Fetch live Tenancy & User data from PostgreSQL backend
   const refreshTenancyData = useCallback(async (customToken = null) => {
@@ -91,18 +120,40 @@ export function TenancyProvider({ children }) {
         }));
 
         const authUid = getAuthenticatedUserId();
+        const savedOrgId = typeof window !== 'undefined' ? localStorage.getItem('enterprise_active_org_id') : null;
+        const savedBranchId = typeof window !== 'undefined' ? localStorage.getItem('enterprise_active_branch_id') : null;
 
-        setTenancyState((prev) => ({
-          ...prev,
-          organizations: orgs,
-          branches: branches,
-          users: users,
-          organization_memberships: memberships,
-          memberships: memberships,
-          activeOrgId: prev.activeOrgId || orgs[0]?.id || null,
-          activeBranchId: prev.activeBranchId || branches[0]?.id || null,
-          activeUserId: authUid || prev.activeUserId || users[0]?.id || null,
-        }));
+        setTenancyState((prev) => {
+          const activeOrg = (prev.activeOrgId && orgs.some((o) => o.id === prev.activeOrgId))
+            ? prev.activeOrgId
+            : (savedOrgId && orgs.some((o) => o.id === savedOrgId))
+              ? savedOrgId
+              : orgs[0]?.id || null;
+
+          const orgBranches = branches.filter((b) => b.organization_id === activeOrg);
+          const activeBranch = (prev.activeBranchId && orgBranches.some((b) => b.id === prev.activeBranchId))
+            ? prev.activeBranchId
+            : (savedBranchId && orgBranches.some((b) => b.id === savedBranchId))
+              ? savedBranchId
+              : orgBranches[0]?.id || branches[0]?.id || null;
+
+          if (typeof window !== 'undefined') {
+            if (activeOrg) localStorage.setItem('enterprise_active_org_id', activeOrg);
+            if (activeBranch) localStorage.setItem('enterprise_active_branch_id', activeBranch);
+          }
+
+          return {
+            ...prev,
+            organizations: orgs,
+            branches: branches,
+            users: users,
+            organization_memberships: memberships,
+            memberships: memberships,
+            activeOrgId: activeOrg,
+            activeBranchId: activeBranch,
+            activeUserId: authUid || prev.activeUserId || users[0]?.id || null,
+          };
+        });
       }
     } catch (err) {
       console.warn('Failed to load tenancy data from backend:', err);
@@ -233,45 +284,132 @@ export function TenancyProvider({ children }) {
     return memberships.filter((m) => m.user_id === currentUser.id);
   }, [memberships, currentUser?.id]);
 
+  const isSuperadmin = Boolean(
+    currentUser?.is_superadmin ||
+    session?.user?.is_superadmin ||
+    session?.is_superadmin ||
+    currentUser?.role === 'superadmin' ||
+    session?.user?.role === 'superadmin'
+  );
+
+  // If superadmin, grant visibility over ALL companies and branches
   const userOrganizations = useMemo(() => {
-    return tenancyState.organizations.filter((o) =>
-      userMemberships.some((m) => m.organization_id === o.id)
-    );
-  }, [tenancyState.organizations, userMemberships]);
+    return isSuperadmin
+      ? tenancyState.organizations
+      : tenancyState.organizations.filter((o) =>
+          o.id === currentUser?.organization_id ||
+          (currentUser?.allowed_company_ids || []).includes(o.id)
+        );
+  }, [isSuperadmin, tenancyState.organizations, currentUser?.organization_id, currentUser?.allowed_company_ids]);
 
   const userBranchesInCurrentOrg = useMemo(() => {
     if (!currentOrganization?.id) return [];
-    return tenancyState.branches.filter(
-      (b) =>
-        b.organization_id === currentOrganization.id &&
-        userMemberships.some((m) => m.branch_id === b.id)
-    );
-  }, [tenancyState.branches, currentOrganization?.id, userMemberships]);
+    return isSuperadmin
+      ? tenancyState.branches.filter((b) => b.organization_id === currentOrganization?.id)
+      : tenancyState.branches.filter((b) =>
+          b.organization_id === currentOrganization?.id &&
+          (b.id === currentUser?.branch_id || (currentUser?.allowed_branch_ids || []).includes(b.id))
+        );
+  }, [isSuperadmin, tenancyState.branches, currentOrganization?.id, currentUser?.branch_id, currentUser?.allowed_branch_ids]);
+
+  const toggleBranchSelection = useCallback((branchId) => {
+    if (!branchId) return;
+    setSelectedBranchIds((prev) => {
+      let next;
+      if (prev.includes('all')) {
+        next = [branchId];
+      } else if (prev.includes(branchId)) {
+        next = prev.filter((id) => id !== branchId);
+        if (next.length === 0) {
+          next = ['all'];
+        }
+      } else {
+        next = [...prev, branchId];
+      }
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('enterprise_selected_branch_ids', JSON.stringify(next));
+        if (next.length === 1 && next[0] !== 'all') {
+          localStorage.setItem('enterprise_active_branch_id', next[0]);
+        }
+        window.dispatchEvent(
+          new CustomEvent('enterprise-tenancy-switched', {
+            detail: { branch_ids: next },
+          })
+        );
+      }
+      return next;
+    });
+    setTenantEpoch((prev) => prev + 1);
+  }, []);
+
+  const selectAllBranches = useCallback(() => {
+    setSelectedBranchIds(['all']);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('enterprise_selected_branch_ids', JSON.stringify(['all']));
+      window.dispatchEvent(
+        new CustomEvent('enterprise-tenancy-switched', {
+          detail: { branch_ids: ['all'] },
+        })
+      );
+    }
+    setTenantEpoch((prev) => prev + 1);
+  }, []);
 
   const switchOrganization = useCallback((orgId) => {
     if (!orgId) return;
+    setSelectedBranchIds(['all']);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('enterprise_selected_branch_ids', JSON.stringify(['all']));
+      localStorage.setItem('enterprise_active_org_id', orgId);
+    }
     setTenancyState((prev) => {
-      if (prev.activeOrgId === orgId) return prev;
       const targetBranches = prev.branches.filter((b) => b.organization_id === orgId);
+      const newBranchId = targetBranches[0]?.id || null;
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('enterprise_active_branch_id', newBranchId || '');
+        window.dispatchEvent(
+          new CustomEvent('enterprise-tenancy-switched', {
+            detail: { organization_id: orgId, branch_id: newBranchId, branch_ids: ['all'] },
+          })
+        );
+      }
       return {
         ...prev,
         activeOrgId: orgId,
-        activeBranchId: targetBranches[0]?.id || prev.activeBranchId,
+        activeBranchId: newBranchId,
       };
     });
+    setTenantEpoch((prev) => prev + 1);
   }, []);
 
   const switchBranch = useCallback((branchId) => {
     if (!branchId) return;
+    setSelectedBranchIds([branchId]);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('enterprise_selected_branch_ids', JSON.stringify([branchId]));
+      localStorage.setItem('enterprise_active_branch_id', branchId);
+    }
     setTenancyState((prev) => {
       if (prev.activeBranchId === branchId) return prev;
       const targetBranch = prev.branches.find((b) => b.id === branchId);
+      const targetOrgId = targetBranch ? targetBranch.organization_id : prev.activeOrgId;
+      if (typeof window !== 'undefined') {
+        if (targetOrgId) {
+          localStorage.setItem('enterprise_active_org_id', targetOrgId);
+        }
+        window.dispatchEvent(
+          new CustomEvent('enterprise-tenancy-switched', {
+            detail: { organization_id: targetOrgId, branch_id: branchId, branch_ids: [branchId] },
+          })
+        );
+      }
       return {
         ...prev,
         activeBranchId: branchId,
-        activeOrgId: targetBranch ? targetBranch.organization_id : prev.activeOrgId,
+        activeOrgId: targetOrgId,
       };
     });
+    setTenantEpoch((prev) => prev + 1);
   }, []);
 
   const switchActiveUser = useCallback((userId) => {
@@ -559,6 +697,13 @@ export function TenancyProvider({ children }) {
     window.dispatchEvent(new PopStateEvent('popstate'));
   }, []);
 
+  // Refresh attendance when active company/branch context changes
+  useEffect(() => {
+    if (token && tenancyState.activeOrgId) {
+      refreshAttendanceData(token);
+    }
+  }, [token, tenancyState.activeOrgId, tenancyState.activeBranchId, refreshAttendanceData]);
+
   const value = useMemo(
     () => ({
       organizations: tenancyState.organizations,
@@ -574,9 +719,19 @@ export function TenancyProvider({ children }) {
       userOrganizations,
       userBranchesInCurrentOrg,
       userMemberships,
+      isSuperadmin,
+      activeOrgId: tenancyState.activeOrgId,
+      activeBranchId: tenancyState.activeBranchId,
+      getAuthHeaders,
       switchOrganization,
       switchBranch,
       switchActiveUser,
+      selectedBranchIds,
+      isAllBranchesSelected,
+      activeBranchId,
+      toggleBranchSelection,
+      selectAllBranches,
+      tenantEpoch,
       completeSetupWizard,
       resetToSetup,
       closeSetupWizard,
@@ -598,6 +753,14 @@ export function TenancyProvider({ children }) {
       tenancyState.branches,
       tenancyState.users,
       tenancyState.user_preferences,
+      tenancyState.activeOrgId,
+      tenancyState.activeBranchId,
+      selectedBranchIds,
+      isAllBranchesSelected,
+      activeBranchId,
+      toggleBranchSelection,
+      selectAllBranches,
+      tenantEpoch,
       memberships,
       attendanceRecords,
       currentUser,
@@ -606,6 +769,8 @@ export function TenancyProvider({ children }) {
       userOrganizations,
       userBranchesInCurrentOrg,
       userMemberships,
+      isSuperadmin,
+      getAuthHeaders,
       switchOrganization,
       switchBranch,
       switchActiveUser,
@@ -649,6 +814,15 @@ export function useTenancy() {
       userOrganizations: [],
       userBranchesInCurrentOrg: [],
       userMemberships: [],
+      isSuperadmin: false,
+      activeOrgId: null,
+      activeBranchId: 'all',
+      selectedBranchIds: ['all'],
+      isAllBranchesSelected: true,
+      tenantEpoch: 0,
+      toggleBranchSelection: () => {},
+      selectAllBranches: () => {},
+      getAuthHeaders: () => ({}),
       switchOrganization: () => {},
       switchBranch: () => {},
       switchActiveUser: () => {},

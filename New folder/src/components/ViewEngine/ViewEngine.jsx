@@ -35,16 +35,28 @@ export function ViewEngine({
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
   const [notification, setNotification] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const pageSize = 80;
+  const [pageSize, setPageSize] = useState(25);
+
+  // Unsaved changes beforeunload listener
+  useEffect(() => {
+    if (!isDirty) return;
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, activeFilter, currentView]);
+  }, [searchTerm, activeFilter, currentView, pageSize]);
 
-  // Sync records if initialData updates
+  // Sync records if initialData updates or tenant switches
   useEffect(() => {
     setRecords(initialData);
-  }, [initialData]);
+  }, [initialData, tenancy?.tenantEpoch]);
 
   // Sync currentView if initialView or schema default_view updates
   useEffect(() => {
@@ -99,13 +111,13 @@ export function ViewEngine({
   // Delete single record
   const handleDeleteRecord = (id) => {
     setRecords((prev) => prev.filter((r) => r.id !== id));
-    if (tenancy?.deleteAttendanceRecord) {
+    if (schema?.model !== 'shift_rosters' && tenancy?.deleteAttendanceRecord) {
       tenancy.deleteAttendanceRecord(id);
     }
     if (onRecordDeleted) {
       onRecordDeleted(id);
     }
-    showNotification('Attendance record removed', 'warning');
+    showNotification('Record removed', 'warning');
     if (activeRecordId === id) {
       setCurrentView('list');
     }
@@ -123,6 +135,8 @@ export function ViewEngine({
         const dept = (r.department || '').toLowerCase();
         const term = (r.terminal_id || '').toLowerCase();
         const code = (r.code || '').toLowerCase();
+        const shift = (r.shift_name || '').toLowerCase();
+        const loc = (r.location || '').toLowerCase();
         const status = (r.status || '').toLowerCase();
         const statusLabel =
           status === 'synced' ? 'synced to payroll synced' :
@@ -135,7 +149,9 @@ export function ViewEngine({
           status.includes(q) ||
           statusLabel.includes(q) ||
           dept.includes(q) ||
-          code.includes(q)
+          code.includes(q) ||
+          shift.includes(q) ||
+          loc.includes(q)
         );
       });
     }
@@ -190,8 +206,40 @@ export function ViewEngine({
       setPreviousView(currentView);
     }
 
-    // Correctly parse sequence counter to prevent ATT-2026-NaN
+    const isRoster = schema?.model === 'shift_rosters' || schema?.title?.toLowerCase().includes('roster');
     const currentYear = new Date().getFullYear();
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    if (isRoster) {
+      const endDefault = new Date(now.getTime() + 8 * 3600 * 1000).toISOString();
+      const newRecord = {
+        id: `temp-${Date.now()}`,
+        code: `ROS-${currentYear}-DRAFT`,
+        isNew: true,
+        employee_id: null,
+        employeeId: null,
+        employee_name: '',
+        employeeName: '',
+        department: 'Operations',
+        shift_name: 'Morning Shift (08:00 - 16:00)',
+        start_time: nowIso,
+        end_time: endDefault,
+        check_in: nowIso,
+        check_out: endDefault,
+        duration_hours: 8.0,
+        location: 'Doha Head Office',
+        status: 'scheduled',
+        notes: '',
+      };
+      setActiveRecordId(newRecord.id);
+      setDraftRecord({ ...newRecord });
+      setIsDirty(false);
+      setCurrentView('form');
+      return;
+    }
+
+    // Correctly parse sequence counter to prevent ATT-2026-NaN
     let maxSeq = 0;
     records.forEach((r) => {
       if (r.code && typeof r.code === 'string') {
@@ -215,8 +263,6 @@ export function ViewEngine({
     const nextSeq = (maxSeq > 0 ? maxSeq : records.length) + 1;
     const formattedCode = `ATT-${currentYear}-${String(nextSeq).padStart(4, '0')}`;
     const newId = nextSeq;
-    const now = new Date();
-    const nowIso = now.toISOString();
 
     const newRecord = {
       id: newId,
@@ -252,7 +298,7 @@ export function ViewEngine({
     let updatedRecords;
     if (exists) {
       updatedRecords = records.map((r) => (r.id === draftRecord.id ? draftRecord : r));
-      if (tenancy?.updateAttendanceRecord) {
+      if (schema?.model !== 'shift_rosters' && tenancy?.updateAttendanceRecord) {
         tenancy.updateAttendanceRecord(draftRecord.id, draftRecord);
       }
       if (onRecordUpdated) {
@@ -260,7 +306,7 @@ export function ViewEngine({
       }
     } else {
       updatedRecords = [draftRecord, ...records];
-      if (tenancy?.addAttendanceRecord) {
+      if (schema?.model !== 'shift_rosters' && tenancy?.addAttendanceRecord) {
         tenancy.addAttendanceRecord(draftRecord);
       }
       if (onRecordCreated) {
@@ -270,6 +316,88 @@ export function ViewEngine({
     setRecords(updatedRecords);
     setIsDirty(false);
     showNotification('Changes saved successfully');
+  };
+
+  // Form actions (SOX 404 dual-control submit, approve, reject)
+  const handleFormAction = async (actName, rec) => {
+    const token = typeof window !== 'undefined'
+      ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
+      : null;
+    const headers = token
+      ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      : { 'Content-Type': 'application/json' };
+
+    if (actName === 'submit' || actName === 'btn_submit') {
+      try {
+        const res = await fetch(`/api/v1/attendance/${rec.id}/submit`, {
+          method: 'POST',
+          headers,
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+          setDraftRecord(updated);
+          showNotification('Record submitted for dual-control checker approval.');
+          return;
+        } else {
+          const err = await res.json().catch(() => ({}));
+          showNotification(err.detail || 'Failed to submit record for approval', 'warning');
+        }
+      } catch (e) {
+        console.warn('Fallback local transition for submit:', e);
+      }
+    } else if (actName === 'approve' || actName === 'btn_verify') {
+      try {
+        const res = await fetch(`/api/v1/attendance/${rec.id}/approve`, {
+          method: 'POST',
+          headers,
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+          setDraftRecord(updated);
+          showNotification('Record approved by independent checker.');
+          return;
+        } else {
+          const err = await res.json().catch(() => ({}));
+          const errMsg = err.detail || 'Approval rejected by dual-control policy.';
+          showNotification(errMsg, 'warning');
+          return;
+        }
+      } catch (e) {
+        console.warn('Fallback local transition for approve:', e);
+      }
+    } else if (actName === 'reject' || actName === 'btn_reject') {
+      try {
+        const res = await fetch(`/api/v1/attendance/${rec.id}/reject`, {
+          method: 'POST',
+          headers,
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+          setDraftRecord(updated);
+          showNotification('Record rejected in dual-control review.', 'warning');
+          return;
+        } else {
+          const err = await res.json().catch(() => ({}));
+          showNotification(err.detail || 'Failed to reject record', 'warning');
+        }
+      } catch (e) {
+        console.warn('Fallback local transition for reject:', e);
+      }
+    }
+
+    // Default state update for other transitions (e.g. sync, reset)
+    setRecords((prev) => prev.map((r) => (r.id === rec.id ? rec : r)));
+    setDraftRecord(rec);
+    if (tenancy?.updateAttendanceRecord) {
+      tenancy.updateAttendanceRecord(rec.id, rec);
+    }
+    if (onRecordUpdated) {
+      onRecordUpdated(rec);
+    }
+    showNotification(`Status updated: ${rec.status}`);
   };
 
   // Discard changes and return smoothly to previously active view
@@ -330,6 +458,9 @@ export function ViewEngine({
         {
           label: `← ${parentTitle}`,
           onClick: () => {
+            if (isDirty && !window.confirm('You have unsaved changes. Discard and return to list?')) {
+              return;
+            }
             setIsDirty(false);
             setDraftRecord(null);
             setCurrentView(returnTargetView);
@@ -364,10 +495,21 @@ export function ViewEngine({
   const pager = useMemo(() => {
     if (currentView !== 'form') {
       const total = filteredRecords.length;
+      const totalPages = Math.ceil(total / pageSize) || 1;
       const start = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
       const end = Math.min(currentPage * pageSize, total);
       return {
         label: `${start}-${end} / ${total}`,
+        page: currentPage,
+        totalPages,
+        total,
+        pageSize,
+        start,
+        end,
+        onPageSizeChange: (newSize) => {
+          setPageSize(Number(newSize));
+          setCurrentPage(1);
+        },
         canPrev: currentPage > 1,
         canNext: currentPage * pageSize < total,
         onPrev: () => setCurrentPage((p) => Math.max(1, p - 1)),
@@ -431,6 +573,9 @@ export function ViewEngine({
         schema={schema}
         currentView={currentView}
         onViewChange={(v) => {
+          if (isDirty && !window.confirm('You have unsaved changes. Discard and switch view?')) {
+            return;
+          }
           if (currentView !== 'form') {
             setPreviousView(currentView);
           }
@@ -456,6 +601,15 @@ export function ViewEngine({
         onSearchChange={setSearchTerm}
         activeFilter={activeFilter}
         onSelectFilter={setActiveFilter}
+        pageSize={pageSize}
+        onPageSizeChange={(newSize) => {
+          setPageSize(Number(newSize));
+          setCurrentPage(1);
+        }}
+        total={filteredRecords.length}
+        page={currentPage}
+        totalPages={Math.ceil(filteredRecords.length / pageSize) || 1}
+        onPageChange={setCurrentPage}
       />
 
       {/* Main Dynamic Viewport */}
@@ -483,12 +637,14 @@ export function ViewEngine({
               setDraftRecord(updated);
               setIsDirty(true);
             }}
-            onFormAction={(actName, rec) => {
-              setRecords((prev) =>
-                prev.map((r) => (r.id === rec.id ? rec : r))
-              );
-              showNotification(`Status updated: ${rec.status}`);
+            onFormAction={handleFormAction}
+            onBack={() => {
+              setIsDirty(false);
+              setDraftRecord(null);
+              setCurrentView(previousView || 'list');
             }}
+            onDirtyChange={setIsDirty}
+            isDirty={isDirty}
           />
         )}
 

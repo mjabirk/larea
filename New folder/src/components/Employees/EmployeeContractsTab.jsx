@@ -226,7 +226,61 @@ export function EmployeeContractsTab({
     };
   }, [activeContract]);
 
-  // Activate contract
+  const currentUserId = auth?.user?.id;
+  const isMakerOrSubmitter = Boolean(
+    currentUserId && activeContract && (
+      String(activeContract.created_by) === String(currentUserId) ||
+      String(activeContract.submitted_by) === String(currentUserId)
+    )
+  );
+
+  // Submit contract for dual-control checker approval
+  const handleSubmitContract = async (contractId) => {
+    setIsSaving(true);
+    try {
+      const res = await fetch(`/api/v1/contracts/${contractId}/submit`, {
+        method: 'POST',
+        headers: getHeaders(false),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        showFeedback(`Contract ${updated.contract_reference} submitted for dual-control approval.`);
+        await fetchData();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showFeedback(err.detail || 'Failed to submit contract for approval', 'error');
+      }
+    } catch (e) {
+      showFeedback('Network error submitting contract', 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Reject contract
+  const handleRejectContract = async (contractId) => {
+    setIsSaving(true);
+    try {
+      const res = await fetch(`/api/v1/contracts/${contractId}/reject`, {
+        method: 'POST',
+        headers: getHeaders(false),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        showFeedback(`Contract ${updated.contract_reference} rejected.`, 'info');
+        await fetchData();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showFeedback(err.detail || 'Failed to reject contract', 'error');
+      }
+    } catch (e) {
+      showFeedback('Network error rejecting contract', 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Activate contract (Checker dual control)
   const handleActivateContract = async (contractId) => {
     setIsSaving(true);
     try {
@@ -499,12 +553,14 @@ export function EmployeeContractsTab({
                       className={`text-[11px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
                         activeContract.status === 'active'
                           ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
-                          : activeContract.status === 'draft'
-                          ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20'
-                          : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                          : activeContract.status === 'pending_approval'
+                          ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
+                          : activeContract.status === 'rejected'
+                          ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20'
+                          : 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20'
                       }`}
                     >
-                      {activeContract.status}
+                      {activeContract.status === 'pending_approval' ? 'Pending Approval' : activeContract.status}
                     </span>
                     {employeeGrade.name && (
                       <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
@@ -516,17 +572,65 @@ export function EmployeeContractsTab({
               </div>
 
               {canManageContracts && activeContract.status !== 'active' && (
-                <button
-                  type="button"
-                  onClick={() => handleActivateContract(activeContract.id)}
-                  disabled={isSaving}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
-                >
-                  <FileCheck2 className="w-4 h-4" />
-                  <span>Activate Contract</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  {/* Draft Status: Submit for Dual-Control Review */}
+                  {activeContract.status === 'draft' && (
+                    <button
+                      type="button"
+                      onClick={() => handleSubmitContract(activeContract.id)}
+                      disabled={isSaving}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Submit for Approval</span>
+                    </button>
+                  )}
+
+                  {/* Pending Approval Status: Reject Button */}
+                  {activeContract.status === 'pending_approval' && !isMakerOrSubmitter && (
+                    <button
+                      type="button"
+                      onClick={() => handleRejectContract(activeContract.id)}
+                      disabled={isSaving}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Reject</span>
+                    </button>
+                  )}
+
+                  {/* Activate / Approve Button */}
+                  <button
+                    type="button"
+                    onClick={() => handleActivateContract(activeContract.id)}
+                    disabled={isSaving || (activeContract.status === 'pending_approval' && isMakerOrSubmitter)}
+                    title={
+                      activeContract.status === 'pending_approval' && isMakerOrSubmitter
+                        ? 'SOX 404 Dual-Control: Independent checker required (cannot approve own submission)'
+                        : 'Approve and activate contract'
+                    }
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-white text-xs font-semibold shadow-xs transition ${
+                      activeContract.status === 'pending_approval' && isMakerOrSubmitter
+                        ? 'bg-slate-400 dark:bg-slate-700 text-slate-200 cursor-not-allowed opacity-60'
+                        : 'bg-emerald-600 hover:bg-emerald-700 cursor-pointer'
+                    }`}
+                  >
+                    <FileCheck2 className="w-4 h-4" />
+                    <span>{activeContract.status === 'pending_approval' ? 'Approve & Activate' : 'Activate Contract'}</span>
+                  </button>
+                </div>
               )}
             </div>
+
+            {/* SOX 404 Maker-Checker Advisory Banner if user is creator/submitter */}
+            {activeContract.status === 'pending_approval' && isMakerOrSubmitter && (
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-xs flex items-center gap-2.5">
+                <ShieldCheck className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                <span>
+                  <strong>SOX 404 Dual Control:</strong> You are the author/submitter of this contract. To enforce Segregation of Duties, approval must be completed by an independent checker.
+                </span>
+              </div>
+            )}
 
             {/* Contract Key Parameters Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
@@ -577,6 +681,34 @@ export function EmployeeContractsTab({
                 Notes: {activeContract.terms_notes}
               </p>
             )}
+
+            {/* SOX 404 Audit & Dual Control Meta Bar */}
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+              <div>
+                <span className="text-slate-400 block font-medium">Created By (Maker)</span>
+                <span className="font-mono text-slate-700 dark:text-slate-300 font-semibold">
+                  {activeContract.created_by ? `User #${String(activeContract.created_by).slice(0, 8)}` : 'System Staff'}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-400 block font-medium">Submitted By</span>
+                <span className="font-mono text-slate-700 dark:text-slate-300 font-semibold">
+                  {activeContract.submitted_by ? `User #${String(activeContract.submitted_by).slice(0, 8)}` : (activeContract.status !== 'draft' ? 'Direct Submission' : '—')}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-400 block font-medium">Approved By (Checker)</span>
+                <span className="font-mono text-slate-700 dark:text-slate-300 font-semibold">
+                  {activeContract.approved_by ? `User #${String(activeContract.approved_by).slice(0, 8)}` : (activeContract.status === 'active' ? 'Approved' : 'Pending Review')}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-400 block font-medium">Approved At</span>
+                <span className="font-mono text-slate-700 dark:text-slate-300 font-semibold">
+                  {activeContract.approved_at ? String(activeContract.approved_at).slice(0, 10) : '—'}
+                </span>
+              </div>
+            </div>
           </div>
 
           {/* 2. COMPENSATION BREAKDOWN */}

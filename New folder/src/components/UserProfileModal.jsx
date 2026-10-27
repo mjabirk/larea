@@ -25,6 +25,7 @@ import { useAuth } from '../context/AuthContext';
 import { useLocale } from '../context/LocaleContext';
 import { useTheme, ACCENT_PRESETS, FONT_SCALE_PRESETS } from '../context/ThemeContext';
 import { DataDeletionManager } from './legal/DataDeletionManager';
+import { useModalEscape } from '../hooks/useModalEscape';
 
 export function UserProfileModal({ isOpen, onClose }) {
   const { currentUser, currentOrganization, currentBranch, userMemberships, resetToSetup } = useTenancy();
@@ -71,8 +72,13 @@ export function UserProfileModal({ isOpen, onClose }) {
   const [is2FAEnabled, setIs2FAEnabled] = useState(false);
   const [twoFAEnrollment, setTwoFAEnrollment] = useState(null);
   const [is2FALoading, setIs2FALoading] = useState(false);
+  const [twoFACode, setTwoFACode] = useState('');
+  const [twoFAError, setTwoFAError] = useState('');
+  const [twoFASuccessMsg, setTwoFASuccessMsg] = useState('');
+  const [isConfirming2FA, setIsConfirming2FA] = useState(false);
 
   const modalRef = useRef(null);
+  useModalEscape(onClose, isOpen, modalRef);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -85,6 +91,9 @@ export function UserProfileModal({ isOpen, onClose }) {
     );
     setIs2FAEnabled(Boolean(activeUser?.is_2fa_enabled));
     setTwoFAEnrollment(null);
+    setTwoFACode('');
+    setTwoFAError('');
+    setTwoFASuccessMsg('');
 
     if (activeUser?.idle_timeout_minutes) {
       setLocalIdleTimeout(String(activeUser.idle_timeout_minutes));
@@ -141,6 +150,9 @@ export function UserProfileModal({ isOpen, onClose }) {
 
   const handleEnroll2FA = async () => {
     setIs2FALoading(true);
+    setTwoFAError('');
+    setTwoFASuccessMsg('');
+    setTwoFACode('');
     try {
       const res = await fetch('/api/v1/auth/2fa/setup', {
         method: 'POST',
@@ -149,30 +161,92 @@ export function UserProfileModal({ isOpen, onClose }) {
       if (res.ok) {
         const data = await res.json();
         setTwoFAEnrollment(data);
-        setIs2FAEnabled(true);
-        if (refreshCurrentUser) await refreshCurrentUser();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setTwoFAError(err.detail || 'Failed to initialize 2FA setup.');
       }
     } catch (e) {
       console.error('Failed to setup 2FA:', e);
+      setTwoFAError('Network error while starting 2FA setup.');
     } finally {
       setIs2FALoading(false);
     }
   };
 
-  const handleDisable2FA = async () => {
-    setIs2FALoading(true);
+  const handleConfirm2FA = async (e) => {
+    if (e) e.preventDefault();
+    const cleanCode = twoFACode.trim();
+    if (!cleanCode || cleanCode.length !== 6) {
+      setTwoFAError('Please enter a valid 6-digit verification code from your authenticator app.');
+      return;
+    }
+    setIsConfirming2FA(true);
+    setTwoFAError('');
+    setTwoFASuccessMsg('');
     try {
+      const headers = getAuthHeaders ? getAuthHeaders() : {};
+      const res = await fetch('/api/v1/auth/2fa/confirm-setup', {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ totp_code: cleanCode }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setIs2FAEnabled(true);
+        setTwoFAEnrollment(null);
+        setTwoFACode('');
+        setTwoFASuccessMsg('Two-Factor Authentication is now verified and active.');
+        if (refreshCurrentUser) await refreshCurrentUser();
+      } else {
+        setTwoFAError(data.detail || 'Invalid verification code. Please try again.');
+      }
+    } catch (e) {
+      console.error('Failed to confirm 2FA setup:', e);
+      setTwoFAError('Network error while verifying 2FA code.');
+    } finally {
+      setIsConfirming2FA(false);
+    }
+  };
+
+  const handleDisable2FA = async () => {
+    const input = window.prompt(
+      'To disable 2FA, enter your 6-digit authenticator code or current account password:'
+    );
+    if (!input || !input.trim()) return;
+
+    setIs2FALoading(true);
+    setTwoFAError('');
+    setTwoFASuccessMsg('');
+    try {
+      const cleanInput = input.trim();
+      const payload = /^\d{6}$/.test(cleanInput)
+        ? { totp_code: cleanInput }
+        : { password: cleanInput };
+
+      const headers = getAuthHeaders ? getAuthHeaders() : {};
       const res = await fetch('/api/v1/auth/2fa/disable', {
         method: 'POST',
-        headers: getAuthHeaders ? getAuthHeaders() : {},
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setTwoFAEnrollment(null);
         setIs2FAEnabled(false);
+        setTwoFASuccessMsg('Two-Factor Authentication has been disabled.');
         if (refreshCurrentUser) await refreshCurrentUser();
+      } else {
+        setTwoFAError(data.detail || 'Verification failed. Could not disable 2FA.');
       }
     } catch (e) {
       console.error('Failed to disable 2FA:', e);
+      setTwoFAError('Network error while disabling 2FA.');
     } finally {
       setIs2FALoading(false);
     }
@@ -285,7 +359,7 @@ export function UserProfileModal({ isOpen, onClose }) {
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
             aria-label="Close Profile Modal"
           >
             <X className="w-4 h-4" />
@@ -297,7 +371,7 @@ export function UserProfileModal({ isOpen, onClose }) {
           <button
             type="button"
             onClick={() => setActiveTab('appearance')}
-            className={`pb-2.5 border-b-2 transition cursor-pointer flex items-center gap-1.5 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+            className={`pb-2.5 border-b-2 transition cursor-pointer flex items-center gap-1.5 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
               activeTab === 'appearance'
                 ? 'border-blue-600 text-blue-600 dark:text-blue-400 font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-900 dark:hover:text-white'
@@ -310,7 +384,7 @@ export function UserProfileModal({ isOpen, onClose }) {
           <button
             type="button"
             onClick={() => setActiveTab('localization')}
-            className={`pb-2.5 border-b-2 transition cursor-pointer flex items-center gap-1.5 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+            className={`pb-2.5 border-b-2 transition cursor-pointer flex items-center gap-1.5 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
               activeTab === 'localization'
                 ? 'border-blue-600 text-blue-600 dark:text-blue-400 font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-900 dark:hover:text-white'
@@ -323,7 +397,7 @@ export function UserProfileModal({ isOpen, onClose }) {
           <button
             type="button"
             onClick={() => setActiveTab('security')}
-            className={`pb-2.5 border-b-2 transition cursor-pointer flex items-center gap-1.5 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+            className={`pb-2.5 border-b-2 transition cursor-pointer flex items-center gap-1.5 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
               activeTab === 'security'
                 ? 'border-blue-600 text-blue-600 dark:text-blue-400 font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-900 dark:hover:text-white'
@@ -336,7 +410,7 @@ export function UserProfileModal({ isOpen, onClose }) {
           <button
             type="button"
             onClick={() => setActiveTab('privacy')}
-            className={`pb-2.5 border-b-2 transition cursor-pointer flex items-center gap-1.5 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+            className={`pb-2.5 border-b-2 transition cursor-pointer flex items-center gap-1.5 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
               activeTab === 'privacy'
                 ? 'border-blue-600 text-blue-600 dark:text-blue-400 font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-900 dark:hover:text-white'
@@ -605,20 +679,20 @@ export function UserProfileModal({ isOpen, onClose }) {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 font-bold text-slate-900 dark:text-white">
                     <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                    <span>Windows Single Sign-On (Entra ID / Kerberos / AD)</span>
+                    <span>{t('windows_sso_settings')}</span>
                   </div>
                   <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 font-mono text-[10px] font-semibold">
                     {activeUser?.auth_provider || 'local'}
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                  Link your corporate Windows User Principal Name (UPN) or Active Directory account so you can sign in with a single click from your Windows workstation browser.
+                  {t('windows_sso_desc')}
                 </p>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                   <div>
                     <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 block mb-1">
-                      Windows UPN / Entra ID Email
+                      {t('windows_upn')}
                     </label>
                     <input
                       type="text"
@@ -630,7 +704,7 @@ export function UserProfileModal({ isOpen, onClose }) {
                   </div>
                   <div>
                     <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 block mb-1">
-                      AD Domain Account (sAMAccountName)
+                      {t('ad_sam_account')}
                     </label>
                     <input
                       type="text"
@@ -651,10 +725,10 @@ export function UserProfileModal({ isOpen, onClose }) {
                   />
                   <div>
                     <span className="font-semibold text-slate-800 dark:text-slate-200 block">
-                      Enable Automatic Windows Sign-In on Launch
+                      {t('auto_sso_launch')}
                     </span>
                     <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
-                      Automatically authenticate via Integrated Windows Authentication (SPNEGO/Kerberos) when opening the ERP. Signing out manually pauses auto-login until your next sign-in.
+                      {t('auto_sso_launch_desc')}
                     </span>
                   </div>
                 </label>
@@ -666,10 +740,10 @@ export function UserProfileModal({ isOpen, onClose }) {
                   <div>
                     <div className="flex items-center gap-2 font-bold text-slate-900 dark:text-white">
                       <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                      <span>Multi-Factor Authentication (TOTP 2FA)</span>
+                      <span>{t('two_factor_auth')}</span>
                     </div>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                      Protect your account with Microsoft Authenticator, Google Authenticator, or any RFC-6238 TOTP app.
+                      {t('two_factor_desc')}
                     </p>
                   </div>
                   <span
@@ -679,27 +753,83 @@ export function UserProfileModal({ isOpen, onClose }) {
                         : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
                     }`}
                   >
-                    {is2FAEnabled ? 'Enabled' : 'Not Enrolled'}
+                    {is2FAEnabled ? t('status_enabled') || 'Enabled' : t('status_disabled') || 'Not Enrolled'}
                   </span>
                 </div>
 
+                {twoFASuccessMsg && (
+                  <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-[11px] flex items-center gap-2">
+                    <Check className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <span>{twoFASuccessMsg}</span>
+                  </div>
+                )}
+
+                {twoFAError && (
+                  <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-700 dark:text-rose-300 text-[11px] flex items-center gap-2">
+                    <ShieldAlert className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                    <span>{twoFAError}</span>
+                  </div>
+                )}
+
                 {twoFAEnrollment?.qr_code_base64 && (
-                  <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-emerald-500/30 flex flex-col sm:flex-row items-center gap-4">
-                    <img
-                      src={twoFAEnrollment.qr_code_base64}
-                      alt="TOTP QR Code"
-                      className="w-28 h-28 rounded-lg border border-slate-200 dark:border-slate-700 p-1 bg-white shrink-0"
-                    />
-                    <div className="space-y-1.5 text-[11px]">
-                      <div className="font-bold text-emerald-600 dark:text-emerald-400">
-                        Scan with Microsoft or Google Authenticator
+                  <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-blue-500/30 space-y-3.5">
+                    <div className="flex flex-col sm:flex-row items-center gap-4">
+                      <img
+                        src={twoFAEnrollment.qr_code_base64}
+                        alt="TOTP QR Code"
+                        className="w-28 h-28 rounded-lg border border-slate-200 dark:border-slate-700 p-1 bg-white shrink-0"
+                      />
+                      <div className="space-y-1.5 text-[11px] text-start">
+                        <div className="font-bold text-blue-600 dark:text-blue-400">
+                          {t('two_factor_step1')}
+                        </div>
+                        <p className="text-slate-500 dark:text-slate-400">
+                          {t('two_factor_step1_desc')}
+                        </p>
+                        <code className="block px-2.5 py-1 rounded bg-slate-100 dark:bg-slate-800 font-mono text-xs text-slate-800 dark:text-slate-200 select-all font-semibold">
+                          {twoFAEnrollment.secret}
+                        </code>
                       </div>
-                      <p className="text-slate-500 dark:text-slate-400">
-                        Scan this QR code in your authenticator app, or enter the secret key manually:
+                    </div>
+
+                    <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                      <div className="font-bold text-slate-900 dark:text-white text-xs">
+                        {t('two_factor_step2')}
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {t('two_factor_step2_desc')}
                       </p>
-                      <code className="block px-2.5 py-1 rounded bg-slate-100 dark:bg-slate-800 font-mono text-xs text-slate-800 dark:text-slate-200 select-all">
-                        {twoFAEnrollment.secret}
-                      </code>
+                      <form onSubmit={handleConfirm2FA} className="flex flex-col sm:flex-row items-center gap-2 pt-1">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          maxLength={6}
+                          placeholder="123456"
+                          value={twoFACode}
+                          onChange={(e) => setTwoFACode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                          className="w-full sm:w-44 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-center font-mono text-sm tracking-widest font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                        />
+                        <button
+                          type="submit"
+                          disabled={isConfirming2FA || twoFACode.length !== 6}
+                          className="w-full sm:w-auto px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold text-xs cursor-pointer transition flex items-center justify-center gap-1.5"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>{isConfirming2FA ? t('verifying') : t('verify_and_activate')}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTwoFAEnrollment(null);
+                            setTwoFACode('');
+                            setTwoFAError('');
+                          }}
+                          className="w-full sm:w-auto px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold text-xs cursor-pointer transition"
+                        >
+                          {t('cancel')}
+                        </button>
+                      </form>
                     </div>
                   </div>
                 )}
@@ -708,21 +838,23 @@ export function UserProfileModal({ isOpen, onClose }) {
                   {is2FAEnabled && (
                     <button
                       type="button"
-                      disabled={is2FALoading}
+                      disabled={is2FALoading || isConfirming2FA}
                       onClick={handleDisable2FA}
                       className="px-3 py-1.5 rounded-lg border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-semibold text-xs cursor-pointer transition"
                     >
-                      Disable 2FA
+                      {t('disable_2fa')}
                     </button>
                   )}
-                  <button
-                    type="button"
-                    disabled={is2FALoading}
-                    onClick={handleEnroll2FA}
-                    className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs cursor-pointer transition"
-                  >
-                    {is2FAEnabled ? 'Rotate 2FA Secret / Show QR' : 'Enable Authenticator 2FA'}
-                  </button>
+                  {!twoFAEnrollment && (
+                    <button
+                      type="button"
+                      disabled={is2FALoading || isConfirming2FA}
+                      onClick={handleEnroll2FA}
+                      className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs cursor-pointer transition"
+                    >
+                      {is2FAEnabled ? t('rotate_2fa') : t('enable_2fa')}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

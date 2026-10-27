@@ -23,9 +23,11 @@ import {
   Sparkles,
   Briefcase,
   X,
+  ShieldAlert,
 } from 'lucide-react';
 import { useLocale } from '../../context/LocaleContext';
 import { useTenancy } from '../../context/TenancyContext';
+import { useAuth } from '../../context/AuthContext';
 import { formatToLocalDatetimeInputValue, formatDateTime } from './Widgets';
 
 export function FormView({
@@ -33,15 +35,63 @@ export function FormView({
   record,
   onChangeRecord,
   onFormAction,
+  onBack,
+  onDirtyChange,
+  isDirty: externalIsDirty,
 }) {
   const { t } = useLocale();
   const { currentUser } = useTenancy();
+  const auth = useAuth();
+  const sessionUser = auth?.user || currentUser;
+  const sessionUserId = sessionUser?.id;
+  const sessionUserEmail = sessionUser?.email;
+  const sessionUsername = sessionUser?.username;
+
+  const isMakerOrSubmitter = Boolean(
+    sessionUserId && record && (
+      String(record.created_by) === String(sessionUserId) ||
+      String(record.submitted_by) === String(sessionUserId) ||
+      (sessionUsername && (String(record.created_by) === String(sessionUsername) || String(record.submitted_by) === String(sessionUsername))) ||
+      (sessionUserEmail && (String(record.created_by) === String(sessionUserEmail) || String(record.submitted_by) === String(sessionUserEmail)))
+    )
+  );
 
   const [employees, setEmployees] = useState([]);
   const [isLoadingEmployees, setIsLoadingEmployees] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isComboboxOpen, setIsComboboxOpen] = useState(false);
   const comboboxRef = useRef(null);
+
+  // Form dirty state tracking
+  const [isDirty, setIsDirty] = useState(false);
+
+  useEffect(() => {
+    setIsDirty(false);
+    onDirtyChange?.(false);
+  }, [record?.id]);
+
+  // Unsaved changes beforeunload listener
+  useEffect(() => {
+    const effectiveDirty = isDirty || externalIsDirty;
+    if (!effectiveDirty) return;
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty, externalIsDirty]);
+
+  const handleBack = () => {
+    const effectiveDirty = isDirty || externalIsDirty;
+    if (effectiveDirty && !window.confirm('You have unsaved changes. Discard and return to list?')) {
+      return;
+    }
+    setIsDirty(false);
+    onDirtyChange?.(false);
+    onBack?.();
+  };
 
   useEffect(() => {
     let active = true;
@@ -123,6 +173,8 @@ export function FormView({
   );
 
   const handleSelectEmployee = (emp) => {
+    setIsDirty(true);
+    onDirtyChange?.(true);
     if (!emp) {
       const updated = {
         ...record,
@@ -155,6 +207,8 @@ export function FormView({
   }
 
   const handleFieldChange = (fieldName, value) => {
+    setIsDirty(true);
+    onDirtyChange?.(true);
     const updated = { ...record, [fieldName]: value };
 
     // Auto calculate duration_hours if check_in and check_out are provided
@@ -180,23 +234,48 @@ export function FormView({
     onChangeRecord(updated);
   };
 
-  const handleTransition = (newStatus) => {
+  const handleTransition = (newStatus, actionName = null) => {
+    setIsDirty(true);
+    onDirtyChange?.(true);
+    const act = actionName || `set_status_${newStatus}`;
     handleFieldChange('status', newStatus);
-    onFormAction && onFormAction(`set_status_${newStatus}`, { ...record, status: newStatus });
+    onFormAction && onFormAction(act, { ...record, status: newStatus });
   };
 
-  // Workflow stages definition
-  const stages = [
-    { id: 'draft', label: t('draft'), desc: 'Created via terminal ingestion' },
-    { id: 'verified', label: t('verified'), desc: 'Reviewed by HR supervisor' },
-    { id: 'synced', label: t('synced'), desc: 'Locked for payroll calculation' },
-  ];
+  const isRoster = schema?.model === 'shift_rosters' || Boolean(record.shift_name);
 
-  const currentStatus = record.status || 'draft';
+  // Workflow stages definition (SOX 404 dual-control compliance or Shift Lifecycle)
+  const stages = isRoster
+    ? [
+        { id: 'scheduled', label: 'Scheduled', desc: 'Shift planned and assigned to workforce' },
+        { id: 'in_progress', label: 'In Progress', desc: 'Shift currently active/underway' },
+        { id: 'completed', label: 'Completed', desc: 'Shift concluded and recorded' },
+        { id: 'cancelled', label: 'Cancelled', desc: 'Shift assignment cancelled' },
+      ]
+    : [
+        { id: 'draft', label: t('draft') || 'Draft', desc: 'Created by maker (pending submission)' },
+        { id: 'pending_approval', label: 'Pending Approval', desc: 'Awaiting independent dual-control review' },
+        { id: 'verified', label: t('verified') || 'Verified / Approved', desc: 'Reviewed & verified by independent checker' },
+        { id: 'synced', label: t('synced') || 'Synced to Payroll', desc: 'Locked for payroll calculation' },
+      ];
+
+  const currentStatus = record.status || record.approval_status || (isRoster ? 'scheduled' : 'draft');
   const currentStageIndex = stages.findIndex((s) => s.id === currentStatus);
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-16 animate-fadeIn">
+      {onBack && (
+        <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800">
+          <button
+            type="button"
+            onClick={handleBack}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-700 transition cursor-pointer"
+          >
+            <span>← Back to list</span>
+          </button>
+        </div>
+      )}
+
       {/* ASYMMETRIC TWO-PANEL LAYOUT (Main 70% / Sidebar 30%) */}
       <div className="grid grid-cols-1 lg:grid-cols-10 gap-6 items-start">
         {/* ========================================================================= */}
@@ -320,20 +399,54 @@ export function FormView({
                 )}
               </div>
 
-              {/* Biometric Device ID / Terminal */}
-              <div className="space-y-1.5 md:col-span-2">
-                <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                  <Terminal className="w-3.5 h-3.5 text-slate-400" />
-                  <span>{t('terminal_id')}</span>
-                </label>
-                <input
-                  type="text"
-                  value={record.terminal_id || ''}
-                  onChange={(e) => handleFieldChange('terminal_id', e.target.value)}
-                  placeholder="Terminal #01 (Main Lobby Gate)"
-                  className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
-                />
-              </div>
+              {/* Terminal or Shift Template & Location */}
+              {!isRoster ? (
+                <div className="space-y-1.5 md:col-span-2">
+                  <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                    <Terminal className="w-3.5 h-3.5 text-slate-400" />
+                    <span>{t('terminal_id')}</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={record.terminal_id || ''}
+                    onChange={(e) => handleFieldChange('terminal_id', e.target.value)}
+                    placeholder="Terminal #01 (Main Lobby Gate)"
+                    className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-1.5">
+                    <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                      <Briefcase className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Shift Template</span>
+                    </label>
+                    <select
+                      value={record.shift_name || 'Morning Shift (08:00 - 16:00)'}
+                      onChange={(e) => handleFieldChange('shift_name', e.target.value)}
+                      className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition cursor-pointer"
+                    >
+                      <option value="Morning Shift (08:00 - 16:00)">Morning Shift (08:00 - 16:00)</option>
+                      <option value="Evening Shift (16:00 - 00:00)">Evening Shift (16:00 - 00:00)</option>
+                      <option value="Night Shift (00:00 - 08:00)">Night Shift (00:00 - 08:00)</option>
+                      <option value="Flexible Core Hours (09:00 - 17:00)">Flexible Core Hours (09:00 - 17:00)</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                      <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Facility / Location</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={record.location || 'Doha Head Office'}
+                      onChange={(e) => handleFieldChange('location', e.target.value)}
+                      placeholder="e.g. Doha Head Office, Al Khor Facility"
+                      className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
+                    />
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -345,7 +458,7 @@ export function FormView({
                   <Clock className="w-4 h-4" />
                 </div>
                 <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 tracking-tight">
-                  {t('shift_timings')}
+                  {isRoster ? 'Shift Schedule & Duration' : t('shift_timings')}
                 </h3>
               </div>
 
@@ -357,51 +470,61 @@ export function FormView({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* Check In Datetime Picker */}
+              {/* Start Time / Check In */}
               <div className="space-y-1.5">
                 <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center justify-between">
-                  <span>{t('check_in')} <span className="text-rose-500">*</span></span>
+                  <span>{isRoster ? 'Shift Start Time' : t('check_in')} <span className="text-rose-500">*</span></span>
                   <span className="text-[11px] text-slate-400 font-normal">{t('required')}</span>
                 </label>
                 <input
                   type="datetime-local"
-                  value={formatToLocalDatetimeInputValue(record.check_in)}
+                  value={formatToLocalDatetimeInputValue(record.start_time || record.check_in)}
                   onChange={(e) => {
                     const val = e.target.value;
                     if (!val) {
+                      handleFieldChange('start_time', null);
                       handleFieldChange('check_in', null);
                       return;
                     }
                     const d = new Date(val);
-                    handleFieldChange(
-                      'check_in',
-                      !isNaN(d.getTime()) ? d.toISOString() : val
-                    );
+                    const iso = !isNaN(d.getTime()) ? d.toISOString() : val;
+                    handleFieldChange('start_time', iso);
+                    handleFieldChange('check_in', iso);
+                    const currentEnd = record.end_time || record.check_out;
+                    if (currentEnd) {
+                      const diffH = Math.max(0, Math.round(((new Date(currentEnd) - new Date(iso)) / 3600000) * 100) / 100);
+                      handleFieldChange('duration_hours', diffH);
+                    }
                   }}
                   className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
                 />
               </div>
 
-              {/* Check Out Datetime Picker */}
+              {/* End Time / Check Out */}
               <div className="space-y-1.5">
                 <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center justify-between">
-                  <span>{t('check_out')}</span>
-                  <span className="text-[11px] text-slate-400 font-normal">{t('optional_shift')}</span>
+                  <span>{isRoster ? 'Shift End Time' : t('check_out')} <span className="text-rose-500">*</span></span>
+                  <span className="text-[11px] text-slate-400 font-normal">{isRoster ? t('required') : t('optional_shift')}</span>
                 </label>
                 <input
                   type="datetime-local"
-                  value={formatToLocalDatetimeInputValue(record.check_out)}
+                  value={formatToLocalDatetimeInputValue(record.end_time || record.check_out)}
                   onChange={(e) => {
                     const val = e.target.value;
                     if (!val) {
+                      handleFieldChange('end_time', null);
                       handleFieldChange('check_out', null);
                       return;
                     }
                     const d = new Date(val);
-                    handleFieldChange(
-                      'check_out',
-                      !isNaN(d.getTime()) ? d.toISOString() : val
-                    );
+                    const iso = !isNaN(d.getTime()) ? d.toISOString() : val;
+                    handleFieldChange('end_time', iso);
+                    handleFieldChange('check_out', iso);
+                    const currentStart = record.start_time || record.check_in;
+                    if (currentStart) {
+                      const diffH = Math.max(0, Math.round(((new Date(iso) - new Date(currentStart)) / 3600000) * 100) / 100);
+                      handleFieldChange('duration_hours', diffH);
+                    }
                   }}
                   className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
                 />
@@ -503,22 +626,89 @@ export function FormView({
             </div>
 
             {/* Contextual Action Trigger Button */}
-            <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
               {currentStatus === 'draft' && (
-                <button
-                  type="button"
-                  onClick={() => handleTransition('verified')}
-                  className="w-full py-2.5 px-4 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>{t('verify_record')}</span>
-                </button>
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => handleTransition('pending_approval', 'submit')}
+                    className="w-full py-2.5 px-4 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
+                  >
+                    <Send className="w-4 h-4 rtl:rotate-180" />
+                    <span>Submit for Approval</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleTransition('verified', 'approve')}
+                    className="w-full py-2 px-3 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 font-medium text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                    <span>Direct Verification (Checker)</span>
+                  </button>
+                </div>
+              )}
+
+              {currentStatus === 'pending_approval' && (
+                <div className="space-y-2.5">
+                  {isMakerOrSubmitter && (
+                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
+                      <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                      <div className="leading-snug">
+                        <strong>SOX 404 Dual-Control:</strong> You authored/submitted this record. Approval must be performed by an independent checker (self-approval prohibited).
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    {!isMakerOrSubmitter && (
+                      <button
+                        type="button"
+                        onClick={() => handleTransition('rejected', 'reject')}
+                        className="py-2.5 px-3 rounded-lg border border-rose-300 dark:border-rose-800/80 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 font-semibold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                        <span>Reject</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      disabled={isMakerOrSubmitter}
+                      onClick={() => handleTransition('verified', 'approve')}
+                      className={`flex-1 py-2.5 px-4 rounded-lg font-semibold text-xs flex items-center justify-center gap-2 transition shadow-xs ${
+                        isMakerOrSubmitter
+                          ? 'bg-slate-300 dark:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-not-allowed opacity-70'
+                          : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>{isMakerOrSubmitter ? 'Self-Approval Prohibited' : 'Approve Record'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {currentStatus === 'rejected' && (
+                <div className="space-y-2">
+                  <div className="w-full py-2 px-3 rounded-lg bg-rose-50 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-800 text-xs font-semibold flex items-center justify-center gap-1.5">
+                    <X className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                    <span>Rejected in Review</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleTransition('draft', 'reset')}
+                    className="w-full py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 text-[11px] font-medium transition cursor-pointer"
+                  >
+                    {t('reopen_draft') || 'Reset to Draft'}
+                  </button>
+                </div>
               )}
 
               {currentStatus === 'verified' && (
                 <button
                   type="button"
-                  onClick={() => handleTransition('synced')}
+                  onClick={() => handleTransition('synced', 'sync')}
                   className="w-full py-2.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
                 >
                   <Send className="w-4 h-4 rtl:rotate-180" />
@@ -534,7 +724,7 @@ export function FormView({
                   </div>
                   <button
                     type="button"
-                    onClick={() => handleTransition('draft')}
+                    onClick={() => handleTransition('draft', 'reset')}
                     className="w-full py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 text-[11px] font-medium transition cursor-pointer"
                   >
                     {t('reopen_draft')}
@@ -582,11 +772,42 @@ export function FormView({
                   </span>
                 </div>
 
-                <div className="flex flex-col gap-0.5 py-1">
-                  <span className="text-slate-400 dark:text-slate-500 font-medium">{t('last_modified_by')}</span>
-                  <span className="text-slate-800 dark:text-slate-200 text-[11px] font-medium">
-                    {record.created_by_name || record.last_modified_by || record.updated_by || currentUser?.full_name || 'System Operator'}
+                <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
+                  <span className="text-slate-400 dark:text-slate-500 font-medium">Created By (Maker)</span>
+                  <span className="font-mono text-slate-800 dark:text-slate-200 text-[11px] font-medium">
+                    {record.created_by_name || (record.created_by ? `User #${String(record.created_by).slice(0, 8)}` : (record.last_modified_by || 'Staff'))}
                   </span>
+                </div>
+
+                <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
+                  <span className="text-slate-400 dark:text-slate-500 font-medium">Submitted By</span>
+                  <span className="font-mono text-slate-800 dark:text-slate-200 text-[11px] font-medium">
+                    {record.submitted_by_name || (record.submitted_by ? `User #${String(record.submitted_by).slice(0, 8)}` : (record.status !== 'draft' ? (record.created_by_name || 'Direct Submit') : 'Pending Submission'))}
+                  </span>
+                </div>
+
+                <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
+                  <span className="text-slate-400 dark:text-slate-500 font-medium">Approved By (Checker)</span>
+                  <span className="font-mono text-slate-800 dark:text-slate-200 text-[11px] font-medium">
+                    {record.approved_by_name || (record.approved_by ? `User #${String(record.approved_by).slice(0, 8)}` : (record.status === 'verified' || record.status === 'synced' ? 'Approved' : 'Pending Review'))}
+                  </span>
+                </div>
+
+                {record.approved_at && (
+                  <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
+                    <span className="text-slate-400 dark:text-slate-500 font-medium">Approved At</span>
+                    <span className="font-mono text-slate-700 dark:text-slate-300 text-[11px]">
+                      {formatDateTime(record.approved_at)}
+                    </span>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-0.5 py-1">
+                  <span className="text-slate-400 dark:text-slate-500 font-medium">SOX 404 Control</span>
+                  <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>Dual-Control Enforced</span>
+                  </div>
                 </div>
               </div>
           </div>

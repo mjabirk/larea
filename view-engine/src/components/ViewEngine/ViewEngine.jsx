@@ -53,10 +53,10 @@ export function ViewEngine({
     setCurrentPage(1);
   }, [searchTerm, activeFilter, currentView, pageSize]);
 
-  // Sync records if initialData updates
+  // Sync records if initialData updates or tenant switches
   useEffect(() => {
     setRecords(initialData);
-  }, [initialData]);
+  }, [initialData, tenancy?.tenantEpoch]);
 
   // Sync currentView if initialView or schema default_view updates
   useEffect(() => {

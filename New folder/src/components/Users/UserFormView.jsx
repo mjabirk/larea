@@ -65,6 +65,25 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
   const [isSaving, setIsSaving] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
+  // Unsaved changes beforeunload listener
+  useEffect(() => {
+    if (!isDirty) return;
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
+
+  const handleBackToList = () => {
+    if (isDirty && !window.confirm('You have unsaved changes. Discard and return to users list?')) {
+      return;
+    }
+    onBackToList?.();
+  };
+
   const getInitialFormData = useCallback((targetUser) => {
     if (!targetUser?.id) {
       return {
@@ -259,6 +278,9 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
   };
 
   const handleDiscard = () => {
+    if (isDirty && !window.confirm('You have unsaved changes. Discard all changes?')) {
+      return;
+    }
     setFormData(getInitialFormData(user));
     setIsDirty(false);
     setValidationError('');
@@ -402,7 +424,7 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
         <div className="flex items-center gap-2 text-xs">
           <button
             type="button"
-            onClick={onBackToList}
+            onClick={handleBackToList}
             className="flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer"
           >
             <ChevronLeft className="w-3.5 h-3.5"/>

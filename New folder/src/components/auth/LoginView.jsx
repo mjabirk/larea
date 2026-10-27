@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTenancy } from '../../context/TenancyContext';
+import { useLocale } from '../../context/LocaleContext';
 
 function WindowsLogoIcon({ className = 'w-4 h-4' }) {
   return (
@@ -27,6 +28,7 @@ function WindowsLogoIcon({ className = 'w-4 h-4' }) {
 }
 
 export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
+  const { t } = useLocale();
   const {
     login,
     verify2FA,
@@ -160,7 +162,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
 
         <div className="flex items-center gap-2 text-xs font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2.5 py-1 rounded-full">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true" />
-          <span>{ssoConfig?.sso_available ? `Windows SSO Active (${ssoModeLabel})` : 'Windows SSO / 2FA Ready'}</span>
+          <span>{ssoConfig?.sso_available ? `${t('windows_sso_active')} (${ssoModeLabel})` : t('windows_sso_ready')}</span>
         </div>
       </header>
 
@@ -171,15 +173,15 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
           <div className="space-y-1.5 text-center">
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-600/20 text-blue-400 border border-blue-500/30 text-xs font-semibold">
               <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Enterprise Single Sign-On</span>
+              <span>{t('enterprise_sso')}</span>
             </div>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
-              {requires2FA ? 'Two-Factor Verification' : 'Sign In to Workspace'}
+              {requires2FA ? t('authenticator_2fa') : t('sign_in_workspace')}
             </h1>
             <p className="text-xs text-slate-400">
               {requires2FA
-                ? 'Enter the 6-digit security code from your authenticator app.'
-                : 'Sign in with your Windows corporate identity or workspace credentials.'}
+                ? t('totp_helper_text')
+                : t('login_subtitle')}
             </p>
           </div>
 
@@ -226,11 +228,11 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                   htmlFor="login-totp-code"
                   className="font-semibold text-slate-200 block text-xs"
                 >
-                  6-Digit Authenticator Code <span className="text-rose-400">*</span>
+                  {t('enter_totp_code')} <span className="text-rose-400">*</span>
                 </label>
                 <div className="relative">
                   <KeyRound
-                    className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                    className="w-4 h-4 text-slate-500 absolute start-3 top-1/2 -translate-y-1/2 pointer-events-none"
                     aria-hidden="true"
                   />
                   <input
@@ -244,7 +246,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                     value={totpCode}
                     onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                     placeholder="000000"
-                    className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl pl-9 pr-3 py-3 text-white placeholder-slate-600 text-base tracking-[0.35em] text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 font-mono transition"
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl ps-9 pe-3 py-3 text-white placeholder-slate-600 text-base tracking-[0.35em] text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 font-mono transition"
                   />
                 </div>
               </div>
@@ -257,11 +259,11 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                 {isLoading ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Verifying Code...</span>
+                    <span>{t('verifying_code')}</span>
                   </>
                 ) : (
                   <>
-                    <span>Verify & Sign In</span>
+                    <span>{t('verify_and_sign_in')}</span>
                     <ArrowRight className="w-4 h-4" aria-hidden="true" />
                   </>
                 )}
@@ -278,7 +280,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                 className="w-full py-2 px-4 rounded-xl bg-slate-800/70 hover:bg-slate-800 text-slate-300 font-medium text-xs flex items-center justify-center gap-1.5 cursor-pointer transition"
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
-                <span>Back to Sign In</span>
+                <span>{t('back_to_sign_in')}</span>
               </button>
             </form>
           ) : (
@@ -294,12 +296,12 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                   {isSsoLoading ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
-                      <span>Connecting to Windows Identity Provider...</span>
+                      <span>{t('connecting_windows_idp')}</span>
                     </>
                   ) : (
                     <>
                       <WindowsLogoIcon className="w-4 h-4 shrink-0" />
-                      <span>Sign in with Windows</span>
+                      <span>{t('sign_in_windows')}</span>
                       <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-900 text-slate-300 border border-slate-700">
                         {ssoModeLabel}
                       </span>
@@ -310,7 +312,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                 <div className="relative flex items-center py-1">
                   <div className="flex-grow border-t border-slate-800" />
                   <span className="flex-shrink mx-3 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
-                    or workspace credentials
+                    {t('or_credentials')}
                   </span>
                   <div className="flex-grow border-t border-slate-800" />
                 </div>
@@ -324,11 +326,11 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                     htmlFor="login-email"
                     className="font-semibold text-slate-200 block text-xs"
                   >
-                    Work Email or Windows Account <span className="text-rose-400">*</span>
+                    {t('work_email_or_windows')} <span className="text-rose-400">*</span>
                   </label>
                   <div className="relative">
                     <Mail
-                      className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                      className="w-4 h-4 text-slate-500 absolute start-3 top-1/2 -translate-y-1/2 pointer-events-none"
                       aria-hidden="true"
                     />
                     <input
@@ -341,7 +343,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="name@enterprise.com or DOMAIN\username"
-                      className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl pl-9 pr-3 py-2.5 text-white placeholder-slate-500 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 font-mono transition"
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl ps-9 pe-3 py-2.5 text-white placeholder-slate-500 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 font-mono transition"
                     />
                   </div>
                 </div>
@@ -353,12 +355,12 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                       htmlFor="login-password"
                       className="font-semibold text-slate-200 block text-xs"
                     >
-                      Account Password <span className="text-rose-400">*</span>
+                      {t('account_password')} <span className="text-rose-400">*</span>
                     </label>
                   </div>
                   <div className="relative">
                     <Lock
-                      className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                      className="w-4 h-4 text-slate-500 absolute start-3 top-1/2 -translate-y-1/2 pointer-events-none"
                       aria-hidden="true"
                     />
                     <input
@@ -369,14 +371,14 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                       required
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Enter your workspace or Windows password"
-                      className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl pl-9 pr-10 py-2.5 text-white placeholder-slate-500 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 font-mono transition"
+                      placeholder={t('password_placeholder')}
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl ps-9 pe-10 py-2.5 text-white placeholder-slate-500 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 font-mono transition"
                     />
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
                       aria-label={showPassword ? 'Hide password' : 'Show password'}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer p-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                      className="absolute end-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer p-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                     >
                       {showPassword ? (
                         <EyeOff className="w-4 h-4" aria-hidden="true" />
@@ -397,7 +399,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                       className="w-4 h-4 rounded border-slate-700 bg-slate-950 text-blue-600 focus:ring-blue-500 cursor-pointer focus-visible:ring-2 focus-visible:ring-blue-500"
                     />
                     <span className="text-slate-300 text-xs font-medium">
-                      Remember me on this trusted terminal
+                      {t('remember_me')}
                     </span>
                   </label>
                 </div>
@@ -411,11 +413,11 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                   {isLoading ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Validating Session...</span>
+                      <span>{t('validating_session')}</span>
                     </>
                   ) : (
                     <>
-                      <span>Sign In to Workspace</span>
+                      <span>{t('sign_in_workspace')}</span>
                       <ArrowRight className="w-4 h-4" aria-hidden="true" />
                     </>
                   )}
@@ -436,7 +438,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                 onClick={() => onOpenPolicy('privacy')}
                 className="hover:text-white hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded px-1"
               >
-                Privacy Policy
+                {t('privacy_policy')}
               </button>
               <span>•</span>
               <button
@@ -444,7 +446,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                 onClick={() => onOpenPolicy('terms')}
                 className="hover:text-white hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded px-1"
               >
-                Terms of Service
+                {t('terms_of_service')}
               </button>
               <span>•</span>
             </>
@@ -455,12 +457,12 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
               onClick={onOpenBusinessModal}
               className="hover:text-white hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded px-1"
             >
-              Business Verification
+              {t('business_verification')}
             </button>
           )}
         </div>
         <div className="text-[10px] text-slate-500">
-          Enterprise Security & Identity Access Management • Zero-Trust Session Controls
+          {t('security_tagline')}
         </div>
       </footer>
     </div>

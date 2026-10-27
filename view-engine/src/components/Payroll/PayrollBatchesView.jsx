@@ -36,6 +36,7 @@ import {
   MessageCircle
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useTenancy } from '../../context/TenancyContext';
 import { useAccessControl } from '../../context/AccessControlContext';
 import { SendEmailModal } from '../common/SendEmailModal';
 import { SendMessageModal } from '../common/SendMessageModal';
@@ -60,6 +61,10 @@ function formatDateDisplay(dStr) {
 
 export function PayrollBatchesView() {
   const auth = useAuth();
+  const tenancy = useTenancy();
+  const tenantEpoch = tenancy?.tenantEpoch || 0;
+  const isAllBranchesSelected = tenancy?.isAllBranchesSelected ?? true;
+  const selectedBranchIds = tenancy?.selectedBranchIds || ['all'];
   const { hasPermission } = useAccessControl();
 
   const sessionToken =
@@ -173,12 +178,13 @@ export function PayrollBatchesView() {
   };
 
   const getAuthHeaders = useCallback(() => {
-    const headers = { 'Content-Type': 'application/json' };
-    if (sessionToken) {
+    const headers = tenancy?.getAuthHeaders ? tenancy.getAuthHeaders(sessionToken) : {};
+    headers['Content-Type'] = 'application/json';
+    if (sessionToken && !headers['Authorization']) {
       headers['Authorization'] = `Bearer ${sessionToken}`;
     }
     return headers;
-  }, [sessionToken]);
+  }, [sessionToken, tenancy?.getAuthHeaders]);
 
   // Fetch batches list
   const fetchBatches = useCallback(async (preferredBatchId = null) => {
@@ -234,7 +240,7 @@ export function PayrollBatchesView() {
 
   useEffect(() => {
     fetchBatches();
-  }, [fetchBatches]);
+  }, [fetchBatches, tenantEpoch]);
 
   useEffect(() => {
     if (selectedBatchId) {
@@ -342,6 +348,7 @@ export function PayrollBatchesView() {
         body: JSON.stringify({
           salary_year_month: generateYearMonth.trim(),
           title: generateTitle.trim() || undefined,
+          branch_ids: isAllBranchesSelected ? ['all'] : selectedBranchIds,
         }),
       });
       const data = await res.json();

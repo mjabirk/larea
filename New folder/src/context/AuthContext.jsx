@@ -140,8 +140,6 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
 
   // Boot check: Query GET /api/v1/system/status, SSO config, OAuth2 callback, and /api/v1/auth/me
   useEffect(() => {
-    if (hasBootCheckedRef.current) return;
-    hasBootCheckedRef.current = true;
     let isMounted = true;
 
     async function checkBootStatus() {
@@ -315,7 +313,7 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [refreshSSOConfig]);
 
   // Synchronize route once boot check completes or auth status updates
   useEffect(() => {
@@ -639,6 +637,16 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
       if (sessionToken) {
         headers['Authorization'] = `Bearer ${sessionToken}`;
       }
+      if (typeof window !== 'undefined') {
+        const activeOrg = localStorage.getItem('enterprise_active_org_id');
+        if (activeOrg && !headers['X-Organization-Id']) {
+          headers['X-Organization-Id'] = activeOrg;
+        }
+        const activeBranch = localStorage.getItem('enterprise_active_branch_id');
+        if (activeBranch && !headers['X-Branch-Id']) {
+          headers['X-Branch-Id'] = activeBranch;
+        }
+      }
       return headers;
     },
     [sessionToken]
@@ -651,7 +659,7 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
 
   const { isWarningVisible, secondsRemaining, stayLoggedIn } = useIdleTimer({
     effectiveTimeoutMinutes,
-    isAuthenticated,
+    isAuthenticated: isAuthenticated && !isLoading,
     onTimeout: handleIdleTimeout,
     getAuthHeaders,
   });

@@ -1,5 +1,6 @@
+import uuid
 from contextlib import asynccontextmanager
-from typing import Optional, Dict, Any, List, AsyncGenerator
+from typing import Optional, Dict, Any, List, AsyncGenerator, Tuple
 from fastapi import Request, HTTPException, status, Header, Depends
 
 from backend.core.config import settings
@@ -65,6 +66,46 @@ async def get_current_user_session(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session expired (idle timeout or max lifetime reached). Please log in again."
         )
+
+    x_organization_id = request.headers.get("X-Organization-Id")
+    x_branch_ids = request.headers.get("X-Branch-Ids") or request.headers.get("X-Branch-Id")
+
+    if session.get("is_superadmin"):
+        session["allowed_organizations"] = ["*"]
+        session["allowed_branches"] = ["*"]
+        if x_organization_id:
+            session["active_organization_id"] = x_organization_id
+            session["organization_id"] = x_organization_id
+        elif session.get("organization_id"):
+            session["active_organization_id"] = session["organization_id"]
+
+        if x_branch_ids:
+            if x_branch_ids.strip().lower() == "all":
+                session["active_branch_ids"] = ["all"]
+            else:
+                session["active_branch_ids"] = [b.strip() for b in x_branch_ids.split(",") if b.strip()]
+        else:
+            session["active_branch_ids"] = ["all"]
+    else:
+        if x_organization_id:
+            if x_organization_id in session.get("allowed_company_ids", []) or x_organization_id == session.get("organization_id"):
+                session["organization_id"] = x_organization_id
+                session["active_organization_id"] = x_organization_id
+        elif session.get("organization_id"):
+            session["active_organization_id"] = session["organization_id"]
+
+        if x_branch_ids:
+            if x_branch_ids.strip().lower() == "all":
+                session["active_branch_ids"] = ["all"]
+            else:
+                session["active_branch_ids"] = [b.strip() for b in x_branch_ids.split(",") if b.strip()]
+        else:
+            session["active_branch_ids"] = ["all"]
+
+    if session.get("active_branch_ids") and session["active_branch_ids"] != ["all"] and len(session["active_branch_ids"]) == 1:
+        session["branch_id"] = session["active_branch_ids"][0]
+    elif session.get("active_branch_ids") == ["all"]:
+        session["branch_id"] = None
 
     return session
 
@@ -254,3 +295,56 @@ def verify_record_tenant(record_org_id: Any, session: Dict[str, Any]) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Cross-tenant access denied."
         )
+
+
+def build_branch_filter(
+    session: Dict[str, Any],
+    table_alias: str = "e",
+    param_offset: int = 1,
+    branch_col: Optional[str] = None
+) -> Tuple[str, List[Any]]:
+    """
+    Universal Branch & Organization Filter Builder.
+    Constructs SQL clause and parameter list for multi-company & multi-branch filtering.
+    - If superadmin and no active_organization_id: returns "", []
+    - If 'all' in active_branch_ids or not active_branch_ids:
+        returns f" AND {table_alias}.organization_id = ${param_offset}::uuid", [org_id]
+    - Else (specific branches selected):
+        returns f" AND {table_alias}.organization_id = ${param_offset}::uuid AND {col} = ANY(${param_offset + 1}::uuid[])", [org_id, branch_ids]
+    """
+    col = branch_col or f"{table_alias}.branch_id"
+    org_id = session.get("active_organization_id") or session.get("organization_id")
+
+    if session.get("is_superadmin") and not org_id:
+        return "", []
+
+    if not org_id:
+        return "", []
+
+    try:
+        org_uuid = uuid.UUID(str(org_id))
+    except Exception:
+        return "", []
+
+    active_branch_ids = session.get("active_branch_ids", ["all"])
+    if isinstance(active_branch_ids, str):
+        if active_branch_ids.strip().lower() == "all":
+            active_branch_ids = ["all"]
+        else:
+            active_branch_ids = [b.strip() for b in active_branch_ids.split(",") if b.strip()]
+
+    if not active_branch_ids or "all" in active_branch_ids:
+        return f" AND {table_alias}.organization_id = ${param_offset}::uuid", [org_uuid]
+
+    valid_branch_uuids = []
+    for b in active_branch_ids:
+        try:
+            valid_branch_uuids.append(uuid.UUID(str(b)))
+        except Exception:
+            pass
+
+    if not valid_branch_uuids:
+        return f" AND {table_alias}.organization_id = ${param_offset}::uuid", [org_uuid]
+
+    clause = f" AND {table_alias}.organization_id = ${param_offset}::uuid AND {col} = ANY(${param_offset + 1}::uuid[])"
+    return clause, [org_uuid, valid_branch_uuids]

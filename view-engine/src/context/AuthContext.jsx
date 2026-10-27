@@ -637,6 +637,16 @@ export function AuthProvider({ children, users = [], onSystemInitComplete, onUse
       if (sessionToken) {
         headers['Authorization'] = `Bearer ${sessionToken}`;
       }
+      if (typeof window !== 'undefined') {
+        const activeOrg = localStorage.getItem('enterprise_active_org_id');
+        if (activeOrg && !headers['X-Organization-Id']) {
+          headers['X-Organization-Id'] = activeOrg;
+        }
+        const activeBranch = localStorage.getItem('enterprise_active_branch_id');
+        if (activeBranch && !headers['X-Branch-Id']) {
+          headers['X-Branch-Id'] = activeBranch;
+        }
+      }
       return headers;
     },
     [sessionToken]

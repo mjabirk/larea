@@ -175,11 +175,20 @@ async def list_leave_requests(
         params.append(month.strip())
         idx += 1
 
-    if not session.get("is_superadmin") and session.get("organization_id"):
+    if session.get("organization_id"):
         try:
             org_uuid = uuid.UUID(str(session.get("organization_id")).strip())
             query += f" AND (organization_id = ${idx}::uuid OR organization_id IS NULL)"
             params.append(org_uuid)
+            idx += 1
+        except Exception:
+            pass
+
+    if session.get("branch_id"):
+        try:
+            br_uuid = uuid.UUID(str(session.get("branch_id")).strip())
+            query += f" AND (branch_id = ${idx}::uuid OR branch_id IS NULL)"
+            params.append(br_uuid)
             idx += 1
         except Exception:
             pass
@@ -680,11 +689,20 @@ async def get_eosb_summary(
             params.append(department.strip())
             idx += 1
 
-        if not session.get("is_superadmin") and session.get("organization_id"):
+        if session.get("organization_id"):
             try:
                 org_uuid = uuid.UUID(str(session.get("organization_id")).strip())
                 query += f" AND (organization_id = ${idx}::uuid OR organization_id IS NULL)"
                 params.append(org_uuid)
+                idx += 1
+            except Exception:
+                pass
+
+        if session.get("branch_id"):
+            try:
+                br_uuid = uuid.UUID(str(session.get("branch_id")).strip())
+                query += f" AND (branch_id = ${idx}::uuid OR branch_id IS NULL)"
+                params.append(br_uuid)
                 idx += 1
             except Exception:
                 pass

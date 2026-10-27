@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   MessageCircle,
   Smartphone,
@@ -60,7 +60,8 @@ export function SendMessageModal({
   const [isSending, setIsSending] = useState(false);
   const [feedback, setFeedback] = useState(null);
 
-  useModalEscape(isOpen, onClose);
+  const modalRef = useRef(null);
+  useModalEscape(onClose, isOpen, modalRef);
 
   const getHeaders = useCallback(() => {
     const headers = { 'Content-Type': 'application/json' };
@@ -282,8 +283,18 @@ export function SendMessageModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-xs">
-      <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-xs"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="send-message-title"
+      onClick={onClose}
+    >
+      <div
+        ref={modalRef}
+        onClick={(e) => e.stopPropagation()}
+        className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
+      >
         {/* Modal Top Header */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800 bg-slate-950/70">
           <div className="flex items-center gap-2.5">
@@ -301,7 +312,7 @@ export function SendMessageModal({
               )}
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-white">Send Record Notification</h3>
+              <h3 id="send-message-title" className="text-sm font-semibold text-white">Send Record Notification</h3>
               <p className="text-[11px] text-slate-400">
                 Dispatches to recipient with automatic Chatter logging.
               </p>
@@ -314,7 +325,7 @@ export function SendMessageModal({
               <button
                 type="button"
                 onClick={() => setChannel('whatsapp')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition cursor-pointer ${
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
                   channel === 'whatsapp'
                     ? 'bg-emerald-600 text-white shadow-xs'
                     : 'text-slate-400 hover:text-white'
@@ -326,7 +337,7 @@ export function SendMessageModal({
               <button
                 type="button"
                 onClick={() => setChannel('sms')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition cursor-pointer ${
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
                   channel === 'sms'
                     ? 'bg-sky-600 text-white shadow-xs'
                     : 'text-slate-400 hover:text-white'
@@ -340,7 +351,8 @@ export function SendMessageModal({
             <button
               type="button"
               onClick={onClose}
-              className="text-slate-400 hover:text-white transition cursor-pointer ml-2"
+              className="text-slate-400 hover:text-white transition cursor-pointer ml-2 p-1 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+              aria-label="Close message modal"
             >
               <X className="w-4 h-4" />
             </button>
@@ -352,6 +364,8 @@ export function SendMessageModal({
           {/* Feedback Toast */}
           {feedback && (
             <div
+              role="status"
+              aria-live="polite"
               className={`p-3 rounded-lg border text-xs flex items-center justify-between ${
                 feedback.type === 'success'
                   ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300'
@@ -560,7 +574,7 @@ export function SendMessageModal({
             <button
               type="button"
               onClick={onClose}
-              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium transition cursor-pointer"
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
             >
               Cancel
             </button>
@@ -568,7 +582,7 @@ export function SendMessageModal({
               type="button"
               disabled={isSending}
               onClick={handleSendMessage}
-              className={`px-4 py-1.5 rounded-lg text-xs font-medium text-white shadow-xs transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50 ${
+              className={`px-4 py-1.5 rounded-lg text-xs font-medium text-white shadow-xs transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
                 channel === 'whatsapp'
                   ? 'bg-emerald-600 hover:bg-emerald-500'
                   : 'bg-sky-600 hover:bg-sky-500'

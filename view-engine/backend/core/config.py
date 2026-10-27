@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     # Master key for AES-256-GCM file encryption at rest
     FILE_ENCRYPTION_KEY: str = os.getenv("FILE_ENCRYPTION_KEY", DEFAULT_INSECURE_FILE_KEY)
 
+    # AI Assistant Configuration
+    AI_PROVIDER_API_KEY: str = os.getenv("AI_PROVIDER_API_KEY", "")
+    AI_PROVIDER_URL: str = os.getenv("AI_PROVIDER_URL", "https://api.openai.com/v1/chat/completions")
+    AI_MODEL_NAME: str = os.getenv("AI_MODEL_NAME", "gpt-4o-mini")
+
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":
         env = (self.APP_ENV or "").strip().lower()

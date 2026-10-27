@@ -2,11 +2,17 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { EmployeeListView } from './EmployeeListView';
 import { EmployeeFormView } from './EmployeeFormView';
 import { ControlPanel } from '../ViewEngine/ControlPanel';
+import { DeleteBlockedModal } from '../common/DeleteBlockedModal';
 import { AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useTenancy } from '../../context/TenancyContext';
 
 export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = null, onBackToList }) {
   const auth = useAuth();
+  const tenancy = useTenancy();
+  const tenantEpoch = tenancy?.tenantEpoch || 0;
+  const getAuthHeaders = tenancy?.getAuthHeaders;
+
   const sessionToken =
     auth?.sessionToken ||
     auth?.token ||
@@ -21,6 +27,8 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState(null);
+  const [blockedError, setBlockedError] = useState(null);
+  const [isBlockedModalOpen, setIsBlockedModalOpen] = useState(false);
 
   // Notify operational form state to hide compliance footer when in form mode
   useEffect(() => {
@@ -54,18 +62,17 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
   }, [isDirty]);
 
   const getHeaders = (hasBody = true) => {
-    const headers = {};
+    const headers = getAuthHeaders ? getAuthHeaders(sessionToken) : {};
     if (hasBody) headers['Content-Type'] = 'application/json';
-    if (sessionToken) {
-      headers['Authorization'] = `Bearer ${sessionToken}`;
-    }
     return headers;
   };
 
-  const fetchEmployees = useCallback(async () => {
+  const fetchEmployees = useCallback(async (filterOverride) => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/v1/employees', {
+      const currentActive = filterOverride !== undefined ? filterOverride : activeFilter;
+      const statusParam = currentActive === 'archived' ? 'archived' : 'active';
+      const res = await fetch(`/api/v1/employees?status_filter=${statusParam}`, {
         headers: getHeaders(false),
       });
       if (res.ok) {
@@ -79,10 +86,18 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
     } finally {
       setIsLoading(false);
     }
-  }, [sessionToken]);
+  }, [sessionToken, getAuthHeaders, activeFilter]);
 
   useEffect(() => {
     fetchEmployees();
+  }, [fetchEmployees, tenantEpoch, activeFilter]);
+
+  useEffect(() => {
+    const handleTenancySwitch = () => {
+      fetchEmployees();
+    };
+    window.addEventListener('enterprise-tenancy-switched', handleTenancySwitch);
+    return () => window.removeEventListener('enterprise-tenancy-switched', handleTenancySwitch);
   }, [fetchEmployees]);
 
   const prevActiveMenuIdRef = useRef(activeMenuId);
@@ -130,7 +145,7 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
         }
       }
 
-      if (activeFilter !== 'all') {
+      if (activeFilter !== 'all' && activeFilter !== 'archived') {
         if ((emp.status || '').toLowerCase() !== activeFilter.toLowerCase()) {
           return false;
         }
@@ -151,10 +166,11 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
     model: 'hr.employee',
     newButtonLabel: '+ New Employee',
     filterChips: [
-      { id: 'all', label: 'All' },
+      { id: 'all', label: 'All (Active)' },
       { id: 'active', label: 'Active' },
       { id: 'on leave', label: 'On Leave' },
       { id: 'terminated', label: 'Terminated' },
+      { id: 'archived', label: 'Archived' },
     ],
     views: {
       list: { label: 'List' },
@@ -350,11 +366,15 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
         setViewMode('list');
         setIsDirty(false);
         await fetchEmployees();
+      } else if (res.status === 409) {
+        const err = await res.json().catch(() => ({}));
+        setBlockedError(err.detail || err);
+        setIsBlockedModalOpen(true);
       } else {
         const err = await res.json().catch(() => ({}));
         setFeedback({
           type: 'error',
-          text: err.detail || 'Failed to delete employee record.',
+          text: typeof err.detail === 'string' ? err.detail : 'Failed to delete employee record.',
         });
       }
     } catch (e) {
@@ -368,12 +388,52 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
     }
   };
 
+  const handleToggleArchive = async (employeeId = null) => {
+    const targetId = employeeId || selectedEmployee?.id;
+    if (!targetId) return;
+
+    try {
+      const res = await fetch(`/api/v1/employees/${targetId}/toggle-archive`, {
+        method: 'POST',
+        headers: getHeaders(false),
+      });
+      if (res.ok) {
+        const result = await res.json();
+        setFeedback({
+          type: 'success',
+          text: result.message || (result.is_active ? 'Employee unarchived.' : 'Employee archived.'),
+        });
+        if (selectedEmployee && selectedEmployee.id === targetId) {
+          setSelectedEmployee((prev) => prev ? { ...prev, is_active: result.is_active } : null);
+        }
+        await fetchEmployees();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setFeedback({
+          type: 'error',
+          text: err.detail || 'Failed to update employee archive status.',
+        });
+      }
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: 'Network error updating employee archive status.',
+      });
+    } finally {
+      setTimeout(() => setFeedback(null), 4000);
+    }
+  };
+
   const handleBulkAction = (action) => {
     if (action === 'export') {
       handleExportCsv();
     } else if (action === 'delete') {
       if (viewMode === 'form' && selectedEmployee) {
         handleDeleteCurrentRecord();
+      }
+    } else if (action === 'archive' || action === 'toggle-archive') {
+      if (viewMode === 'form' && selectedEmployee) {
+        handleToggleArchive(selectedEmployee.id);
       }
     }
   };
@@ -436,6 +496,7 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
         recordTitle={viewMode === 'form' ? (selectedEmployee?.full_name || 'New Employee Profile') : null}
         recordCode={viewMode === 'form' ? (selectedEmployee?.employee_number || 'NEW') : null}
         recordStatus={viewMode === 'form' ? (selectedEmployee?.status || 'Active') : null}
+        isArchived={selectedEmployee?.is_active === false}
         pager={pager}
         selectedCount={selectedEmployee ? 1 : 0}
         isDirty={isDirty}
@@ -477,7 +538,10 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
             onNewEmployee={handleNewEmployee}
             searchTerm={searchTerm}
             onSearchChange={setSearchTerm}
+            statusFilter={activeFilter}
+            onStatusFilterChange={setActiveFilter}
             showHeader={false}
+            embeddedInControlPanel={true}
           />
         ) : (
           <EmployeeFormView
@@ -487,10 +551,26 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
             onSave={handleSave}
             onBack={handleBack}
             onDirtyChange={setIsDirty}
+            onToggleArchive={handleToggleArchive}
+            onDelete={handleDeleteCurrentRecord}
             showHeader={false}
           />
         )}
       </div>
+
+      {/* Relational Deletion Blocked Modal */}
+      <DeleteBlockedModal
+        isOpen={isBlockedModalOpen}
+        errorData={blockedError}
+        onClose={() => setIsBlockedModalOpen(false)}
+        onArchiveInstead={() => {
+          setIsBlockedModalOpen(false);
+          const targetId = blockedError?.entity_id || selectedEmployee?.id;
+          if (targetId) {
+            handleToggleArchive(targetId);
+          }
+        }}
+      />
     </div>
   );
 }

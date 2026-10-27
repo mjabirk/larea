@@ -5,9 +5,11 @@ import re
 import logging
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query, Response
-from pydantic import BaseModel
-from backend.core.database import get_db_pool
-from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, check_permission
+from pydantic import BaseModel, Field
+from backend.core.database import get_db_pool, log_audit_event
+from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, check_permission, build_branch_filter
+from backend.core.audit import record_audit_log
+from backend.core.sequences import uuid7, get_next_payroll_batch_code, get_atomic_counter
 
 logger = logging.getLogger("payroll")
 
@@ -23,6 +25,11 @@ def serialize_row(r: Dict[str, Any]) -> Dict[str, Any]:
             d[k] = str(v)
         elif hasattr(v, "__float__"):
             d[k] = float(v)
+        elif k == "branch_ids" and isinstance(v, str):
+            try:
+                d[k] = json.loads(v)
+            except Exception:
+                pass
     return d
 
 
@@ -290,6 +297,10 @@ async def sync_employee_adjustments_to_payslips(conn, employee_id: uuid.UUID, ym
 class CreateBatchPayload(BaseModel):
     salary_year_month: str  # Format: YYYY-MM (e.g. 2026-10)
     title: Optional[str] = None
+    branch_ids: Optional[List[str]] = None
+
+
+PayrollBatchPayload = CreateBatchPayload
 
 
 class UpdatePayslipPayload(BaseModel):
@@ -361,9 +372,36 @@ async def list_payroll_batches(
         WHERE 1=1
     """
     params: List[Any] = []
-    if not session.get("is_superadmin") and org_id:
-        query += " AND b.organization_id = $1::uuid"
-        params.append(org_id)
+    idx = 1
+    if org_id:
+        try:
+            org_uuid = uuid.UUID(str(org_id))
+            query += f" AND b.organization_id = ${idx}::uuid"
+            params.append(org_uuid)
+            idx += 1
+        except Exception:
+            pass
+
+    active_branch_ids = session.get("active_branch_ids", ["all"])
+    if "all" not in active_branch_ids and active_branch_ids:
+        valid_uuids = []
+        for bid in active_branch_ids:
+            try:
+                valid_uuids.append(uuid.UUID(str(bid)))
+            except Exception:
+                pass
+        if valid_uuids:
+            query += f" AND (b.branch_id = ANY(${idx}::uuid[]) OR b.branch_id IS NULL OR b.branch_ids @> '[\"all\"]'::jsonb)"
+            params.append(valid_uuids)
+            idx += 1
+    elif not session.get("is_superadmin") and session.get("branch_id"):
+        try:
+            br_uuid = uuid.UUID(str(session.get("branch_id")))
+            query += f" AND (b.branch_id = ${idx}::uuid OR b.branch_id IS NULL OR b.branch_ids @> '[\"all\"]'::jsonb)"
+            params.append(br_uuid)
+            idx += 1
+        except Exception:
+            pass
 
     query += " GROUP BY b.id ORDER BY b.salary_year_month DESC, b.created_at DESC;"
 
@@ -373,6 +411,7 @@ async def list_payroll_batches(
         return {"batches": batches, "total": len(batches)}
 
 
+@router.post("/batches/generate")
 @router.post("/batches")
 async def create_payroll_batch(
     payload: CreateBatchPayload,
@@ -407,158 +446,257 @@ async def create_payroll_batch(
                 except Exception:
                     pass
             if not org_uuid:
-                org_uuid = await conn.fetchval("SELECT id FROM organizations LIMIT 1;")
+                org_uuid = await conn.fetchval("SELECT id FROM organizations ORDER BY created_at ASC LIMIT 1;")
 
-            # Generate collision-safe unique batch code
-            base_code = f"PAY-{ym}"
-            exists = await conn.fetchval("SELECT 1 FROM payroll_batches WHERE batch_code = $1;", base_code)
-            if not exists:
-                batch_code = base_code
-            else:
-                seq = 2
-                while True:
-                    candidate = f"PAY-{ym}-{seq:02d}"
-                    taken = await conn.fetchval("SELECT 1 FROM payroll_batches WHERE batch_code = $1;", candidate)
-                    if not taken:
-                        batch_code = candidate
-                        break
-                    seq += 1
+            # Handle branch_ids: default ["all"] (Company-wide consolidated batch)
+            target_branch_ids = payload.branch_ids if payload.branch_ids is not None else ["all"]
+            if isinstance(target_branch_ids, str):
+                target_branch_ids = [target_branch_ids]
 
+            is_all_branches = ("all" in target_branch_ids or len(target_branch_ids) == 0)
+            stored_branch_ids = ["all"] if is_all_branches else [str(b).strip() for b in target_branch_ids if str(b).strip()]
+
+            branch_uuid = None
+            if not is_all_branches and len(stored_branch_ids) == 1:
+                try:
+                    branch_uuid = uuid.UUID(stored_branch_ids[0])
+                except Exception:
+                    pass
+
+            # 1. Generate lock-free atomic batch code and UUIDv7
+            batch_code = await get_next_payroll_batch_code(conn, ym)
             title = payload.title.strip() if payload.title and payload.title.strip() else f"Payroll - {ym}"
-            batch_id = uuid.uuid4()
+            batch_id = uuid7()
 
-            # Insert initial batch row
+            # Insert initial batch row with branch_ids JSONB
             await conn.execute("""
                 INSERT INTO payroll_batches (
                     id, batch_code, title, salary_year_month, status,
-                    currency, organization_id, created_by_name
+                    currency, organization_id, branch_id, branch_ids, created_by_name
                 ) VALUES (
-                    $1, $2, $3, $4, 'draft', 'QAR', $5, $6
+                    $1, $2, $3, $4, 'draft', 'QAR', $5, $6, $7::jsonb, $8
                 );
-            """, batch_id, batch_code, title, ym, org_uuid, author_name)
+            """, batch_id, batch_code, title, ym, org_uuid, branch_uuid, json.dumps(stored_branch_ids), author_name)
 
-            # Retrieve all Active employees for this organization
+            # Retrieve Active employees for this organization and specified branches
             emp_query = "SELECT * FROM employees WHERE LOWER(status) = 'active'"
             emp_params: List[Any] = []
-            if org_uuid and not session.get("is_superadmin"):
-                emp_query += " AND organization_id = $1::uuid"
+            e_idx = 1
+            if org_uuid:
+                emp_query += f" AND organization_id = ${e_idx}::uuid"
                 emp_params.append(org_uuid)
+                e_idx += 1
+
+            if not is_all_branches:
+                valid_b_uuids = []
+                for b in stored_branch_ids:
+                    try:
+                        valid_b_uuids.append(uuid.UUID(str(b)))
+                    except Exception:
+                        pass
+                if valid_b_uuids:
+                    emp_query += f" AND branch_id = ANY(${e_idx}::uuid[])"
+                    emp_params.append(valid_b_uuids)
+                    e_idx += 1
+
             emp_query += " ORDER BY employee_number ASC;"
 
             employees = await conn.fetch(emp_query, *emp_params)
+            emp_uuids = [e["id"] for e in employees]
 
-            for emp in employees:
-                e_id = emp["id"]
-
-                # 1. Check for Active Contract in employee_contracts
-                contract = await conn.fetchrow("""
-                    SELECT id, wage_base, working_hours_per_week
+            if emp_uuids:
+                # 2. Batch fetch active contracts for all active employees
+                contracts = await conn.fetch("""
+                    SELECT DISTINCT ON (employee_id) id, employee_id, wage_base, working_hours_per_week
                     FROM employee_contracts
-                    WHERE employee_id = $1 AND LOWER(status) = 'active'
-                    ORDER BY created_at DESC LIMIT 1;
-                """, e_id)
+                    WHERE employee_id = ANY($1::uuid[]) AND LOWER(status) = 'active'
+                    ORDER BY employee_id, created_at DESC;
+                """, emp_uuids)
+                contract_by_emp = {c["employee_id"]: c for c in contracts}
+                contract_ids = [c["id"] for c in contracts]
 
-                housing_allowance = 0.0
-                transport_allowance = 0.0
-                other_allowances = 0.0
-                contract_deductions = 0.0
-
-                if contract:
-                    base_salary = float(contract["wage_base"] or 0.0)
-                    benefit_lines = await conn.fetch("""
-                        SELECT cbl.amount_value, cbl.computed_monthly_total, sr.category, sr.wps_code, sr.id as rule_id
+                # 3. Batch fetch all benefit lines for all contracts
+                benefit_lines_by_contract: Dict[uuid.UUID, List[Any]] = {}
+                if contract_ids:
+                    bl_rows = await conn.fetch("""
+                        SELECT cbl.contract_id, cbl.amount_value, cbl.computed_monthly_total,
+                               sr.category, sr.wps_code, sr.id as rule_id
                         FROM contract_benefit_lines cbl
                         JOIN salary_rules sr ON cbl.rule_id = sr.id
-                        WHERE cbl.contract_id = $1;
-                    """, contract["id"])
+                        WHERE cbl.contract_id = ANY($1::uuid[]);
+                    """, contract_ids)
+                    for bl in bl_rows:
+                        cid = bl["contract_id"]
+                        if cid not in benefit_lines_by_contract:
+                            benefit_lines_by_contract[cid] = []
+                        benefit_lines_by_contract[cid].append(bl)
 
-                    for bl in benefit_lines:
-                        amt = float(bl["computed_monthly_total"] or 0.0)
-                        wps_code = str(bl.get("wps_code") or "").upper()
-                        rule_id = str(bl.get("rule_id") or "").upper()
-                        cat = str(bl.get("category") or "").lower()
-
-                        if wps_code == "HOUSING" or "HOUSING" in rule_id:
-                            housing_allowance += amt
-                        elif wps_code == "TRANSPORT" or "TRANSPORT" in rule_id:
-                            transport_allowance += amt
-                        elif cat == "allowance":
-                            other_allowances += amt
-                        elif cat == "deduction":
-                            contract_deductions += amt
-                else:
-                    base_salary = float(emp["base_salary"] or 0.0)
-
-                # 2. Query verified attendance hours for this employee in this month
-                verified_hours_val = await conn.fetchval("""
-                    SELECT COALESCE(SUM(duration_hours), 0)
+                # 4. Batch fetch verified attendance hours for this month
+                att_rows = await conn.fetch("""
+                    SELECT employee_id, COALESCE(SUM(duration_hours), 0) as verified_hours
                     FROM attendance_logs
-                    WHERE employee_id = $1 AND TO_CHAR(check_in, 'YYYY-MM') = $2;
-                """, e_id, ym) or 0.0
-                verified_attendance_hours = round(float(verified_hours_val), 2)
+                    WHERE employee_id = ANY($1::uuid[]) AND TO_CHAR(check_in, 'YYYY-MM') = $2
+                    GROUP BY employee_id;
+                """, emp_uuids, ym)
+                att_by_emp = {r["employee_id"]: round(float(r["verified_hours"]), 2) for r in att_rows}
 
-                working_days = 30
-                overtime_hours = 0.0
-                overtime_pay = 0.0
+                # 5. Batch fetch approved adjustments for this month
+                adj_rows = await conn.fetch("""
+                    SELECT * FROM payroll_adjustments
+                    WHERE employee_id = ANY($1::uuid[]) AND salary_year_month = $2 AND approval_status = 'approved'
+                    ORDER BY created_at ASC;
+                """, emp_uuids, ym)
+                adj_by_emp: Dict[uuid.UUID, List[Any]] = {}
+                for a in adj_rows:
+                    eid = a["employee_id"]
+                    if eid not in adj_by_emp:
+                        adj_by_emp[eid] = []
+                    adj_by_emp[eid].append(a)
 
-                # 3. Check WPS compliance status
-                clean_iban = str(emp["bank_iban"] or "").strip().upper()
-                has_valid_iban = clean_iban.startswith("QA") and len(clean_iban) >= 29
-                qid = str(emp["national_id_number"] or "").strip()
-                visa = str(emp["visa_number"] or "").strip()
-                has_valid_id = bool(qid or visa)
+                # 6. Assemble payslip tuples in-memory
+                payslip_rows = []
+                for emp in employees:
+                    e_id = emp["id"]
+                    contract = contract_by_emp.get(e_id)
 
-                wps_status = "ready" if (has_valid_iban and has_valid_id) else "missing_bank_or_id"
+                    housing_allowance = 0.0
+                    transport_allowance = 0.0
+                    other_allowances = 0.0
+                    contract_deductions = 0.0
 
-                net_salary = round(
-                    base_salary + housing_allowance + transport_allowance + other_allowances - contract_deductions,
-                    2
-                )
-                if net_salary < 0:
-                    net_salary = 0.0
+                    if contract:
+                        base_salary = float(contract["wage_base"] or 0.0)
+                        bls = benefit_lines_by_contract.get(contract["id"], [])
+                        for bl in bls:
+                            amt = float(bl["computed_monthly_total"] or 0.0)
+                            wps_code = str(bl.get("wps_code") or "").upper()
+                            rule_id = str(bl.get("rule_id") or "").upper()
+                            cat = str(bl.get("category") or "").lower()
 
-                # 4. Insert initial payslip
-                payslip_id = uuid.uuid4()
-                await conn.execute("""
-                    INSERT INTO payslips (
-                        id, batch_id, employee_id, employee_number, employee_name, department,
-                        job_title, national_id_number, visa_number, bank_name, bank_swift, bank_iban,
-                        working_days, verified_attendance_hours, overtime_hours, base_salary,
-                        housing_allowance, transport_allowance, other_allowances, overtime_pay,
-                        deductions, net_salary, bonus_pay, task_benefit_pay, loan_deduction,
-                        penalty_deduction, other_deductions, adjustments_breakdown, wps_status, notes
-                    ) VALUES (
-                        $1, $2, $3, $4, $5, $6,
-                        $7, $8, $9, $10, $11, $12,
-                        $13, $14, $15, $16,
-                        $17, $18, $19, $20,
-                        $21, $22, 0, 0, 0,
-                        0, 0, '[]'::jsonb, $23, $24
-                    );
-                """,
-                    payslip_id, batch_id, e_id, emp["employee_number"], emp["full_name"], emp["department_id"],
-                    emp["job_title"], qid or None, visa or None, emp["bank_name"], emp["bank_swift"], clean_iban or None,
-                    working_days, verified_attendance_hours, overtime_hours, base_salary,
-                    housing_allowance, transport_allowance, other_allowances, overtime_pay,
-                    contract_deductions, net_salary, wps_status, f"Computed from active contract and {ym} attendance."
-                )
+                            if wps_code == "HOUSING" or "HOUSING" in rule_id:
+                                housing_allowance += amt
+                            elif wps_code == "TRANSPORT" or "TRANSPORT" in rule_id:
+                                transport_allowance += amt
+                            elif cat == "allowance":
+                                other_allowances += amt
+                            elif cat == "deduction":
+                                contract_deductions += amt
+                    else:
+                        base_salary = float(emp["base_salary"] or 0.0)
 
-                # 5. Synchronize any pre-approved payroll adjustments for this month
-                await sync_employee_adjustments_to_payslips(conn, e_id, ym)
+                    verified_attendance_hours = att_by_emp.get(e_id, 0.0)
 
-            # 6. Recalculate batch totals from member payslips
+                    # Compute adjustments
+                    emp_adjs = adj_by_emp.get(e_id, [])
+                    ot_hours = 0.0
+                    ot_pay = 0.0
+                    task_benefit_pay = 0.0
+                    bonus_pay = 0.0
+                    loan_ded = 0.0
+                    penalty_ded = 0.0
+                    other_ded = 0.0
+                    unpaid_days = 0.0
+                    breakdown = []
+
+                    for a in emp_adjs:
+                        a_type = a["adjustment_type"]
+                        sub = a["category_subtype"]
+                        amt = float(a["computed_amount"] or 0.0)
+                        qty = float(a["quantity"] or 0.0)
+                        rate = float(a["unit_rate"] or 0.0)
+
+                        breakdown.append({
+                            "id": str(a["id"]),
+                            "code": a["code"],
+                            "rule_id": a.get("rule_id"),
+                            "type": a_type,
+                            "subtype": sub,
+                            "title": a["title"],
+                            "quantity": qty,
+                            "unit_label": a["unit_label"],
+                            "unit_rate": rate,
+                            "amount": amt,
+                            "notes": a["notes"]
+                        })
+
+                        if a_type == "overtime":
+                            ot_hours += qty
+                            ot_pay += amt
+                        elif a_type == "task_benefit":
+                            task_benefit_pay += amt
+                        elif a_type == "bonus":
+                            bonus_pay += amt
+                        elif a_type == "deduction":
+                            if sub == "loan_installment":
+                                loan_ded += amt
+                            elif sub == "disciplinary_fine":
+                                penalty_ded += amt
+                            elif sub == "unpaid_leave":
+                                other_ded += amt
+                                unpaid_days += qty
+                            else:
+                                other_ded += amt
+
+                    working_days = max(0, 30 - int(unpaid_days)) if unpaid_days > 0 else 30
+                    total_deductions = round(contract_deductions + loan_ded + penalty_ded + other_ded, 2)
+                    net_salary = round(
+                        base_salary + housing_allowance + transport_allowance + other_allowances + ot_pay + bonus_pay + task_benefit_pay - total_deductions,
+                        2
+                    )
+                    if net_salary < 0:
+                        net_salary = 0.0
+
+                    clean_iban = str(emp["bank_iban"] or "").strip().upper()
+                    has_valid_iban = clean_iban.startswith("QA") and len(clean_iban) >= 29
+                    qid = str(emp["national_id_number"] or "").strip()
+                    visa = str(emp["visa_number"] or "").strip()
+                    has_valid_id = bool(qid or visa)
+                    wps_status = "ready" if (has_valid_iban and has_valid_id) else "missing_bank_or_id"
+
+                    payslip_id = uuid7()
+                    payslip_rows.append((
+                        payslip_id, batch_id, e_id, emp["employee_number"], emp["full_name"], emp["department_id"],
+                        emp["job_title"], qid or None, visa or None, emp["bank_name"], emp["bank_swift"], clean_iban or None,
+                        working_days, verified_attendance_hours, round(ot_hours, 2), base_salary,
+                        housing_allowance, transport_allowance, other_allowances, round(ot_pay, 2),
+                        total_deductions, net_salary, round(bonus_pay, 2), round(task_benefit_pay, 2), round(loan_ded, 2),
+                        round(penalty_ded, 2), round(other_ded, 2), json.dumps(breakdown), wps_status,
+                        f"Computed from active contract and {ym} attendance."
+                    ))
+
+                # 7. Bulk INSERT all payslips in a single SQL executemany
+                if payslip_rows:
+                    await conn.executemany("""
+                        INSERT INTO payslips (
+                            id, batch_id, employee_id, employee_number, employee_name, department,
+                            job_title, national_id_number, visa_number, bank_name, bank_swift, bank_iban,
+                            working_days, verified_attendance_hours, overtime_hours, base_salary,
+                            housing_allowance, transport_allowance, other_allowances, overtime_pay,
+                            deductions, net_salary, bonus_pay, task_benefit_pay, loan_deduction,
+                            penalty_deduction, other_deductions, adjustments_breakdown, wps_status, notes
+                        ) VALUES (
+                            $1, $2, $3, $4, $5, $6,
+                            $7, $8, $9, $10, $11, $12,
+                            $13, $14, $15, $16,
+                            $17, $18, $19, $20,
+                            $21, $22, $23, $24, $25,
+                            $26, $27, $28::jsonb, $29, $30
+                        );
+                    """, payslip_rows)
+
+            # 8. Recalculate batch totals from member payslips
             await update_batch_totals_from_payslips(conn, batch_id)
 
-            # 7. Audit log creation
-            await conn.execute("""
-                INSERT INTO audit_logs (
-                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
-                ) VALUES (
-                    $1::uuid, 'payroll_batches', $2, 'CREATE', $3, $4, $5, $6
-                );
-            """, str(uuid.uuid4()), str(batch_id), user_id, author_name,
-                f"Generated payroll batch {batch_code} for {ym} with {len(employees)} payslips.",
-                client_ip
+            # 9. Cryptographically chained append-only audit log
+            await log_audit_event(
+                conn=conn,
+                entity_type="payroll_batches",
+                entity_id=batch_id,
+                action="CREATE",
+                session=session,
+                client_ip=client_ip,
+                note=f"Generated payroll batch {batch_code} for {ym} with {len(employees)} payslips.",
+                changes={"salary_year_month": ym, "payslips_count": len(employees), "batch_code": batch_code}
             )
 
             created_batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", batch_id)
@@ -640,7 +778,7 @@ async def update_payslip(
             if existing["batch_status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot edit payslips in a {existing['batch_status']} payroll batch. Batch must be draft."
+                    detail=f"SOX 404 / ISO 27001 Violation: Cannot edit payslips in a {existing['batch_status']} payroll batch. Sealed financial records are strictly immutable. Batch must be draft."
                 )
 
             batch_id = existing["batch_id"]
@@ -684,11 +822,171 @@ async def update_payslip(
             # Recalculate parent batch totals
             await update_batch_totals_from_payslips(conn, batch_id)
 
+            client_ip = get_client_ip(request) if request else "127.0.0.1"
+            await log_audit_event(
+                conn=conn,
+                entity_type="payslips",
+                entity_id=p_uuid,
+                action="RECALCULATE",
+                session=session,
+                client_ip=client_ip,
+                note=f"Payslip {p_uuid} updated and recalculated for employee {existing['employee_name']}. Net salary: {net_salary} QAR.",
+                changes={
+                    "working_days": working_days,
+                    "overtime_hours": overtime_hours,
+                    "overtime_pay": overtime_pay,
+                    "other_allowances": other_allowances,
+                    "deductions": deductions,
+                    "net_salary": net_salary
+                }
+            )
+
             updated_p = await conn.fetchrow("SELECT * FROM payslips WHERE id = $1;", p_uuid)
             updated_b = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", batch_id)
 
             return {
                 "status": "success",
+                "payslip": serialize_row(dict(updated_p)),
+                "batch": serialize_row(dict(updated_b)),
+            }
+
+
+@router.post("/payslips/{payslip_id}/recalculate")
+async def recalculate_payslip(
+    payslip_id: str,
+    request: Request,
+    session: Dict[str, Any] = Depends(get_current_user_session),
+):
+    """
+    Recalculates a draft payslip based on active contract salary rules, attendance overtime,
+    and approved adjustments, and commits a structured audit log entry.
+    """
+    require_permission(session, "payroll.manage")
+    pool = get_db_pool()
+    try:
+        p_uuid = uuid.UUID(payslip_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid payslip UUID.")
+
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            existing = await conn.fetchrow("""
+                SELECT p.*, b.status as batch_status, b.batch_code, b.salary_year_month
+                FROM payslips p
+                JOIN payroll_batches b ON p.batch_id = b.id
+                WHERE p.id = $1;
+            """, p_uuid)
+            if not existing:
+                raise HTTPException(status_code=404, detail="Payslip record not found.")
+
+            if existing["batch_status"] != "draft":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"SOX 404 / ISO 27001 Violation: Cannot recalculate payslips in a {existing['batch_status']} payroll batch. Sealed financial records are strictly immutable. Batch must be draft."
+                )
+
+            batch_id = existing["batch_id"]
+            employee_id = existing["employee_id"]
+            ym = existing["salary_year_month"]
+
+            basis_data = await get_employee_salary_basis(conn, employee_id)
+            base_salary = float(basis_data["base_salary"])
+            housing_allowance = float(basis_data["housing_allowance"])
+            transport_allowance = float(basis_data["allowances_by_rule"].get("ALW_TRANSPORT") or existing["transport_allowance"] or 0.0)
+
+            att_row = await conn.fetchrow("""
+                SELECT
+                    COALESCE(SUM(duration_hours), 0) as verified_hours,
+                    COUNT(DISTINCT DATE(check_in)) as days_worked
+                FROM attendance_logs
+                WHERE employee_id = $1
+                  AND TO_CHAR(check_in, 'YYYY-MM') = $2
+                  AND LOWER(status) IN ('verified', 'synced');
+            """, employee_id, ym)
+            verified_hours = float(att_row["verified_hours"] or 0.0)
+            days_worked = int(att_row["days_worked"] or 30)
+
+            adj_rows = await conn.fetch("""
+                SELECT adjustment_type, category_subtype, computed_amount, quantity
+                FROM payroll_adjustments
+                WHERE employee_id = $1
+                  AND salary_year_month = $2
+                  AND approval_status = 'approved';
+            """, employee_id, ym)
+
+            ot_hours = 0.0
+            ot_pay = 0.0
+            bonus_pay = 0.0
+            task_benefit_pay = 0.0
+            adj_deductions = 0.0
+            adj_allowances = 0.0
+            for adj in adj_rows:
+                amt = float(adj["computed_amount"] or 0.0)
+                a_type = adj["adjustment_type"]
+                sub = adj["category_subtype"] or ""
+                qty = float(adj.get("quantity") or 0.0)
+                if a_type == "overtime":
+                    ot_hours += qty
+                    ot_pay += amt
+                elif a_type == "allowance":
+                    if sub == "bonus":
+                        bonus_pay += amt
+                    elif sub == "task_benefit":
+                        task_benefit_pay += amt
+                    else:
+                        adj_allowances += amt
+                elif a_type == "deduction":
+                    adj_deductions += amt
+
+            other_allowances = float(existing["other_allowances"] or 0.0) + adj_allowances
+            deductions = adj_deductions
+
+            net_salary = round(
+                base_salary + housing_allowance + transport_allowance + other_allowances + ot_pay + bonus_pay + task_benefit_pay - deductions,
+                2
+            )
+            if net_salary < 0:
+                net_salary = 0.0
+
+            await conn.execute("""
+                UPDATE payslips SET
+                    base_salary = $2,
+                    housing_allowance = $3,
+                    transport_allowance = $4,
+                    other_allowances = $5,
+                    overtime_hours = $6,
+                    overtime_pay = $7,
+                    bonus_pay = $8,
+                    task_benefit_pay = $9,
+                    deductions = $10,
+                    net_salary = $11,
+                    working_days = $12,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $1;
+            """, p_uuid, base_salary, housing_allowance, transport_allowance, other_allowances,
+               ot_hours, ot_pay, bonus_pay, task_benefit_pay, deductions, net_salary, days_worked)
+
+            await update_batch_totals_from_payslips(conn, batch_id)
+
+            await log_audit_event(
+                conn=conn,
+                entity_type="payslips",
+                entity_id=p_uuid,
+                action="RECALCULATE",
+                session=session,
+                client_ip=client_ip,
+                note=f"Payslip {p_uuid} recalculated from contract, attendance ({ot_hours} OT hrs), and adjustments. Net: {net_salary} QAR.",
+                changes={"net_salary": net_salary, "base_salary": base_salary, "deductions": deductions, "overtime_pay": ot_pay}
+            )
+
+            updated_p = await conn.fetchrow("SELECT * FROM payslips WHERE id = $1;", p_uuid)
+            updated_b = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", batch_id)
+
+            return {
+                "status": "success",
+                "message": "Payslip recalculated successfully.",
                 "payslip": serialize_row(dict(updated_p)),
                 "batch": serialize_row(dict(updated_b)),
             }
@@ -745,15 +1043,15 @@ async def lock_payroll_batch(
                   AND employee_id IN (SELECT employee_id FROM payslips WHERE batch_id = $2::uuid);
             """, ym, b_uuid)
 
-            await conn.execute("""
-                INSERT INTO audit_logs (
-                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
-                ) VALUES (
-                    $1::uuid, 'payroll_batches', $2, 'LOCK', $3, $4, $5, $6
-                );
-            """, str(uuid.uuid4()), str(b_uuid), user_id, author_name,
-                f"Locked and sealed payroll batch {batch['batch_code']} ({ym}) with {batch['total_employees']} payslips.",
-                client_ip
+            await log_audit_event(
+                conn=conn,
+                entity_type="payroll_batches",
+                entity_id=b_uuid,
+                action="LOCK",
+                session=session,
+                client_ip=client_ip,
+                note=f"Locked and sealed payroll batch {batch['batch_code']} ({ym}) with {batch['total_employees']} payslips.",
+                changes={"status": "locked", "total_employees": batch["total_employees"], "total_net_salary": float(batch["total_net_salary"] or 0)}
             )
 
             updated_batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", b_uuid)
@@ -844,15 +1142,18 @@ async def delete_payroll_batch(
 
             await conn.execute("DELETE FROM payroll_batches WHERE id = $1;", b_uuid)
 
-            await conn.execute("""
-                INSERT INTO audit_logs (
-                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
-                ) VALUES (
-                    $1::uuid, 'payroll_batches', $2, 'DELETE', $3, $4, $5, $6
-                );
-            """, str(uuid.uuid4()), str(b_uuid), user_id, author_name,
-                f"Deleted draft payroll batch {batch['batch_code']} ({batch['salary_year_month']}).",
-                client_ip
+            t_id = str(batch["organization_id"]) if batch["organization_id"] else "default_tenant"
+            await record_audit_log(
+                conn=conn,
+                tenant_id=t_id,
+                entity_type="payroll_batches",
+                entity_id=str(b_uuid),
+                action="DELETE",
+                changed_by_user_id=user_id,
+                changed_by_name=author_name,
+                note=f"Deleted draft payroll batch {batch['batch_code']} ({batch['salary_year_month']}).",
+                ip_address=client_ip,
+                changes={"status": "deleted", "batch_code": batch["batch_code"]}
             )
 
         return {
@@ -906,6 +1207,7 @@ async def sync_batch_adjustments(
             }
 
 
+@router.get("/batches/{batch_id}/wps-export")
 @router.get("/batches/{batch_id}/export-sif")
 async def export_qatar_wps_sif(
     batch_id: str,
@@ -923,11 +1225,19 @@ async def export_qatar_wps_sif(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid batch UUID.")
 
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1 FOR UPDATE;", b_uuid)
             if not batch:
                 raise HTTPException(status_code=404, detail="Payroll batch not found.")
+
+            # Resolve Company QID/CR for corporate header
+            org_row = await conn.fetchrow(
+                "SELECT legal_name, tax_id FROM organizations WHERE id = $1;",
+                batch["organization_id"]
+            ) if batch.get("organization_id") else None
 
             # Read Qatar WPS Bank Configuration from system_metadata
             wps_raw = await conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:qatar_wps_config';")
@@ -938,9 +1248,11 @@ async def export_qatar_wps_sif(
                 except Exception:
                     pass
 
-            employer_eid = str(wps_cfg.get("employer_eid") or "12345678").strip()
+            company_cr = (org_row["tax_id"] if org_row and org_row.get("tax_id") else "").strip()
+            employer_eid = company_cr or str(wps_cfg.get("employer_eid") or "12345678").strip()
             payer_bank_short_code = str(wps_cfg.get("payer_bank_short_code") or "QNBA").strip().upper()
             payer_iban = str(wps_cfg.get("payer_iban") or "QA55QNBA000000001122334455667").strip().upper()
+            payer_qid = company_cr or str(wps_cfg.get("payer_qid") or employer_eid).strip()
 
             rows = await conn.fetch("""
                 SELECT * FROM payslips
@@ -955,6 +1267,17 @@ async def export_qatar_wps_sif(
                     b_uuid
                 )
 
+            await log_audit_event(
+                conn=conn,
+                entity_type="payroll_batches",
+                entity_id=b_uuid,
+                action="EXPORT_WPS_SIF",
+                session=session,
+                client_ip=client_ip,
+                note=f"Exported Qatar WPS .SIF file for batch {batch['batch_code']} ({batch['salary_year_month']}) with {len(payslips)} records.",
+                changes={"batch_code": batch["batch_code"], "salary_year_month": batch["salary_year_month"], "records_count": len(payslips), "total_net_salary": float(batch["total_net_salary"] or 0)}
+            )
+
     # Connection is now safely returned to pool; generate WPS .SIF CSV content
     now = datetime.datetime.now(datetime.timezone.utc)
     file_date = now.strftime("%Y%m%d")
@@ -968,7 +1291,7 @@ async def export_qatar_wps_sif(
     # Row 1 (Header schema)
     row1 = "Employer EID,File Creation Date,File Creation Time,Payer EID,Payer QID,Payer Bank Short Name,Payer IBAN,Salary Year and Month,Total Salaries,Total Records,SIF Version"
     # Row 2 (Header values)
-    row2 = f"{employer_eid},{file_date},{file_time},{employer_eid},,{payer_bank_short_code},{payer_iban},{salary_ym},{total_net:.2f},{total_records},01"
+    row2 = f"{employer_eid},{file_date},{file_time},{employer_eid},{payer_qid},{payer_bank_short_code},{payer_iban},{salary_ym},{total_net:.2f},{total_records},01"
     # Row 3 (EDR Column headers)
     row3 = "Record Sequence,Employee QID,Employee Visa ID,Employee Name,Employee Bank Short Name,Employee Account,Salary Frequency,Number of Working Days,Net Salary,Basic Salary,Extra Hours,Extra Income,Deductions,Payment Type,Notes/Comments"
 
@@ -1021,6 +1344,255 @@ async def export_qatar_wps_sif(
             "X-WPS-Total-Salaries": f"{total_net:.2f}",
         },
     )
+
+
+class BatchPostPayload(BaseModel):
+    notes: Optional[str] = None
+
+
+class BatchReversalPayload(BaseModel):
+    reversal_reason: str = Field(..., description="Auditable accounting justification for reversing a sealed payroll batch")
+
+
+@router.post("/batches/{batch_id}/post")
+async def post_payroll_batch(
+    batch_id: str,
+    payload: BatchPostPayload = BatchPostPayload(),
+    request: Request = None,
+    session: Dict[str, Any] = Depends(get_current_user_session),
+):
+    """
+    SOX 404 / ISO 27001 Formal Payroll Batch Posting State Transition.
+    Transitions a locked or exported payroll batch to 'posted' status,
+    sealing the accounting ledger permanently.
+    """
+    require_permission(session, "payroll.manage")
+    pool = get_db_pool()
+    try:
+        b_uuid = uuid.UUID(batch_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid batch UUID.")
+
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1 FOR UPDATE;", b_uuid)
+            if not batch:
+                raise HTTPException(status_code=404, detail="Payroll batch not found.")
+
+            if batch["status"] == "posted":
+                raise HTTPException(status_code=400, detail=f"Payroll batch {batch['batch_code']} is already posted.")
+
+            if batch["status"] not in ("locked", "exported"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Only locked or exported payroll batches can be posted. Current status: '{batch['status']}'."
+                )
+
+            user_id, author_name = await resolve_audit_author(conn, session)
+            t_id = str(batch["organization_id"]) if batch["organization_id"] else "default_tenant"
+
+            await conn.execute("""
+                UPDATE payroll_batches SET
+                    status = 'posted',
+                    posted_at = CURRENT_TIMESTAMP,
+                    posted_by = $2,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $1;
+            """, b_uuid, author_name)
+
+            await record_audit_log(
+                conn=conn,
+                tenant_id=t_id,
+                entity_type="payroll_batches",
+                entity_id=str(b_uuid),
+                action="POST",
+                changed_by_user_id=user_id,
+                changed_by_name=author_name,
+                note=f"Posted and sealed payroll batch {batch['batch_code']} ({batch['salary_year_month']}) for financial accounting.",
+                ip_address=client_ip,
+                changes={"status": "posted", "posted_by": author_name, "notes": payload.notes}
+            )
+
+            updated = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", b_uuid)
+
+    try:
+        from backend.core.communication_engine import execute_automation_trigger
+        await execute_automation_trigger(
+            event_type="payroll_batch_posted",
+            record_model="payroll.batch",
+            record_id=str(b_uuid),
+            record_data={
+                "batch_code": batch["batch_code"],
+                "month": batch["salary_year_month"],
+                "total_employees": batch["total_employees"],
+                "total_net_salary": f"{float(batch['total_net_salary'] or 0):,.2f}"
+            },
+            author_name=author_name
+        )
+    except Exception as e:
+        logger.warning(f"Failed to execute trigger for payroll_batch_posted: {e}")
+
+    return {
+        "status": "success",
+        "message": f"Payroll batch {batch['batch_code']} posted and sealed successfully.",
+        "batch": serialize_row(dict(updated))
+    }
+
+
+@router.post("/batches/{batch_id}/reverse")
+async def reverse_payroll_batch(
+    batch_id: str,
+    payload: BatchReversalPayload,
+    request: Request = None,
+    session: Dict[str, Any] = Depends(get_current_user_session),
+):
+    """
+    SOX 404 / ISO 27001 Formal Payroll Batch Reversal State Transition.
+    Transitions original batch to 'reversed' without mutating prior figures,
+    and creates a linked reversal batch with offsetting negative figures.
+    """
+    require_permission(session, "payroll.manage")
+    clean_reason = (payload.reversal_reason or "").strip()
+    if not clean_reason:
+        raise HTTPException(status_code=400, detail="An auditable reversal_reason is required by SOX 404 compliance.")
+
+    pool = get_db_pool()
+    try:
+        b_uuid = uuid.UUID(batch_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid batch UUID.")
+
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1 FOR UPDATE;", b_uuid)
+            if not batch:
+                raise HTTPException(status_code=404, detail="Payroll batch not found.")
+
+            if batch["status"] not in ("posted", "locked", "exported"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Only posted, locked, or exported batches can be reversed. Current status is '{batch['status']}'."
+                )
+
+            user_id, author_name = await resolve_audit_author(conn, session)
+            t_id = str(batch["organization_id"]) if batch["organization_id"] else "default_tenant"
+
+            # 1. Transition original batch to 'reversed' (financial totals remain untouched)
+            await conn.execute("""
+                UPDATE payroll_batches SET
+                    status = 'reversed',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $1;
+            """, b_uuid)
+
+            # 2. Generate unique reversal batch code via lock-free atomic sequence
+            base_code = batch["batch_code"].replace("-REV", "")
+            seq = await get_atomic_counter(f"payroll_rev:{base_code}", tenant_id=t_id, start_value=1)
+            rev_code = f"{base_code}-REV" if seq == 1 else f"{base_code}-REV{seq}"
+
+            rev_id = uuid.uuid4()
+            neg_base = -float(batch["total_base_salary"] or 0)
+            neg_allowances = -float(batch["total_allowances"] or 0)
+            neg_deductions = -float(batch["total_deductions"] or 0)
+            neg_ot = -float(batch["total_overtime_pay"] or 0)
+            neg_net = -float(batch["total_net_salary"] or 0)
+
+            # 3. Create linked accounting reversal batch
+            await conn.execute("""
+                INSERT INTO payroll_batches (
+                    id, batch_code, title, salary_year_month, status,
+                    total_employees, total_base_salary, total_allowances,
+                    total_deductions, total_overtime_pay, total_net_salary,
+                    currency, organization_id, created_by_name, locked_at,
+                    posted_at, posted_by, reversal_of_id, reversal_reason
+                ) VALUES (
+                    $1, $2, $3, $4, 'posted',
+                    $5, $6, $7,
+                    $8, $9, $10,
+                    $11, $12, $13, CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP, $14, $15, $16
+                );
+            """,
+                rev_id, rev_code, f"Accounting Reversal of {batch['title']}", batch["salary_year_month"],
+                batch["total_employees"], neg_base, neg_allowances,
+                neg_deductions, neg_ot, neg_net,
+                batch["currency"], batch["organization_id"], author_name,
+                author_name, b_uuid, clean_reason
+            )
+
+            # 4. Clone payslips with offsetting reversal figures
+            orig_payslips = await conn.fetch("SELECT * FROM payslips WHERE batch_id = $1;", b_uuid)
+            for p in orig_payslips:
+                await conn.execute("""
+                    INSERT INTO payslips (
+                        id, batch_id, employee_id, employee_number, employee_name,
+                        department, job_title, national_id_number, visa_number,
+                        bank_name, bank_swift, bank_iban, working_days,
+                        verified_attendance_hours, overtime_hours, base_salary,
+                        housing_allowance, transport_allowance, other_allowances,
+                        overtime_pay, deductions, net_salary, bonus_pay, task_benefit_pay,
+                        loan_deduction, penalty_deduction, other_deductions,
+                        adjustments_breakdown, wps_status, notes
+                    ) VALUES (
+                        $1, $2, $3, $4, $5,
+                        $6, $7, $8, $9,
+                        $10, $11, $12, $13,
+                        $14, $15, $16,
+                        $17, $18, $19,
+                        $20, $21, $22, $23, $24,
+                        $25, $26, $27,
+                        $28, 'reversed', $29
+                    );
+                """,
+                    uuid.uuid4(), rev_id, p["employee_id"], p["employee_number"], p["employee_name"],
+                    p["department"], p["job_title"], p["national_id_number"], p["visa_number"],
+                    p["bank_name"], p["bank_swift"], p["bank_iban"], -(p["working_days"] or 0),
+                    -(float(p["verified_attendance_hours"] or 0)), -(float(p["overtime_hours"] or 0)), -(float(p["base_salary"] or 0)),
+                    -(float(p["housing_allowance"] or 0)), -(float(p["transport_allowance"] or 0)), -(float(p["other_allowances"] or 0)),
+                    -(float(p["overtime_pay"] or 0)), -(float(p["deductions"] or 0)), -(float(p["net_salary"] or 0)),
+                    -(float(p.get("bonus_pay") or 0)), -(float(p.get("task_benefit_pay") or 0)),
+                    -(float(p.get("loan_deduction") or 0)), -(float(p.get("penalty_deduction") or 0)), -(float(p.get("other_deductions") or 0)),
+                    p["adjustments_breakdown"], f"Offsetting reversal for payslip {p['id']}. Reason: {clean_reason}"
+                )
+
+            # 5. Cryptographically chained audit logs
+            await record_audit_log(
+                conn=conn,
+                tenant_id=t_id,
+                entity_type="payroll_batches",
+                entity_id=str(b_uuid),
+                action="REVERSE",
+                changed_by_user_id=user_id,
+                changed_by_name=author_name,
+                note=f"Reversed payroll batch {batch['batch_code']} ({batch['salary_year_month']}). Reversal batch: {rev_code}. Reason: {clean_reason}",
+                ip_address=client_ip,
+                changes={"status": "reversed", "reversal_batch_id": str(rev_id), "reason": clean_reason}
+            )
+
+            await record_audit_log(
+                conn=conn,
+                tenant_id=t_id,
+                entity_type="payroll_batches",
+                entity_id=str(rev_id),
+                action="REVERSAL_CREATED",
+                changed_by_user_id=user_id,
+                changed_by_name=author_name,
+                note=f"Issued accounting reversal batch {rev_code} offsetting {batch['batch_code']}. Reason: {clean_reason}",
+                ip_address=client_ip,
+                changes={"reversal_of": str(b_uuid), "total_net_salary": neg_net, "reason": clean_reason}
+            )
+
+            reversal_batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", rev_id)
+
+    return {
+        "status": "success",
+        "message": f"Payroll batch {batch['batch_code']} successfully reversed. Created offsetting batch {rev_code}.",
+        "reversal_batch": serialize_row(dict(reversal_batch))
+    }
 
 
 # ==============================================================================
@@ -1344,18 +1916,40 @@ async def create_payroll_adjustment(
                 id, code, employee_id, employee_number, employee_name, department,
                 salary_year_month, rule_id, adjustment_type, category_subtype, title,
                 calculation_basis, multiplier_pct, quantity, unit_label, unit_rate,
-                computed_amount, approval_status, submitted_by_name, notes, organization_id
+                computed_amount, approval_status, submitted_by_name, notes, organization_id,
+                created_by, submitted_by
             ) VALUES (
                 $1, $2, $3, $4, $5, $6,
                 $7, $8, $9, $10, $11,
                 $12, $13, $14, $15, $16,
-                $17, 'pending_supervisor', $18, $19, $20
+                $17, 'pending_supervisor', $18, $19, $20,
+                $21, $21
             );
         """,
             new_id, code, e_uuid, emp["employee_number"], emp["full_name"], emp["department_id"],
             ym, clean_rule_id, adj_type, category_subtype, title,
             calc_basis, mult_pct, quantity, unit_label, unit_rate,
-            computed_amount, author_name, payload.notes, org_id
+            computed_amount, author_name, payload.notes, org_id,
+            user_id
+        )
+
+        client_ip = get_client_ip(request) if request else "127.0.0.1"
+        await log_audit_event(
+            conn=conn,
+            entity_type="payroll_adjustments",
+            entity_id=new_id,
+            action="CREATE",
+            session=session,
+            client_ip=client_ip,
+            note=f"Created payroll adjustment {code} ({title}) for {emp['full_name']}. Amount: {computed_amount} QAR.",
+            changes={
+                "code": code,
+                "employee_id": str(e_uuid),
+                "salary_year_month": ym,
+                "rule_id": clean_rule_id,
+                "adjustment_type": adj_type,
+                "computed_amount": computed_amount
+            }
         )
 
         row = await conn.fetchrow("SELECT * FROM payroll_adjustments WHERE id = $1;", new_id)
@@ -1375,6 +1969,7 @@ async def create_payroll_adjustment(
 async def approve_payroll_adjustment(
     adj_id: str,
     payload: Optional[ApproveAdjustmentPayload] = None,
+    request: Request = None,
     session: Dict[str, Any] = Depends(get_current_user_session),
 ):
     """
@@ -1396,6 +1991,8 @@ async def approve_payroll_adjustment(
     if not can_approve_l1:
         raise HTTPException(status_code=403, detail="Access denied: Supervisor or Payroll Manager privileges required to approve adjustments.")
 
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             adj = await conn.fetchrow("SELECT * FROM payroll_adjustments WHERE id = $1;", a_uuid)
@@ -1411,6 +2008,18 @@ async def approve_payroll_adjustment(
             if current_status == "rejected":
                 raise HTTPException(status_code=400, detail="Cannot approve a rejected adjustment. Please re-submit.")
 
+            # SOX 404 Maker-Checker Dual Control Hard Guard
+            if adj.get("created_by") and user_id and str(user_id) == str(adj["created_by"]):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="SOX 404 Maker-Checker Violation: You cannot approve a payroll adjustment that you created. Dual control requires an independent checker."
+                )
+            if adj.get("submitted_by") and user_id and str(user_id) == str(adj["submitted_by"]):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="SOX 404 Maker-Checker Violation: You cannot approve a payroll adjustment that you submitted for approval. Dual control requires an independent checker."
+                )
+
             new_status = current_status
             if current_status == "pending_supervisor":
                 if fast_track and has_payroll_manage:
@@ -1422,9 +2031,11 @@ async def approve_payroll_adjustment(
                             level1_approved_at = CURRENT_TIMESTAMP,
                             level2_approved_by = $2,
                             level2_approved_at = CURRENT_TIMESTAMP,
+                            approved_by = $3,
+                            approved_at = CURRENT_TIMESTAMP,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = $1;
-                    """, a_uuid, f"{author_name} (Fast-Track)")
+                    """, a_uuid, f"{author_name} (Fast-Track)", user_id)
                 else:
                     new_status = "pending_hr"
                     await conn.execute("""
@@ -1446,13 +2057,32 @@ async def approve_payroll_adjustment(
                         approval_status = 'approved',
                         level2_approved_by = $2,
                         level2_approved_at = CURRENT_TIMESTAMP,
+                        approved_by = $3,
+                        approved_at = CURRENT_TIMESTAMP,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = $1;
-                """, a_uuid, author_name)
+                """, a_uuid, author_name, user_id)
 
             # If now approved, synchronize directly into any existing draft payslip
             if new_status == "approved":
                 await sync_employee_adjustments_to_payslips(conn, adj["employee_id"], adj["salary_year_month"])
+
+            await log_audit_event(
+                conn=conn,
+                entity_type="payroll_adjustments",
+                entity_id=a_uuid,
+                action="APPROVE",
+                session=session,
+                client_ip=client_ip,
+                note=f"Adjustment {adj['code']} updated to '{new_status}' by {author_name}.",
+                changes={
+                    "code": adj["code"],
+                    "previous_status": current_status,
+                    "new_status": new_status,
+                    "computed_amount": float(adj["computed_amount"] or 0.0),
+                    "employee_id": str(adj["employee_id"])
+                }
+            )
 
             updated_adj = await conn.fetchrow("SELECT * FROM payroll_adjustments WHERE id = $1;", a_uuid)
             return {
@@ -1466,6 +2096,7 @@ async def approve_payroll_adjustment(
 async def reject_payroll_adjustment(
     adj_id: str,
     payload: RejectAdjustmentPayload,
+    request: Request = None,
     session: Dict[str, Any] = Depends(get_current_user_session),
 ):
     """Rejects adjustment and resyncs draft payslip."""
@@ -1475,6 +2106,8 @@ async def reject_payroll_adjustment(
         a_uuid = uuid.UUID(adj_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid adjustment UUID.")
+
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -1495,6 +2128,23 @@ async def reject_payroll_adjustment(
 
             # Re-sync any draft payslip in case it was previously approved
             await sync_employee_adjustments_to_payslips(conn, adj["employee_id"], adj["salary_year_month"])
+
+            await log_audit_event(
+                conn=conn,
+                entity_type="payroll_adjustments",
+                entity_id=a_uuid,
+                action="REJECT",
+                session=session,
+                client_ip=client_ip,
+                note=f"Adjustment {adj['code']} rejected by {author_name}. Reason: {reason}",
+                changes={
+                    "code": adj["code"],
+                    "previous_status": adj["approval_status"],
+                    "new_status": "rejected",
+                    "rejection_reason": reason,
+                    "employee_id": str(adj["employee_id"])
+                }
+            )
 
             updated_adj = await conn.fetchrow("SELECT * FROM payroll_adjustments WHERE id = $1;", a_uuid)
             return {

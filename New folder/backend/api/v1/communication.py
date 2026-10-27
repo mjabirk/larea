@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from backend.core.database import get_db_pool
 from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission
+from backend.core.sequences import uuid7
 from backend.core.mail_engine import encrypt_mail_password, decrypt_mail_password, generate_payslip_pdf_report
 from backend.core.communication_engine import (
     sanitize_e164_phone,
@@ -495,7 +496,7 @@ async def send_communication_message(
 
     pool = get_db_pool()
     now = datetime.datetime.now(datetime.timezone.utc)
-    comm_log_id = uuid.uuid4()
+    comm_log_id = uuid7()
     sender_name = session.get("username") or session.get("full_name") or "Authorized User"
     client_ip = get_client_ip(request) if request and hasattr(request, "client") and request.client else "127.0.0.1"
 
@@ -544,9 +545,27 @@ async def send_communication_message(
                     if p_db:
                         record_data = dict(p_db)
                 batch_mock = {"salary_year_month": record_data.get("month", "Monthly"), "name": "Standard Payroll Run"}
-                pdf_res = await asyncio.to_thread(generate_payslip_pdf_report, record_data, batch_mock)
-                with open(pdf_res["abs_path"], "rb") as f:
-                    media_meta = save_whatsapp_media(pdf_res["filename"], f.read(), "application/pdf")
+                org_info = None
+                org_id = record_data.get("organization_id")
+                org_r = await conn.fetchrow("SELECT * FROM organizations WHERE id = $1;", org_id) if org_id else None
+                if not org_r:
+                    org_r = await conn.fetchrow("SELECT * FROM organizations ORDER BY created_at ASC LIMIT 1;")
+                if org_r:
+                    org_info = dict(org_r)
+                w_val = await conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:qatar_wps_config';")
+                if w_val:
+                    try:
+                        w_cfg = json.loads(w_val) if isinstance(w_val, str) else dict(w_val)
+                        if not org_info:
+                            org_info = {}
+                        org_info["employer_eid"] = w_cfg.get("employer_eid")
+                    except Exception:
+                        pass
+                pdf_res = await asyncio.to_thread(generate_payslip_pdf_report, record_data, batch_mock, org_info)
+                def _prepare_whatsapp_pdf(pdf_abs: str, pdf_fn: str):
+                    with open(pdf_abs, "rb") as f:
+                        return save_whatsapp_media(pdf_fn, f.read(), "application/pdf")
+                media_meta = await asyncio.to_thread(_prepare_whatsapp_pdf, pdf_res["abs_path"], pdf_res["filename"])
 
             success, provider_msg_id, error_log = await asyncio.to_thread(
                 WhatsAppMetaService.send_template_message,
@@ -591,7 +610,7 @@ async def send_communication_message(
 
         # Record in audit_logs (Chatter)
         if payload.record_model and payload.record_id:
-            chat_id = uuid.uuid4()
+            chat_id = uuid7()
             entity_type = payload.record_model.replace("payroll.", "").replace("hr.", "")
             action_code = "WHATSAPP" if channel == "whatsapp" else "SMS"
 

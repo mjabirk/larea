@@ -73,12 +73,67 @@ export function installGlobalFetchInterceptor() {
   const originalFetch = window.fetch;
 
   window.fetch = async function (...args) {
-    const resource = args[0];
+    let [resource, config] = args;
+    config = config ? { ...config } : {};
+
     const url = typeof resource === 'string'
       ? resource
       : resource instanceof Request
       ? resource.url
       : resource ? String(resource) : '';
+
+    if (typeof resource === 'string' && resource.startsWith('/api/')) {
+      const activeOrg = typeof window !== 'undefined' ? localStorage.getItem('enterprise_active_org_id') : null;
+      const activeBranch = typeof window !== 'undefined' ? localStorage.getItem('enterprise_active_branch_id') : null;
+      let activeBranchIds = null;
+      if (typeof window !== 'undefined') {
+        try {
+          const rawBranchIds = localStorage.getItem('enterprise_selected_branch_ids');
+          if (rawBranchIds) {
+            const parsed = JSON.parse(rawBranchIds);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              activeBranchIds = parsed.join(',');
+            }
+          }
+        } catch (e) {}
+      }
+
+      if (activeOrg || activeBranch || activeBranchIds) {
+        if (!config.headers) {
+          config.headers = {};
+        }
+        if (config.headers instanceof Headers) {
+          if (activeOrg && !config.headers.has('X-Organization-Id')) {
+            config.headers.set('X-Organization-Id', activeOrg);
+          }
+          if (activeBranch && !config.headers.has('X-Branch-Id')) {
+            config.headers.set('X-Branch-Id', activeBranch);
+          }
+          if (activeBranchIds && !config.headers.has('X-Branch-Ids')) {
+            config.headers.set('X-Branch-Ids', activeBranchIds);
+          }
+        } else if (Array.isArray(config.headers)) {
+          const hasOrg = config.headers.some(([k]) => k.toLowerCase() === 'x-organization-id');
+          if (activeOrg && !hasOrg) config.headers.push(['X-Organization-Id', activeOrg]);
+          const hasBranch = config.headers.some(([k]) => k.toLowerCase() === 'x-branch-id');
+          if (activeBranch && !hasBranch) config.headers.push(['X-Branch-Id', activeBranch]);
+          const hasBranchIds = config.headers.some(([k]) => k.toLowerCase() === 'x-branch-ids');
+          if (activeBranchIds && !hasBranchIds) config.headers.push(['X-Branch-Ids', activeBranchIds]);
+        } else {
+          config.headers = { ...config.headers };
+          if (activeOrg && !config.headers['X-Organization-Id'] && !config.headers['x-organization-id']) {
+            config.headers['X-Organization-Id'] = activeOrg;
+          }
+          if (activeBranch && !config.headers['X-Branch-Id'] && !config.headers['x-branch-id']) {
+            config.headers['X-Branch-Id'] = activeBranch;
+          }
+          if (activeBranchIds && !config.headers['X-Branch-Ids'] && !config.headers['x-branch-ids']) {
+            config.headers['X-Branch-Ids'] = activeBranchIds;
+          }
+        }
+        args[1] = config;
+      }
+    }
 
     const response = await originalFetch.apply(this, args);
 

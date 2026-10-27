@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query, Response
 from pydantic import BaseModel, Field
 from backend.core.database import get_db_pool, log_audit_event
-from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, check_permission
+from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, check_permission, build_branch_filter
 from backend.core.audit import record_audit_log
 from backend.core.sequences import uuid7, get_next_payroll_batch_code, get_atomic_counter
 
@@ -25,6 +25,11 @@ def serialize_row(r: Dict[str, Any]) -> Dict[str, Any]:
             d[k] = str(v)
         elif hasattr(v, "__float__"):
             d[k] = float(v)
+        elif k == "branch_ids" and isinstance(v, str):
+            try:
+                d[k] = json.loads(v)
+            except Exception:
+                pass
     return d
 
 
@@ -292,6 +297,10 @@ async def sync_employee_adjustments_to_payslips(conn, employee_id: uuid.UUID, ym
 class CreateBatchPayload(BaseModel):
     salary_year_month: str  # Format: YYYY-MM (e.g. 2026-10)
     title: Optional[str] = None
+    branch_ids: Optional[List[str]] = None
+
+
+PayrollBatchPayload = CreateBatchPayload
 
 
 class UpdatePayslipPayload(BaseModel):
@@ -363,9 +372,36 @@ async def list_payroll_batches(
         WHERE 1=1
     """
     params: List[Any] = []
-    if not session.get("is_superadmin") and org_id:
-        query += " AND b.organization_id = $1::uuid"
-        params.append(org_id)
+    idx = 1
+    if org_id:
+        try:
+            org_uuid = uuid.UUID(str(org_id))
+            query += f" AND b.organization_id = ${idx}::uuid"
+            params.append(org_uuid)
+            idx += 1
+        except Exception:
+            pass
+
+    active_branch_ids = session.get("active_branch_ids", ["all"])
+    if "all" not in active_branch_ids and active_branch_ids:
+        valid_uuids = []
+        for bid in active_branch_ids:
+            try:
+                valid_uuids.append(uuid.UUID(str(bid)))
+            except Exception:
+                pass
+        if valid_uuids:
+            query += f" AND (b.branch_id = ANY(${idx}::uuid[]) OR b.branch_id IS NULL OR b.branch_ids @> '[\"all\"]'::jsonb)"
+            params.append(valid_uuids)
+            idx += 1
+    elif not session.get("is_superadmin") and session.get("branch_id"):
+        try:
+            br_uuid = uuid.UUID(str(session.get("branch_id")))
+            query += f" AND (b.branch_id = ${idx}::uuid OR b.branch_id IS NULL OR b.branch_ids @> '[\"all\"]'::jsonb)"
+            params.append(br_uuid)
+            idx += 1
+        except Exception:
+            pass
 
     query += " GROUP BY b.id ORDER BY b.salary_year_month DESC, b.created_at DESC;"
 
@@ -410,29 +446,59 @@ async def create_payroll_batch(
                 except Exception:
                     pass
             if not org_uuid:
-                org_uuid = await conn.fetchval("SELECT id FROM organizations LIMIT 1;")
+                org_uuid = await conn.fetchval("SELECT id FROM organizations ORDER BY created_at ASC LIMIT 1;")
+
+            # Handle branch_ids: default ["all"] (Company-wide consolidated batch)
+            target_branch_ids = payload.branch_ids if payload.branch_ids is not None else ["all"]
+            if isinstance(target_branch_ids, str):
+                target_branch_ids = [target_branch_ids]
+
+            is_all_branches = ("all" in target_branch_ids or len(target_branch_ids) == 0)
+            stored_branch_ids = ["all"] if is_all_branches else [str(b).strip() for b in target_branch_ids if str(b).strip()]
+
+            branch_uuid = None
+            if not is_all_branches and len(stored_branch_ids) == 1:
+                try:
+                    branch_uuid = uuid.UUID(stored_branch_ids[0])
+                except Exception:
+                    pass
 
             # 1. Generate lock-free atomic batch code and UUIDv7
             batch_code = await get_next_payroll_batch_code(conn, ym)
             title = payload.title.strip() if payload.title and payload.title.strip() else f"Payroll - {ym}"
             batch_id = uuid7()
 
-            # Insert initial batch row
+            # Insert initial batch row with branch_ids JSONB
             await conn.execute("""
                 INSERT INTO payroll_batches (
                     id, batch_code, title, salary_year_month, status,
-                    currency, organization_id, created_by_name
+                    currency, organization_id, branch_id, branch_ids, created_by_name
                 ) VALUES (
-                    $1, $2, $3, $4, 'draft', 'QAR', $5, $6
+                    $1, $2, $3, $4, 'draft', 'QAR', $5, $6, $7::jsonb, $8
                 );
-            """, batch_id, batch_code, title, ym, org_uuid, author_name)
+            """, batch_id, batch_code, title, ym, org_uuid, branch_uuid, json.dumps(stored_branch_ids), author_name)
 
-            # Retrieve all Active employees for this organization
+            # Retrieve Active employees for this organization and specified branches
             emp_query = "SELECT * FROM employees WHERE LOWER(status) = 'active'"
             emp_params: List[Any] = []
-            if org_uuid and not session.get("is_superadmin"):
-                emp_query += " AND organization_id = $1::uuid"
+            e_idx = 1
+            if org_uuid:
+                emp_query += f" AND organization_id = ${e_idx}::uuid"
                 emp_params.append(org_uuid)
+                e_idx += 1
+
+            if not is_all_branches:
+                valid_b_uuids = []
+                for b in stored_branch_ids:
+                    try:
+                        valid_b_uuids.append(uuid.UUID(str(b)))
+                    except Exception:
+                        pass
+                if valid_b_uuids:
+                    emp_query += f" AND branch_id = ANY(${e_idx}::uuid[])"
+                    emp_params.append(valid_b_uuids)
+                    e_idx += 1
+
             emp_query += " ORDER BY employee_number ASC;"
 
             employees = await conn.fetch(emp_query, *emp_params)
@@ -1167,6 +1233,12 @@ async def export_qatar_wps_sif(
             if not batch:
                 raise HTTPException(status_code=404, detail="Payroll batch not found.")
 
+            # Resolve Company QID/CR for corporate header
+            org_row = await conn.fetchrow(
+                "SELECT legal_name, tax_id FROM organizations WHERE id = $1;",
+                batch["organization_id"]
+            ) if batch.get("organization_id") else None
+
             # Read Qatar WPS Bank Configuration from system_metadata
             wps_raw = await conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:qatar_wps_config';")
             wps_cfg = {}
@@ -1176,9 +1248,11 @@ async def export_qatar_wps_sif(
                 except Exception:
                     pass
 
-            employer_eid = str(wps_cfg.get("employer_eid") or "12345678").strip()
+            company_cr = (org_row["tax_id"] if org_row and org_row.get("tax_id") else "").strip()
+            employer_eid = company_cr or str(wps_cfg.get("employer_eid") or "12345678").strip()
             payer_bank_short_code = str(wps_cfg.get("payer_bank_short_code") or "QNBA").strip().upper()
             payer_iban = str(wps_cfg.get("payer_iban") or "QA55QNBA000000001122334455667").strip().upper()
+            payer_qid = company_cr or str(wps_cfg.get("payer_qid") or employer_eid).strip()
 
             rows = await conn.fetch("""
                 SELECT * FROM payslips
@@ -1217,7 +1291,7 @@ async def export_qatar_wps_sif(
     # Row 1 (Header schema)
     row1 = "Employer EID,File Creation Date,File Creation Time,Payer EID,Payer QID,Payer Bank Short Name,Payer IBAN,Salary Year and Month,Total Salaries,Total Records,SIF Version"
     # Row 2 (Header values)
-    row2 = f"{employer_eid},{file_date},{file_time},{employer_eid},,{payer_bank_short_code},{payer_iban},{salary_ym},{total_net:.2f},{total_records},01"
+    row2 = f"{employer_eid},{file_date},{file_time},{employer_eid},{payer_qid},{payer_bank_short_code},{payer_iban},{salary_ym},{total_net:.2f},{total_records},01"
     # Row 3 (EDR Column headers)
     row3 = "Record Sequence,Employee QID,Employee Visa ID,Employee Name,Employee Bank Short Name,Employee Account,Salary Frequency,Number of Working Days,Net Salary,Basic Salary,Extra Hours,Extra Income,Deductions,Payment Type,Notes/Comments"
 

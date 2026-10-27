@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useModalEscape } from '../../hooks/useModalEscape';
+import { useLocale } from '../../context/LocaleContext';
 
 const DEFAULT_NEW_FORM = {
   name: '',
@@ -38,6 +39,7 @@ const DEFAULT_NEW_FORM = {
 };
 
 export function SMSGatewaysView() {
+  const { t } = useLocale();
   const auth = useAuth();
   const sessionToken =
     auth?.sessionToken ||
@@ -279,7 +281,7 @@ export function SMSGatewaysView() {
           </div>
           <button
             onClick={() => setActionMessage(null)}
-            className="text-slate-400 hover:text-slate-600 dark:hover:text-white cursor-pointer ml-3"
+            className="text-slate-400 hover:text-slate-600 dark:hover:text-white cursor-pointer ms-3"
           >
             <X className="w-4 h-4" />
           </button>
@@ -543,14 +545,14 @@ export function SMSGatewaysView() {
                 className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>New SMS Gateway</span>
+                <span>{t('add_gateway')}</span>
               </button>
 
               <div className="h-4 w-[1px] bg-slate-200 dark:bg-slate-800 hidden sm:block" />
 
               <div className="flex items-center gap-1.5">
                 <span className="font-bold text-slate-800 dark:text-slate-100 text-xs">
-                  SMS Gateways
+                  {t('sms_gateways')}
                 </span>
                 <span className="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
                   {filtered.length}
@@ -560,13 +562,13 @@ export function SMSGatewaysView() {
 
             <div className="flex items-center gap-2 flex-1 max-w-sm">
               <div className="relative flex-1">
-                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Search className="w-3.5 h-3.5 absolute start-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
                   placeholder="Search SMS gateways..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="w-full pl-8 pr-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full ps-8 pe-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
             </div>
