@@ -147,38 +147,38 @@ export function ControlPanel({
   ];
 
   return (
-    <div className="h-11 min-h-[44px] bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-100 sticky top-14 z-20 shadow-2xs px-3 sm:px-4 flex items-center justify-between gap-2.5 sm:gap-3 select-none relative">
+    <div className="min-h-[52px] py-1.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-100 sticky top-[100px] z-10 px-4 sm:px-6 flex items-center justify-between gap-3 select-none relative">
       {/* ========================================================================= */}
       {/* LEFT: Primary Action Button + Breadcrumbs                                 */}
       {/* ========================================================================= */}
-      <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+      <div className="flex items-center gap-3 shrink-0">
         {!isFormView && onNew && (
           <button
             type="button"
             onClick={onNew}
-            className="h-8 px-2.5 sm:px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-2xs shrink-0"
+            className="h-9 px-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-2xs shrink-0"
           >
-            <Plus className="w-3.5 h-3.5" />
-            <span className="hidden xs:inline">{schema?.newButtonLabel || t('new_record') || '+ New'}</span>
+            <Plus className="w-4 h-4" />
+            <span className="hidden xs:inline">{schema?.newButtonLabel?.replace(/^\+\s*/, '') || 'New'}</span>
             <span className="inline xs:hidden">New</span>
           </button>
         )}
 
-        <div className="flex items-center gap-1.5 text-xs pl-1 border-l border-slate-200 dark:border-slate-700 max-w-[120px] sm:max-w-none truncate">
+        <div className="flex items-center gap-1.5 text-sm max-w-[160px] sm:max-w-none truncate">
           {breadcrumbs.map((crumb, idx) => {
             return (
               <React.Fragment key={idx}>
-                {idx > 0 && <span className="text-slate-300 dark:text-slate-600 font-light">/</span>}
+                {idx > 0 && <span className="text-slate-300 dark:text-slate-600">/</span>}
                 {crumb.onClick ? (
                   <button
                     type="button"
                     onClick={crumb.onClick}
-                    className="font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 transition cursor-pointer text-xs hover:underline truncate"
+                    className="font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 transition cursor-pointer text-sm hover:underline truncate"
                   >
                     {crumb.label}
                   </button>
                 ) : (
-                  <span className="font-semibold text-slate-800 dark:text-slate-200 text-xs tracking-tight truncate">
+                  <span className="font-semibold text-slate-900 dark:text-white text-base tracking-tight truncate">
                     {crumb.label}
                   </span>
                 )}
@@ -189,7 +189,7 @@ export function ControlPanel({
 
         {/* Active Record Count Pill (When on list view) */}
         {!isFormView && activeRecordPill && (
-          <span className="hidden sm:inline-flex font-mono text-[11px] font-semibold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 shadow-2xs shrink-0">
+          <span className="hidden sm:inline-flex text-xs font-medium px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 shrink-0">
             {activeRecordPill}
           </span>
         )}
@@ -227,17 +227,17 @@ export function ControlPanel({
           )}
         </div>
       ) : (
-        <div className="flex items-center gap-2 flex-1 min-w-0 max-w-xl mx-1 sm:mx-2">
+        <div className="flex items-center justify-end gap-2.5 flex-1 min-w-0 mx-1 sm:mx-2 overflow-hidden">
           {onSearchChange && (
             <>
               {/* Desktop Search Input (>= md) */}
-              <div className="relative hidden md:flex flex-1 min-w-[140px] max-w-xs">
+              <div className="relative hidden md:flex w-48 lg:w-60 shrink-0">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 rtl:right-3 rtl:left-auto top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type="text"
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
-                  placeholder={t('search_placeholder') || 'Filter records...'}
+                  placeholder="Search..."
                   className="w-full pl-9 pr-7 rtl:pr-9 rtl:pl-7 py-1.5 bg-slate-50/90 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-900 transition"
                 />
                 {searchInput && (
@@ -306,9 +306,9 @@ export function ControlPanel({
             </>
           )}
 
-          {/* Integrated Filter Chips: horizontally scrollable on sm / md screens */}
+          {/* Integrated Filter Chips: horizontally scrollable without overflowing neighboring buttons */}
           {onSelectFilter && (
-            <div className="flex items-center overflow-x-auto no-scrollbar rounded-lg bg-slate-100/90 dark:bg-slate-800/90 p-0.5 border border-slate-200 dark:border-slate-700 text-xs shrink-0 max-w-[220px] sm:max-w-xs md:max-w-none">
+            <div className="flex items-center overflow-x-auto no-scrollbar rounded-lg bg-slate-100/90 dark:bg-slate-800/90 p-0.5 border border-slate-200 dark:border-slate-700 text-xs min-w-0 max-w-full">
               {filterChips.map((chip) => {
                 const isActive = activeFilter === chip.id;
                 return (
@@ -482,55 +482,35 @@ export function ControlPanel({
 
         {/* Pagination Controls in List / Other Views */}
         {!isFormView && (pager || total !== undefined) && (
-          <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400 text-xs pl-2 rtl:pr-2 rtl:pl-0 border-l rtl:border-r rtl:border-l-0 border-slate-200 dark:border-slate-700">
-            {/* Showing A–B of Total */}
-            <span className="hidden sm:inline font-medium text-slate-600 dark:text-slate-300">
-              Showing <span className="font-semibold">{startRecord}–{endRecord}</span> of <span className="font-semibold">{effectiveTotal}</span>
+          <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400 text-sm pl-2 rtl:pr-2 rtl:pl-0 border-l rtl:border-r rtl:border-l-0 border-slate-200 dark:border-slate-700">
+            <span className="hidden sm:inline tabular-nums text-slate-600 dark:text-slate-300">
+              {startRecord}–{endRecord} of {effectiveTotal}
             </span>
-
-            {/* Page X of Y */}
-            <span className="font-mono text-slate-500 dark:text-slate-400 text-[11px]">
-              Page {effectivePage} of {Math.max(1, effectiveTotalPages)}
-            </span>
-
-            {/* Page Size Selector (25 / 50 / 100) */}
-            <div className="flex items-center gap-1">
-              <select
-                value={effectivePageSize}
-                onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-                className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 text-xs text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
-                title="Page size"
-              >
-                <option value={25}>25</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-              </select>
-            </div>
 
             {/* Prev / Next buttons */}
-            <div className="inline-flex items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+            <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
               <button
                 type="button"
                 onClick={handlePrev}
                 disabled={!canPrev}
-                className={`p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer ${
+                className={`p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer ${
                   !canPrev ? 'opacity-30 cursor-not-allowed' : 'text-slate-700 dark:text-slate-300'
                 }`}
                 title="Previous"
               >
-                <ChevronLeft className="w-3.5 h-3.5 rtl:rotate-180" />
+                <ChevronLeft className="w-4 h-4 rtl:rotate-180" />
               </button>
-              <div className="w-[1px] h-3.5 bg-slate-200 dark:bg-slate-700" />
+              <div className="w-px h-4 bg-slate-200 dark:bg-slate-700" />
               <button
                 type="button"
                 onClick={handleNext}
                 disabled={!canNext}
-                className={`p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer ${
+                className={`p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer ${
                   !canNext ? 'opacity-30 cursor-not-allowed' : 'text-slate-700 dark:text-slate-300'
                 }`}
                 title="Next"
               >
-                <ChevronRight className="w-3.5 h-3.5 rtl:rotate-180" />
+                <ChevronRight className="w-4 h-4 rtl:rotate-180" />
               </button>
             </div>
           </div>

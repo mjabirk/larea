@@ -100,13 +100,13 @@ export function APIKeysView() {
                 <div className="space-y-1">
                     <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-xs font-semibold border border-emerald-200/80 dark:border-emerald-800/60">
                         <Cpu className="w-3.5 h-3.5" />
-                        <span>Headless Biometric ADMS Authentication</span>
+                        <span>Device Authentication</span>
                     </div>
                     <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-                        Biometric Terminal & Daemon API Keys
+                        Device API Keys
                     </h2>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                        SHA-256 hashed keys cached in DragonflyDB with CIDR IP allowlists for ZKTeco & Suprema push gateways.
+                        Manage API keys and IP allowlists for attendance clocks and external device connectors.
                     </p>
                 </div>
 
@@ -116,7 +116,7 @@ export function APIKeysView() {
                     className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-xs transition cursor-pointer shrink-0"
                 >
                     <Plus className="w-4 h-4" />
-                    <span>+ Provision Terminal API Key</span>
+                    <span>New API Key</span>
                 </button>
             </div>
 
@@ -137,7 +137,7 @@ export function APIKeysView() {
                         </button>
                     </div>
                     <p className="text-xs text-amber-800 dark:text-amber-300">
-                        For security, only the SHA-256 hash is stored in PostgreSQL. Paste this token into your biometric device's <code>X-API-Key</code> header configuration:
+                        Save this key in a secure place — it will not be shown again. Paste it into your device's <code>X-API-Key</code> header:
                     </p>
                     <div className="flex items-center gap-2 bg-slate-900 text-emerald-400 p-3 rounded-xl font-mono text-xs">
                         <span className="flex-1 break-all">{newlyGeneratedKey.raw_api_key}</span>
@@ -160,7 +160,7 @@ export function APIKeysView() {
                         <tr>
                             <th className="py-3.5 px-4">Key ID</th>
                             <th className="py-3.5 px-4">Terminal / Daemon Owner</th>
-                            <th className="py-3.5 px-4">Allowed CIDR Subnets</th>
+                            <th className="py-3.5 px-4">Allowed IP Ranges</th>
                             <th className="py-3.5 px-4">Authorized Scopes</th>
                             <th className="py-3.5 px-4">Created At</th>
                             <th className="py-3.5 px-4 text-right">Revoke</th>
@@ -251,7 +251,7 @@ export function APIKeysView() {
 
                             <div>
                                 <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                    Allowed CIDR Subnets (Comma-Separated)
+                                    Allowed IP Ranges (Comma-Separated)
                                 </label>
                                 <input
                                     type="text"

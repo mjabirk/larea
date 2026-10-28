@@ -458,6 +458,22 @@ async def update_shift_roster(
         user_name = session.get("full_name") or session.get("username") or "System User"
         tenant_str = str(existing["organization_id"] or session.get("organization_id") or "default_tenant")
 
+        diff_changes = {}
+        tracked_pairs = [
+            ("employee_name", existing["employee_name"], emp_name),
+            ("department", existing["department"], dept),
+            ("shift_name", existing["shift_name"], shift_name),
+            ("start_time", existing["start_time"].isoformat() if existing["start_time"] else None, start_dt.isoformat() if start_dt else None),
+            ("end_time", existing["end_time"].isoformat() if existing["end_time"] else None, end_dt.isoformat() if end_dt else None),
+            ("duration_hours", float(existing["duration_hours"]) if existing["duration_hours"] is not None else None, duration_hours),
+            ("location", existing["location"], location),
+            ("status", existing["status"], status_val),
+            ("notes", existing["notes"], notes),
+        ]
+        for f_key, old_v, new_v in tracked_pairs:
+            if str(old_v or "") != str(new_v or ""):
+                diff_changes[f_key] = {"old": old_v, "new": new_v}
+
         await record_audit_log(
             conn=conn,
             tenant_id=tenant_str,
@@ -468,14 +484,7 @@ async def update_shift_roster(
             changed_by_name=user_name,
             ip_address=client_ip,
             note=f"Updated shift roster {existing['code']} for {emp_name}",
-            changes={
-                "code": existing["code"],
-                "shift_name": shift_name,
-                "start_time": start_dt.isoformat(),
-                "end_time": end_dt.isoformat(),
-                "duration_hours": duration_hours,
-                "status": status_val,
-            },
+            changes=diff_changes or {"status": {"old": existing["status"], "new": status_val}},
         )
 
     return serialize_row(updated_row)

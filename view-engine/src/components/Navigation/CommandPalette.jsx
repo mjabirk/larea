@@ -218,7 +218,7 @@ export function CommandPalette({
         scope: 'actions',
         scopeLabel: 'Quick Actions',
         title: '+ Create New Employee',
-        subtitle: 'Onboard expat personnel, track QID/visa compliance & banking',
+        subtitle: 'Manage employees, ID documents, and bank details',
         icon: Users,
         iconBg: '#2563eb',
         badge: 'Action',
@@ -284,34 +284,34 @@ export function CommandPalette({
       },
     });
 
-    // Action: Statutory Legal Policy
+    // Action: Terms & Privacy
     items.push({
       id: 'action_open_legal',
       scope: 'actions',
       scopeLabel: 'Quick Actions',
-      title: 'View Statutory Policies & Privacy Hub',
-      subtitle: 'GDPR Privacy Policy, Terms of Service, and Cookie Disclosures',
+      title: 'Terms & Privacy',
+      subtitle: 'Privacy Notice, Terms of Use, and Storage Preferences',
       icon: FileText,
       iconBg: '#475569',
-      badge: 'Compliance',
-      keywords: ['privacy', 'terms', 'gdpr', 'refund', 'cookie', 'legal'],
+      badge: 'Policies',
+      keywords: ['privacy', 'terms', 'refund', 'cookie', 'policies'],
       action: () => {
         onOpenPolicy?.('privacy');
         onClose();
       },
     });
 
-    // Action: Business Verification
+    // Action: Company Details
     items.push({
       id: 'action_biz_modal',
       scope: 'actions',
       scopeLabel: 'Quick Actions',
-      title: 'View Business Verification',
-      subtitle: `${currentOrganization?.legal_name || 'Organization'} • Tax/CR: ${currentOrganization?.tax_id || 'TAX-12345678'}`,
+      title: 'Company Details',
+      subtitle: `${currentOrganization?.legal_name || 'Organization'} • Reg. No: ${currentOrganization?.tax_id || '—'}`,
       icon: Building2,
       iconBg: '#0284c7',
-      badge: 'Verification',
-      keywords: ['business', 'tax', 'cr', 'address', 'legal entity', 'corporate'],
+      badge: 'Company',
+      keywords: ['business', 'tax', 'cr', 'address', 'company', 'corporate'],
       action: () => {
         onOpenBusinessModal?.();
         onClose();

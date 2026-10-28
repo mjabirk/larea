@@ -17,6 +17,7 @@ import {
   Archive,
 } from 'lucide-react';
 import { useDebounce } from '../../hooks/useDebounce';
+import { useSystemLookups } from '../../services/lookupService';
 
 export function EmployeeListView({
   employees = [],
@@ -60,7 +61,9 @@ export function EmployeeListView({
   }, [debouncedSearch, embeddedInControlPanel]);
 
   const searchTerm = externalSearchTerm !== undefined ? externalSearchTerm : debouncedSearch;
+  const { countries, getCountryName, getCountryCode } = useSystemLookups();
   const [deptFilter, setDeptFilter] = useState('ALL');
+  const [nationalityFilter, setNationalityFilter] = useState('ALL');
   const [complianceFilter, setComplianceFilter] = useState('ALL');
   const [currentPage, setCurrentPage] = useState(externalPage || 1);
   const [pageSize, setPageSize] = useState(externalPageSize || 25);
@@ -121,10 +124,18 @@ export function EmployeeListView({
       (emp.job_title || '').toLowerCase().includes(q) ||
       (emp.display_name_local || '').toLowerCase().includes(q) ||
       (emp.national_id_number || '').toLowerCase().includes(q) ||
-      (emp.work_email || '').toLowerCase().includes(q);
+      (emp.work_email || '').toLowerCase().includes(q) ||
+      (emp.nationality || '').toLowerCase().includes(q) ||
+      (getCountryName(emp.nationality) || '').toLowerCase().includes(q);
 
     const matchDept =
       deptFilter === 'ALL' || emp.department_id === deptFilter;
+
+    const matchNationality =
+      nationalityFilter === 'ALL' ||
+      emp.nationality === nationalityFilter ||
+      getCountryCode(emp.nationality) === nationalityFilter ||
+      getCountryName(emp.nationality) === nationalityFilter;
 
     const complianceIssues = getComplianceStatus(emp);
     const matchCompliance =
@@ -132,7 +143,7 @@ export function EmployeeListView({
       (complianceFilter === 'EXPIRING' && complianceIssues.length > 0) ||
       (complianceFilter === 'VALID' && complianceIssues.length === 0);
 
-    return matchSearch && matchDept && matchCompliance;
+    return matchSearch && matchDept && matchNationality && matchCompliance;
   });
 
   // Pagination calculation bound to limit, offset, and total
@@ -147,22 +158,22 @@ export function EmployeeListView({
     : filteredEmployees.slice(startIndex, endIndex);
 
   return (
-    <div className="space-y-2.5">
+    <div className="space-y-3">
       {/* 1. Top Action Bar (When standalone showHeader is true) */}
       {showHeader && (
-        <div className="h-11 min-h-[44px] bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs px-3 sm:px-4 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
+        <div className="min-h-[52px] bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs px-4 py-2 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={onNewEmployee}
-              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-2xs transition cursor-pointer shrink-0"
+              className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-2xs transition cursor-pointer shrink-0"
             >
-              <Plus className="w-3.5 h-3.5" />
-              <span>+ Create New Employee</span>
+              <Plus className="w-4 h-4" />
+              <span>New Employee</span>
             </button>
-            <div className="flex items-center gap-1.5 text-xs pl-2 border-l border-slate-200 dark:border-slate-700">
-              <span className="font-bold text-slate-900 dark:text-white">Employees Directory</span>
-              <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+            <div className="flex items-center gap-2 text-sm pl-3 border-l border-slate-200 dark:border-slate-700">
+              <span className="font-semibold text-slate-900 dark:text-white">Employees</span>
+              <span className="tabular-nums text-xs font-medium px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
                 {totalRecords}
               </span>
             </div>
@@ -174,7 +185,7 @@ export function EmployeeListView({
       {!embeddedInControlPanel && (
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
           {[
-            { id: 'all', label: 'All (Active)' },
+            { id: 'all', label: 'All Active' },
             { id: 'active', label: 'Active' },
             { id: 'on leave', label: 'On Leave' },
             { id: 'terminated', label: 'Terminated' },
@@ -190,7 +201,7 @@ export function EmployeeListView({
                   setCurrentPage(1);
                   onPageChange?.(1);
                 }}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition cursor-pointer flex items-center gap-1.5 ${
+                className={`px-3.5 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition cursor-pointer flex items-center gap-1.5 ${
                   isActive
                     ? chip.id === 'archived'
                       ? 'bg-amber-600 text-white shadow-xs'
@@ -198,7 +209,7 @@ export function EmployeeListView({
                     : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-slate-800/60'
                 }`}
               >
-                {chip.id === 'archived' && <Archive className="w-3 h-3" />}
+                {chip.id === 'archived' && <Archive className="w-3.5 h-3.5" />}
                 <span>{chip.label}</span>
               </button>
             );
@@ -206,18 +217,18 @@ export function EmployeeListView({
         </div>
       )}
 
-      {/* 2. Slim Filter & Pagination Strip with Clean Alignment */}
-      <div className="h-9 min-h-[36px] bg-white dark:bg-slate-900 px-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs flex items-center justify-between gap-2.5 overflow-x-auto no-scrollbar">
-        <div className={`flex items-center gap-2 ${embeddedInControlPanel ? 'shrink-0' : 'flex-1 max-w-xl'}`}>
+      {/* 2. Filter & Pagination Strip */}
+      <div className="min-h-[48px] py-1.5 bg-white dark:bg-slate-900 px-3.5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs flex items-center justify-between gap-3 overflow-x-auto no-scrollbar">
+        <div className={`flex items-center gap-2 ${embeddedInControlPanel ? 'shrink-0' : 'flex-1 max-w-2xl'}`}>
           {!embeddedInControlPanel && (
-            <div className="relative flex-1">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="text"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 placeholder="Search name, code, QID, title..."
-                className="w-full h-7 text-xs pl-7 pr-6 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full h-9 text-sm pl-9 pr-7 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
               />
               {searchInput && (
                 <button
@@ -226,9 +237,9 @@ export function EmployeeListView({
                     setSearchInput('');
                     externalOnSearchChange?.('');
                   }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
                 >
-                  <X className="w-3 h-3" />
+                  <X className="w-3.5 h-3.5" />
                 </button>
               )}
             </div>
@@ -242,13 +253,32 @@ export function EmployeeListView({
               setCurrentPage(1);
               onPageChange?.(1);
             }}
-            className="h-7 text-[11.5px] font-medium px-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0"
+            className="h-9 text-sm font-medium px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0"
           >
             <option value="ALL">All Departments</option>
             <option value="Operations">Operations</option>
             <option value="Human Resources">Human Resources</option>
             <option value="Engineering">Engineering</option>
             <option value="General">General</option>
+          </select>
+
+          {/* Nationality Filter */}
+          <select
+            value={nationalityFilter}
+            onChange={(e) => {
+              setNationalityFilter(e.target.value);
+              setCurrentPage(1);
+              onPageChange?.(1);
+            }}
+            className="h-9 text-sm font-medium px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0 max-w-[160px]"
+            title="Filter by Nationality"
+          >
+            <option value="ALL">All Nationalities</option>
+            {countries.map((c) => (
+              <option key={c.code} value={c.code}>
+                {c.name} ({c.code})
+              </option>
+            ))}
           </select>
 
           {/* Compliance Filter */}
@@ -259,19 +289,18 @@ export function EmployeeListView({
               setCurrentPage(1);
               onPageChange?.(1);
             }}
-            className="h-7 text-[11.5px] font-medium px-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0"
+            className="h-9 text-sm font-medium px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer shrink-0"
           >
-            <option value="ALL">All Compliance</option>
-            <option value="EXPIRING">⚠️ Expiring &lt;30d</option>
-            <option value="VALID">✓ Valid</option>
+            <option value="ALL">All Documents</option>
+            <option value="EXPIRING">Expiring (&lt;30d)</option>
+            <option value="VALID">Valid</option>
           </select>
         </div>
 
-        {/* Right: Clean Pagination Controls (Page X of Y, Showing A–B of Total, Prev/Next, and 25/50/100 selector) */}
-        <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 pl-2 border-l border-slate-200 dark:border-slate-700 shrink-0">
-          {/* Page Size Selector (25 / 50 / 100) */}
+        {/* Right: Clean Pagination Controls */}
+        <div className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-400 pl-3 border-l border-slate-200 dark:border-slate-700 shrink-0">
           <div className="flex items-center gap-1.5">
-            <span className="text-[11px] text-slate-400 hidden sm:inline">Rows:</span>
+            <span className="text-xs text-slate-400 hidden sm:inline">Rows:</span>
             <select
               value={pageSize}
               onChange={(e) => {
@@ -281,8 +310,8 @@ export function EmployeeListView({
                 onPageSizeChange?.(newSize);
                 onPageChange?.(1);
               }}
-              className="h-7 text-xs font-medium px-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer"
-              title="Page size (limit)"
+              className="h-8 text-xs font-medium px-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer"
+              title="Rows per page"
             >
               <option value={25}>25</option>
               <option value={50}>50</option>
@@ -290,20 +319,11 @@ export function EmployeeListView({
             </select>
           </div>
 
-          {/* Showing A–B of Total */}
-          <span className="font-mono text-xs tabular-nums text-slate-700 dark:text-slate-300 hidden md:inline">
-            Showing {showingStart}–{showingEnd} of {totalRecords}
+          <span className="tabular-nums text-xs text-slate-600 dark:text-slate-300 hidden md:inline">
+            {showingStart}–{showingEnd} of {totalRecords}
           </span>
 
-          <span className="text-slate-300 dark:text-slate-600 hidden md:inline">|</span>
-
-          {/* Page X of Y */}
-          <span className="font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
-            Page {totalRecords === 0 ? 0 : currentPage} of {totalPages}
-          </span>
-
-          {/* Previous / Next buttons */}
-          <div className="inline-flex items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-2xs">
+          <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-2xs">
             <button
               type="button"
               onClick={() => {
@@ -312,12 +332,12 @@ export function EmployeeListView({
                 onPageChange?.(prev);
               }}
               disabled={currentPage <= 1}
-              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+              className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
               title="Previous Page"
             >
-              <ChevronLeft className="w-3.5 h-3.5 text-slate-700 dark:text-slate-300" />
+              <ChevronLeft className="w-4 h-4 text-slate-700 dark:text-slate-300" />
             </button>
-            <div className="w-[1px] h-3.5 bg-slate-200 dark:bg-slate-700" />
+            <div className="w-[1px] h-4 bg-slate-200 dark:bg-slate-700" />
             <button
               type="button"
               onClick={() => {
@@ -326,40 +346,40 @@ export function EmployeeListView({
                 onPageChange?.(next);
               }}
               disabled={currentPage >= totalPages}
-              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+              className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
               title="Next Page"
             >
-              <ChevronRight className="w-3.5 h-3.5 text-slate-700 dark:text-slate-300" />
+              <ChevronRight className="w-4 h-4 text-slate-700 dark:text-slate-300" />
             </button>
           </div>
         </div>
       </div>
 
-      {/* 3. High-Density Employees Table (32px row height, sticky header, 80 records per view) */}
-      <div className="max-h-[calc(100vh-140px)] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs bg-white dark:bg-slate-900">
+      {/* 3. Readable Employees Table */}
+      <div className="max-h-[calc(100vh-160px)] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs bg-white dark:bg-slate-900">
         <table className="w-full text-left border-collapse">
-          <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900 border-b border-slate-200/80 dark:border-slate-800 shadow-2xs">
-            <tr className="h-8 text-slate-600 dark:text-slate-400 font-semibold text-[11.5px] uppercase tracking-wider">
-              <th className="py-1 px-2.5">Employee</th>
-              <th className="py-1 px-2.5">Job Title</th>
-              <th className="py-1 px-2.5">Department</th>
-              <th className="py-1 px-2.5">Nationality</th>
-              <th className="py-1 px-2.5">Immigration & Visa</th>
-              <th className="py-1 px-2.5">Status</th>
-              <th className="py-1 px-2.5 text-right">Actions</th>
+          <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
+            <tr className="h-11 text-slate-500 dark:text-slate-400 font-semibold text-xs uppercase tracking-wider">
+              <th className="py-3 px-4">Employee</th>
+              <th className="py-3 px-4">Job Title</th>
+              <th className="py-3 px-4">Department</th>
+              <th className="py-3 px-4">Nationality</th>
+              <th className="py-3 px-4">Documents</th>
+              <th className="py-3 px-4">Status</th>
+              <th className="py-3 px-4 text-right">Actions</th>
             </tr>
           </thead>
-          <tbody className="text-[12.5px] text-slate-800 dark:text-slate-200 divide-y divide-slate-100 dark:divide-slate-800/80">
+          <tbody className="text-sm text-slate-800 dark:text-slate-200 divide-y divide-slate-100 dark:divide-slate-800/80">
             {isLoading ? (
               <tr>
-                <td colSpan={7} className="py-8 text-center text-xs text-slate-400">
-                  Loading workforce directory...
+                <td colSpan={7} className="py-10 text-center text-sm text-slate-400">
+                  Loading employees...
                 </td>
               </tr>
             ) : pagedEmployees.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-8 text-center text-xs text-slate-400">
-                  No employee records match the active criteria.
+                <td colSpan={7} className="py-10 text-center text-sm text-slate-400">
+                  No employees match your filter.
                 </td>
               </tr>
             ) : (
@@ -371,48 +391,43 @@ export function EmployeeListView({
                   <tr
                     key={emp.id}
                     onClick={() => onSelectEmployee(emp)}
-                    className={`h-8 hover:bg-slate-100/60 dark:hover:bg-slate-800/60 border-b border-slate-200/60 dark:border-slate-800/60 transition-colors cursor-pointer ${
+                    className={`h-12 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors cursor-pointer ${
                       emp.is_active === false
-                        ? 'bg-slate-100/60 dark:bg-slate-900/80 text-slate-500 opacity-80'
-                        : 'odd:bg-white dark:odd:bg-slate-900 even:bg-slate-50/40 dark:even:bg-slate-800/40'
+                        ? 'bg-slate-50/70 dark:bg-slate-900/80 text-slate-500 opacity-80'
+                        : ''
                     }`}
                   >
-                    {/* Employee Name (Single-line truncate, ID & email in tooltip) */}
-                    <td className="py-1 px-2.5">
+                    <td className="py-3 px-4">
                       <span
-                        className="truncate max-w-[200px] font-semibold text-slate-900 dark:text-white block cursor-default"
+                        className="truncate max-w-[220px] font-medium text-sm text-slate-900 dark:text-white block"
                         title={`${emp.employee_number} • ${emp.work_email || 'No email'}${emp.display_name_local ? ` (${emp.display_name_local})` : ''}`}
                       >
                         {emp.full_name}
                       </span>
                     </td>
 
-                    {/* Job Title (Single line) */}
-                    <td className="py-1 px-2.5">
-                      <span className="truncate max-w-[150px] font-medium text-slate-800 dark:text-slate-200 block" title={emp.job_title}>
+                    <td className="py-3 px-4">
+                      <span className="truncate max-w-[170px] text-sm text-slate-700 dark:text-slate-300 block" title={emp.job_title}>
                         {emp.job_title || 'Staff Associate'}
                       </span>
                     </td>
 
-                    {/* Department (Single line) */}
-                    <td className="py-1 px-2.5">
-                      <span className="truncate max-w-[120px] text-slate-600 dark:text-slate-300 block">
+                    <td className="py-3 px-4">
+                      <span className="truncate max-w-[140px] text-sm text-slate-600 dark:text-slate-300 block">
                         {emp.department_id || 'Operations'}
                       </span>
                     </td>
 
-                    {/* Nationality (Single line) */}
-                    <td className="py-1 px-2.5">
-                      <span className="truncate max-w-[120px] text-slate-600 dark:text-slate-300 block">
-                        {emp.nationality || 'Qatar'}
+                    <td className="py-3 px-4">
+                      <span className="truncate max-w-[140px] text-sm text-slate-600 dark:text-slate-300 block" title={getCountryName(emp.nationality) || emp.nationality || 'Qatar'}>
+                        {getCountryName(emp.nationality) || emp.nationality || 'Qatar'}
                       </span>
                     </td>
 
-                    {/* Immigration / Visa Status (Compact 20px pill) */}
-                    <td className="py-1 px-2.5">
+                    <td className="py-3 px-4">
                       {isExpiring ? (
                         <span
-                          className="inline-flex items-center gap-1 h-5 px-1.5 py-0 rounded text-[10.5px] font-bold bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 shrink-0"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 shrink-0"
                           title={complianceIssues.map((i) => i.label).join(' | ')}
                         >
                           <AlertTriangle className="w-3 h-3 text-amber-500" />
@@ -420,7 +435,7 @@ export function EmployeeListView({
                         </span>
                       ) : (
                         <span
-                          className="inline-flex items-center gap-1 h-5 px-1.5 py-0 rounded text-[10.5px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shrink-0"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shrink-0"
                           title={`QID: ${emp.national_id_number || 'N/A'} • Visa: ${emp.visa_number || 'N/A'}`}
                         >
                           <CheckCircle2 className="w-3 h-3 text-emerald-500" />
@@ -429,16 +444,15 @@ export function EmployeeListView({
                       )}
                     </td>
 
-                    {/* Status Pill (Compact 20px) */}
-                    <td className="py-1 px-2.5">
+                    <td className="py-3 px-4">
                       {emp.is_active === false ? (
-                        <span className="inline-flex items-center gap-1 h-5 px-1.5 py-0 rounded text-[10.5px] font-bold border shrink-0 bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800">
-                          <Archive className="w-2.5 h-2.5" />
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border shrink-0 bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800">
+                          <Archive className="w-3 h-3" />
                           <span>Archived</span>
                         </span>
                       ) : (
                         <span
-                          className={`inline-flex items-center h-5 px-1.5 py-0 rounded text-[10.5px] font-bold border shrink-0 ${
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border shrink-0 ${
                             emp.status === 'Active'
                               ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
                               : emp.status === 'On Leave'
@@ -451,10 +465,9 @@ export function EmployeeListView({
                       )}
                     </td>
 
-                    {/* Action */}
-                    <td className="py-1 px-2.5 text-right">
-                      <span className="text-[11px] font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer">
-                        View →
+                    <td className="py-3 px-4 text-right">
+                      <span className="text-sm font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer">
+                        Open
                       </span>
                     </td>
                   </tr>

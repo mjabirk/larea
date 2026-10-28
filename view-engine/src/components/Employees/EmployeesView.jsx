@@ -6,6 +6,7 @@ import { DeleteBlockedModal } from '../common/DeleteBlockedModal';
 import { AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTenancy } from '../../context/TenancyContext';
+import { getUrlParam, syncViewUrlParams, notifyRecordChatterUpdated } from '../../utils/urlState';
 
 export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = null, onBackToList }) {
   const auth = useAuth();
@@ -21,8 +22,20 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
       : '') ||
     '';
 
-  const [viewMode, setViewMode] = useState(activeMenuId === 'new_employee' ? 'form' : 'list');
+  const initialUrlView = getUrlParam('view');
+  const initialUrlRecordId = initialEmployeeId || getUrlParam('id') || null;
+  const shouldStartInForm =
+    activeMenuId === 'new_employee' ||
+    Boolean(initialEmployeeId) ||
+    initialUrlView === 'form';
+
+  const [viewMode, setViewMode] = useState(shouldStartInForm ? 'form' : 'list');
   const [selectedEmployee, setSelectedEmployee] = useState(null);
+  const [pendingEmployeeId, setPendingEmployeeId] = useState(
+    shouldStartInForm && initialUrlRecordId && initialUrlRecordId !== 'new' && activeMenuId !== 'new_employee'
+      ? initialUrlRecordId
+      : null
+  );
   const [employees, setEmployees] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -102,28 +115,71 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
 
   const prevActiveMenuIdRef = useRef(activeMenuId);
 
+  // Hydrate pending employee on browser reload (F5) or deep link (works even for archived employees)
   useEffect(() => {
-    if (initialEmployeeId && employees.length > 0) {
-      const match = employees.find((e) => e.id === initialEmployeeId);
-      if (match) {
-        setSelectedEmployee(match);
-        setViewMode('form');
-        setIsDirty(false);
-        return;
-      }
+    if (!pendingEmployeeId) return;
+    const match = employees.find((e) => String(e.id) === String(pendingEmployeeId));
+    if (match) {
+      setSelectedEmployee(match);
+      setViewMode('form');
+      setIsDirty(false);
+      setPendingEmployeeId(null);
+      return;
     }
-  }, [initialEmployeeId, employees]);
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/v1/employees/${pendingEmployeeId}`, {
+          headers: getHeaders(false),
+        });
+        if (!cancelled) {
+          if (res.ok) {
+            const empData = await res.json();
+            setSelectedEmployee(empData);
+            setViewMode('form');
+            setIsDirty(false);
+          } else {
+            // Invalid or inaccessible employee ID -> fall back cleanly to list
+            setViewMode('list');
+            setSelectedEmployee(null);
+          }
+          setPendingEmployeeId(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setPendingEmployeeId(null);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingEmployeeId, employees]);
+
+  // Synchronize viewMode and selectedEmployee ID to URL query params so F5 reload stays on Form view
+  useEffect(() => {
+    if (viewMode === 'form') {
+      const targetId = selectedEmployee?.id || pendingEmployeeId || 'new';
+      syncViewUrlParams({ view: 'form', id: targetId });
+    } else {
+      syncViewUrlParams({ view: null, id: null, tab: null });
+    }
+  }, [viewMode, selectedEmployee?.id, pendingEmployeeId]);
 
   useEffect(() => {
     if (prevActiveMenuIdRef.current !== activeMenuId) {
       prevActiveMenuIdRef.current = activeMenuId;
       if (activeMenuId === 'new_employee') {
         setSelectedEmployee(null);
+        setPendingEmployeeId(null);
         setViewMode('form');
         setIsDirty(true);
       } else if (activeMenuId === 'employees' && !initialEmployeeId) {
         setViewMode('list');
         setSelectedEmployee(null);
+        setPendingEmployeeId(null);
         setIsDirty(false);
       }
     }
@@ -178,16 +234,12 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
     },
   }), []);
 
-  // Standard Breadcrumbs
+  // Clean, non-redundant Breadcrumbs
   const breadcrumbs = useMemo(() => {
     if (viewMode === 'list') {
-      return [
-        { label: 'Human Resources' },
-        { label: 'Employees', onClick: () => setViewMode('list') },
-      ];
+      return [{ label: 'Employees' }];
     }
     return [
-      { label: 'Human Resources' },
       {
         label: 'Employees',
         onClick: () => {
@@ -196,22 +248,23 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
           }
           setViewMode('list');
           setSelectedEmployee(null);
+          setPendingEmployeeId(null);
           setIsDirty(false);
           onBackToList?.();
         },
       },
-      { label: selectedEmployee?.full_name || 'New Employee Profile' },
+      { label: selectedEmployee?.full_name || (pendingEmployeeId ? 'Loading...' : 'New Employee') },
     ];
-  }, [viewMode, selectedEmployee, onBackToList, isDirty]);
+  }, [viewMode, selectedEmployee, pendingEmployeeId, onBackToList, isDirty]);
 
   // Standard Active Record Pill
   const activeRecordPill = useMemo(() => {
     if (viewMode === 'list') {
-      return `${filteredEmployees.length} Employees`;
+      return `${filteredEmployees.length}`;
     }
     return selectedEmployee?.employee_number
-      ? `[${selectedEmployee.employee_number}]`
-      : '[NEW]';
+      ? selectedEmployee.employee_number
+      : 'NEW';
   }, [viewMode, filteredEmployees.length, selectedEmployee]);
 
   // Smooth Record Pager Cycling (1 of N < >)
@@ -401,11 +454,12 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
         const result = await res.json();
         setFeedback({
           type: 'success',
-          text: result.message || (result.is_active ? 'Employee unarchived.' : 'Employee archived.'),
+          text: result.message || (result.is_active ? 'Employee restored.' : 'Employee archived.'),
         });
         if (selectedEmployee && selectedEmployee.id === targetId) {
           setSelectedEmployee((prev) => prev ? { ...prev, is_active: result.is_active } : null);
         }
+        notifyRecordChatterUpdated(targetId, 'employees');
         await fetchEmployees();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -464,13 +518,15 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
       setFeedback({
         type: 'success',
         text: isEditing
-          ? `Employee profile for ${savedData.full_name || 'employee'} updated and audited successfully.`
-          : `New employee ${savedData.full_name || ''} created successfully with AES-256 vault initialized.`,
+          ? `Employee profile for ${savedData.full_name || 'employee'} updated.`
+          : `Employee profile for ${savedData.full_name || 'new employee'} created.`,
       });
       setSelectedEmployee(savedData);
+      setPendingEmployeeId(null);
       setViewMode('form');
       setIsDirty(false);
       formRef.current?.resetDirty?.(savedData);
+      notifyRecordChatterUpdated(savedData.id, 'employees');
       await fetchEmployees();
 
       setTimeout(() => setFeedback(null), 4000);
@@ -543,6 +599,11 @@ export function EmployeesView({ activeMenuId = 'employees', initialEmployeeId = 
             showHeader={false}
             embeddedInControlPanel={true}
           />
+        ) : pendingEmployeeId && !selectedEmployee ? (
+          <div className="py-16 flex flex-col items-center justify-center gap-3 text-slate-400">
+            <div className="w-7 h-7 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+            <span className="text-sm">Loading employee profile...</span>
+          </div>
         ) : (
           <EmployeeFormView
             ref={formRef}

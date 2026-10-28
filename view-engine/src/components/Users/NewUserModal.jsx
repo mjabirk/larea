@@ -76,23 +76,23 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
     }
 
     if (!formData.date_of_birth) {
-      setError('Date of birth is required for age compliance verification.');
+      setError('Date of birth is required.');
       return;
     }
 
     if (isMinor) {
       if (!formData.guardian_name.trim() || !formData.guardian_email.trim()) {
-        setError('Minor applicant: Parent or legal guardian name and email are mandatory under GDPR Art. 8.');
+        setError('Parent or guardian name and email are required for users under 18.');
         return;
       }
       if (!formData.age_consent_verified) {
-        setError('Minor applicant: Explicit parental/guardian consent verification must be confirmed.');
+        setError('Parent or guardian consent must be confirmed for users under 18.');
         return;
       }
     }
 
     if (!formData.terms_consent) {
-      setError('You must confirm consent to the statutory Terms of Service and Privacy Policy.');
+      setError('Please accept the Terms of Use and Privacy Notice.');
       return;
     }
 
@@ -152,11 +152,11 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
               <UserPlus className="w-4 h-4" />
             </div>
             <div>
-              <h3 id="new-user-modal-title" className="font-bold text-sm text-slate-100">
-                Provision New Enterprise Identity
+              <h3 id="new-user-modal-title" className="font-semibold text-base text-slate-100">
+                Create User Account
               </h3>
-              <p className="text-[11px] text-slate-400">
-                GDPR-compliant registration with statutory age verification
+              <p className="text-xs text-slate-400">
+                Add a team member and assign their role and branch access
               </p>
             </div>
           </div>
@@ -209,12 +209,12 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
               />
             </div>
 
-            {/* Date of Birth & Age Verification */}
+            {/* Date of Birth */}
             <div className="space-y-1.5 md:col-span-2">
               <div className="flex items-center justify-between">
                 <label className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
                   <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Date of Birth (GDPR Art. 8 Verification) <span className="text-rose-500">*</span></span>
+                  <span>Date of Birth <span className="text-rose-500">*</span></span>
                 </label>
                 {calculatedAge !== null && (
                   <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${
@@ -222,7 +222,7 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
                       ? 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700'
                       : 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700'
                   }`}>
-                    Age: {calculatedAge} ({isMinor ? 'Minor - Consent Required' : 'Adult'})
+                    Age: {calculatedAge}{isMinor ? ' (Under 18)' : ''}
                   </span>
                 )}
               </div>
@@ -234,15 +234,15 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
               />
             </div>
 
-            {/* Minor Safeguards / Guardian Information */}
+            {/* Guardian Information */}
             {isMinor && (
               <div className="md:col-span-2 p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 space-y-3 animate-fadeIn">
                 <div className="flex items-center gap-2 text-amber-900 dark:text-amber-200 font-bold">
                   <AlertTriangle className="w-4 h-4 text-amber-600" />
-                  <span>Statutory Minor Protection (Under 18 Years)</span>
+                  <span>Guardian Consent (Under 18)</span>
                 </div>
                 <p className="text-[11px] text-amber-800 dark:text-amber-300">
-                  Under GDPR Article 8 and Child Online Privacy regulations, parental or guardian consent must be explicitly recorded before processing minors' personal data.
+                  Parent or guardian contact details and approval are required for users under 18.
                 </p>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
@@ -280,7 +280,7 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
                     className="mt-0.5 w-4 h-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500 cursor-pointer"
                   />
                   <span className="text-[11px] text-amber-900 dark:text-amber-200 leading-snug">
-                    I confirm that verified legal guardian consent (<code>age_consent_verified</code>) has been obtained in accordance with statutory child privacy laws.
+                    I confirm that parent or guardian consent has been obtained for this account.
                   </span>
                 </label>
               </div>
@@ -345,12 +345,8 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
               </div>
             </div>
 
-            {/* Ethical Form-Level Consents (Unchecked by default to prevent dark patterns) */}
+            {/* Account Options */}
             <div className="md:col-span-2 space-y-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
-              <div className="font-semibold text-slate-800 dark:text-slate-200">
-                Ethical Consents & Security Policies:
-              </div>
-
               {/* Terms and Privacy Consent Checkbox */}
               <label className="flex items-start gap-2.5 cursor-pointer">
                 <input
@@ -360,7 +356,7 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
                   className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
                 />
                 <span className="text-slate-700 dark:text-slate-300 text-[11px] leading-snug">
-                  I agree to the statutory <span className="text-blue-600 dark:text-blue-400 font-semibold underline">Terms of Service</span> and acknowledge the <span className="text-blue-600 dark:text-blue-400 font-semibold underline">Privacy Policy</span> regarding enterprise data processing. <span className="text-rose-500">*</span>
+                  I agree to the <span className="text-blue-600 dark:text-blue-400 font-semibold underline">Terms of Use</span> and <span className="text-blue-600 dark:text-blue-400 font-semibold underline">Privacy Notice</span>. <span className="text-rose-500">*</span>
                 </span>
               </label>
 
@@ -373,7 +369,7 @@ export function NewUserModal({ isOpen, onClose, onUserCreated, onOpenPolicy }) {
                   className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
                 />
                 <span className="text-slate-700 dark:text-slate-300 text-[11px] leading-snug">
-                  Require password change on first sign-in (Unchecked by default).
+                  Require password change on first sign-in.
                 </span>
               </label>
             </div>

@@ -15,7 +15,7 @@ SOD_CONFLICT_RULES: List[Dict[str, Any]] = [
         "id": "SOD_BANK_VS_PAYROLL",
         "name": "Employee/Vendor Bank Details vs. Payroll & Payment Approval",
         "risk_level": "CRITICAL",
-        "sox_control": "SOX-404-FIN-01",
+        "sox_control": "SOD-FIN-01",
         "description": (
             "Personnel with authority to modify employee master records, banking/IBAN coordinates, "
             "or compensation structures cannot approve payroll batches or disburse financial disbursements."
@@ -50,7 +50,7 @@ SOD_CONFLICT_RULES: List[Dict[str, Any]] = [
         "id": "SOD_IAM_ADMIN_VS_AUDIT",
         "name": "IAM Role/User Administration vs. Security & Audit Override",
         "risk_level": "CRITICAL",
-        "sox_control": "SOX-404-ITGC-02",
+        "sox_control": "SOD-SEC-02",
         "description": (
             "Administrators provisioning IAM user credentials, roles, or security policies cannot "
             "verify or override cryptographic audit logs, hash chains, or compliance audit trails."
@@ -75,7 +75,7 @@ SOD_CONFLICT_RULES: List[Dict[str, Any]] = [
         "id": "SOD_ATTENDANCE_VS_PAYROLL",
         "name": "Attendance Entry/Modification vs. Overtime & Payroll Approval",
         "risk_level": "HIGH",
-        "sox_control": "SOX-404-OPS-03",
+        "sox_control": "SOD-OPS-03",
         "description": (
             "Operators who log, adjust, or edit manual attendance logs or rosters cannot "
             "approve overtime adjustments or seal monthly payroll batches."
@@ -99,7 +99,7 @@ SOD_CONFLICT_RULES: List[Dict[str, Any]] = [
         "id": "SOD_CONTRACT_MAKER_VS_CHECKER",
         "name": "Contract Authoring vs. Contract Approval",
         "risk_level": "HIGH",
-        "sox_control": "SOX-404-HR-04",
+        "sox_control": "SOD-HR-04",
         "description": (
             "Users drafting, configuring, or editing employment contracts and wage agreements "
             "cannot unilaterally approve or activate contracts into legal effect."
@@ -220,7 +220,7 @@ def raise_if_sod_violation(
             f"[{v['risk_level']}] {v['rule_name']} (Set A: {', '.join(v['conflicting_set_a'])} vs. Set B: {', '.join(v['conflicting_set_b'])})"
             for v in violations
         ]
-        msg = f"SOX 404 Segregation of Duties Violation in {context_label}: " + "; ".join(violation_summaries)
+        msg = f"Separation of Duties conflict in {context_label}: " + "; ".join(violation_summaries)
         logger.warning(f"SoD Conflict Rejection: {msg}")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

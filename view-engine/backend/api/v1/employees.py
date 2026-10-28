@@ -16,6 +16,7 @@ from backend.core.dependencies import (
 from backend.core.chat_engine import handle_employee_department_sync
 from backend.core.sequences import get_next_employee_number
 from backend.core.dependency_guard import inspect_dependencies
+from backend.core.audit import record_audit_log
 
 
 logger = logging.getLogger("enterprise.employees")
@@ -279,14 +280,17 @@ async def create_employee(
             user_id, author_name = await resolve_audit_author(conn, session)
 
             # Log creation in audit_logs
-            await conn.execute("""
-                INSERT INTO audit_logs (
-                    id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address
-                ) VALUES (
-                    $1::uuid, 'employees', $2, 'CREATE', $3, $4,
-                    $5, $6
-                );
-            """, str(uuid.uuid4()), str(new_id), user_id, author_name, f"Created employee profile for {full_name} ({emp_number}).", client_ip)
+            await record_audit_log(
+                conn=conn,
+                tenant_id=str(org_uuid or session.get("organization_id") or "default_tenant"),
+                entity_type="employees",
+                entity_id=str(new_id),
+                action="CREATE",
+                changed_by_user_id=user_id,
+                changed_by_name=author_name,
+                note=f"Created employee profile for {full_name} ({emp_number}).",
+                ip_address=client_ip,
+            )
 
         created_row = await conn.fetchrow("""
             SELECT e.*, g.name as grade_name, g.code as grade_code
@@ -485,16 +489,18 @@ async def update_employee(
 
             # Log changes in audit_logs if diff exists
             if changes_diff:
-                import json
-                await conn.execute("""
-                    INSERT INTO audit_logs (
-                        id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, changes, note, ip_address
-                    ) VALUES (
-                        $1::uuid, 'employees', $2, 'UPDATE', $3, $4,
-                        $5::jsonb, $6, $7
-                    );
-                """, str(uuid.uuid4()), str(emp_uuid), user_id, author_name, json.dumps(changes_diff),
-                    f"Updated {len(changes_diff)} fields on employee profile.", client_ip)
+                await record_audit_log(
+                    conn=conn,
+                    tenant_id=str(existing["organization_id"] or session.get("organization_id") or "default_tenant"),
+                    entity_type="employees",
+                    entity_id=str(emp_uuid),
+                    action="UPDATE",
+                    changed_by_user_id=user_id,
+                    changed_by_name=author_name,
+                    changes=changes_diff,
+                    note=f"Updated {len(changes_diff)} field(s) on employee profile.",
+                    ip_address=client_ip,
+                )
 
         updated_row = await conn.fetchrow("""
             SELECT e.*, g.name as grade_name, g.code as grade_code
@@ -585,10 +591,16 @@ async def toggle_archive_employee(employee_id: str, session: Dict[str, Any] = De
 
         # Log action in audit chatter
         user_id, author_name = await resolve_audit_author(conn, session)
-        await conn.execute("""
-            INSERT INTO audit_logs (id, entity_type, entity_id, action, changed_by_user_id, changed_by_name, note, ip_address)
-            VALUES ($1::uuid, 'employees', $2, $3, $4, $5, $6, '127.0.0.1');
-        """, uuid.uuid4(), str(emp_uuid), 'UNARCHIVE' if new_state else 'ARCHIVE', user_id, author_name,
-           f"Employee profile {'restored to active' if new_state else 'archived and hidden from default views'}.")
+        await record_audit_log(
+            conn=conn,
+            tenant_id=str(emp["organization_id"] or session.get("organization_id") or "default_tenant"),
+            entity_type="employees",
+            entity_id=str(emp_uuid),
+            action="UNARCHIVE" if new_state else "ARCHIVE",
+            changed_by_user_id=user_id,
+            changed_by_name=author_name,
+            note=f"Employee profile {'restored to active' if new_state else 'archived and hidden from default views'}.",
+            ip_address="127.0.0.1",
+        )
 
         return {"status": "success", "is_active": new_state, "message": f"Employee {emp['full_name']} {'unarchived' if new_state else 'archived'}."}

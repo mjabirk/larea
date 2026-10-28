@@ -269,7 +269,6 @@ async def verify_audit_chain(conn, tenant_id: Optional[str] = None) -> Dict[str,
 
     return {
         "status": "valid" if all_valid else "tampered",
-        "compliance_standard": "SOX 404 / ISO 27001",
         "algorithm": "SHA-256 Chained Hash Ledger",
         "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "total_records_checked": total_records,

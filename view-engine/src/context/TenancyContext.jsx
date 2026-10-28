@@ -124,18 +124,24 @@ export function TenancyProvider({ children }) {
         const savedBranchId = typeof window !== 'undefined' ? localStorage.getItem('enterprise_active_branch_id') : null;
 
         setTenancyState((prev) => {
-          const activeOrg = (prev.activeOrgId && orgs.some((o) => o.id === prev.activeOrgId))
-            ? prev.activeOrgId
-            : (savedOrgId && orgs.some((o) => o.id === savedOrgId))
-              ? savedOrgId
-              : orgs[0]?.id || null;
+          const activeOrgsPool = orgs.filter((o) => o.is_active !== false);
+          const selectableOrgs = activeOrgsPool.length > 0 ? activeOrgsPool : orgs;
 
-          const orgBranches = branches.filter((b) => b.organization_id === activeOrg);
-          const activeBranch = (prev.activeBranchId && orgBranches.some((b) => b.id === prev.activeBranchId))
+          const activeOrg = (prev.activeOrgId && selectableOrgs.some((o) => o.id === prev.activeOrgId))
+            ? prev.activeOrgId
+            : (savedOrgId && selectableOrgs.some((o) => o.id === savedOrgId))
+              ? savedOrgId
+              : selectableOrgs[0]?.id || null;
+
+          const orgBranchesAll = branches.filter((b) => b.organization_id === activeOrg);
+          const activeOrgBranches = orgBranchesAll.filter((b) => b.is_active !== false);
+          const selectableBranches = activeOrgBranches.length > 0 ? activeOrgBranches : orgBranchesAll;
+
+          const activeBranch = (prev.activeBranchId && selectableBranches.some((b) => b.id === prev.activeBranchId))
             ? prev.activeBranchId
-            : (savedBranchId && orgBranches.some((b) => b.id === savedBranchId))
+            : (savedBranchId && selectableBranches.some((b) => b.id === savedBranchId))
               ? savedBranchId
-              : orgBranches[0]?.id || branches[0]?.id || null;
+              : selectableBranches[0]?.id || branches.find((b) => b.is_active !== false)?.id || branches[0]?.id || null;
 
           if (typeof window !== 'undefined') {
             if (activeOrg) localStorage.setItem('enterprise_active_org_id', activeOrg);
@@ -260,7 +266,10 @@ export function TenancyProvider({ children }) {
   }, [targetUserId, tenancyState.users, currentAuthUid]);
 
   const currentOrganization = useMemo(() => {
+    const activePool = tenancyState.organizations.filter((o) => o.is_active !== false);
     return (
+      activePool.find((o) => o.id === tenancyState.activeOrgId) ||
+      activePool[0] ||
       tenancyState.organizations.find((o) => o.id === tenancyState.activeOrgId) ||
       tenancyState.organizations[0] ||
       null
@@ -268,8 +277,11 @@ export function TenancyProvider({ children }) {
   }, [tenancyState.organizations, tenancyState.activeOrgId]);
 
   const currentBranch = useMemo(() => {
+    const activePool = tenancyState.branches.filter((b) => b.is_active !== false);
     return (
+      activePool.find((b) => b.id === tenancyState.activeBranchId) ||
       tenancyState.branches.find((b) => b.id === tenancyState.activeBranchId) ||
+      activePool[0] ||
       tenancyState.branches[0] ||
       null
     );
@@ -292,11 +304,13 @@ export function TenancyProvider({ children }) {
     session?.user?.role === 'superadmin'
   );
 
-  // If superadmin, grant visibility over ALL companies and branches
+  // Workspace switcher lists only active companies & branches
   const userOrganizations = useMemo(() => {
+    const activeOrgs = tenancyState.organizations.filter((o) => o.is_active !== false);
+    const baseOrgs = activeOrgs.length > 0 ? activeOrgs : tenancyState.organizations;
     return isSuperadmin
-      ? tenancyState.organizations
-      : tenancyState.organizations.filter((o) =>
+      ? baseOrgs
+      : baseOrgs.filter((o) =>
           o.id === currentUser?.organization_id ||
           (currentUser?.allowed_company_ids || []).includes(o.id)
         );
@@ -304,11 +318,13 @@ export function TenancyProvider({ children }) {
 
   const userBranchesInCurrentOrg = useMemo(() => {
     if (!currentOrganization?.id) return [];
+    const activeBranches = tenancyState.branches.filter(
+      (b) => b.organization_id === currentOrganization?.id && b.is_active !== false
+    );
     return isSuperadmin
-      ? tenancyState.branches.filter((b) => b.organization_id === currentOrganization?.id)
-      : tenancyState.branches.filter((b) =>
-          b.organization_id === currentOrganization?.id &&
-          (b.id === currentUser?.branch_id || (currentUser?.allowed_branch_ids || []).includes(b.id))
+      ? activeBranches
+      : activeBranches.filter((b) =>
+          b.id === currentUser?.branch_id || (currentUser?.allowed_branch_ids || []).includes(b.id)
         );
   }, [isSuperadmin, tenancyState.branches, currentOrganization?.id, currentUser?.branch_id, currentUser?.allowed_branch_ids]);
 

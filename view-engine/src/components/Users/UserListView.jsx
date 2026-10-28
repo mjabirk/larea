@@ -97,16 +97,12 @@ export function UserListView({ onSelectUser, onCreateNewUser }) {
       {/* 2. Top 56px Action Bar / Control Panel */}
       <div className="min-h-[56px] bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs p-3 px-4 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
         {/* Left: Breadcrumb / Model Title */}
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="flex items-center gap-1.5 text-[13px]">
-            <span className="text-slate-400">Security & IAM</span>
-            <span className="text-slate-300 dark:text-slate-700">/</span>
-            <span className="font-semibold text-slate-900 dark:text-white text-[15px]">
-              Users & Identities
-            </span>
-          </div>
-          <span className="font-mono text-[12px] font-semibold px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-            {isTenancyLoading && users.length === 0 ? 'Loading...' : `${filteredUsers.length} Users`}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <span className="font-semibold text-slate-900 dark:text-white text-base">
+            Users
+          </span>
+          <span className="tabular-nums text-xs font-medium px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+            {isTenancyLoading && users.length === 0 ? 'Loading...' : filteredUsers.length}
           </span>
         </div>
 
@@ -158,15 +154,15 @@ export function UserListView({ onSelectUser, onCreateNewUser }) {
           </div>
         </div>
 
-        {/* Right: + New User Primary Action */}
+        {/* Right: New User Primary Action */}
         <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={() => (onCreateNewUser ? onCreateNewUser() : setIsNewUserModalOpen(true))}
-            className="h-[42px] px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold flex items-center gap-2 transition cursor-pointer shadow-xs"
+            className="h-10 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium flex items-center gap-2 transition cursor-pointer shadow-xs"
           >
             <UserPlus className="w-4 h-4" />
-            <span>+ New User</span>
+            <span>New User</span>
           </button>
         </div>
       </div>

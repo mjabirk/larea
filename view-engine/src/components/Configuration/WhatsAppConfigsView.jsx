@@ -61,7 +61,14 @@ export function WhatsAppConfigsView() {
   const [actionMessage, setActionMessage] = useState(null);
 
   // Standard in-place view mode
-  const [viewMode, setViewMode] = useState('list'); // 'list' | 'form'
+  const [viewMode, setViewMode] = useState(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('view') === 'form' ? 'form' : 'list'
+  ); // 'list' | 'form'
+  const [pendingId, setPendingId] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    const p = new URLSearchParams(window.location.search);
+    return p.get('view') === 'form' ? (p.get('id') || 'new') : null;
+  });
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [isDirty, setIsDirty] = useState(false);
   const [showToken, setShowToken] = useState(false);
@@ -100,6 +107,34 @@ export function WhatsAppConfigsView() {
   useEffect(() => {
     fetchConfigs();
   }, [fetchConfigs]);
+
+  useEffect(() => {
+    if (!pendingId) return;
+    if (pendingId === 'new') {
+      setPendingId(null);
+      return;
+    }
+    if (configs.length > 0) {
+      const found = configs.find((item) => String(item.id) === String(pendingId));
+      if (found) loadRecordIntoForm(found);
+      setPendingId(null);
+    }
+  }, [pendingId, configs]);
+
+  useEffect(() => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (viewMode === 'form') {
+        p.set('view', 'form');
+        p.set('id', String(pendingId || selectedRecord?.id || 'new'));
+      } else {
+        p.delete('view');
+        p.delete('id');
+      }
+      const qs = p.toString();
+      window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+    } catch (e) {}
+  }, [viewMode, selectedRecord, pendingId]);
 
   const filtered = useMemo(() => {
     return configs.filter((c) => {

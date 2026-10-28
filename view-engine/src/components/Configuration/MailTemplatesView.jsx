@@ -75,9 +75,9 @@ const DEFAULT_NEW_FORM = {
   subject: 'Salary Statement for {{month}} — {{employee_name}}',
   body_html: `<div style="font-family: Arial, sans-serif; font-size: 14px; color: #1e293b; max-width: 600px;">
   <p>Dear <strong>{{employee_name}}</strong>,</p>
-  <p>Your official salary statement for <strong>{{month}}</strong> has been processed in accordance with Qatar WPS standards.</p>
-  <p>Net Disbursement: <strong>{{net_salary}} QAR</strong></p>
-  <p>Please find attached your official payslip report.</p>
+  <p>Your salary statement for <strong>{{month}}</strong> is ready.</p>
+  <p>Net Amount: <strong>{{net_salary}} QAR</strong></p>
+  <p>Please find your payslip attached.</p>
 </div>`,
   attach_system_report: true,
   report_generator_hook: 'generate_payslip_pdf',
@@ -93,7 +93,14 @@ export function MailTemplatesView() {
   const [selectedScope, setSelectedScope] = useState('all');
 
   // Standard in-place view mode
-  const [viewMode, setViewMode] = useState('list'); // 'list' | 'form'
+  const [viewMode, setViewMode] = useState(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('view') === 'form' ? 'form' : 'list'
+  ); // 'list' | 'form'
+  const [pendingId, setPendingId] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    const p = new URLSearchParams(window.location.search);
+    return p.get('view') === 'form' ? (p.get('id') || 'new') : null;
+  });
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -130,6 +137,34 @@ export function MailTemplatesView() {
   useEffect(() => {
     fetchTemplates();
   }, [fetchTemplates]);
+
+  useEffect(() => {
+    if (!pendingId) return;
+    if (pendingId === 'new') {
+      setPendingId(null);
+      return;
+    }
+    if (templates.length > 0) {
+      const found = templates.find((item) => String(item.id) === String(pendingId));
+      if (found) loadRecordIntoForm(found);
+      setPendingId(null);
+    }
+  }, [pendingId, templates]);
+
+  useEffect(() => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (viewMode === 'form') {
+        p.set('view', 'form');
+        p.set('id', String(pendingId || selectedRecord?.id || 'new'));
+      } else {
+        p.delete('view');
+        p.delete('id');
+      }
+      const qs = p.toString();
+      window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+    } catch (e) {}
+  }, [viewMode, selectedRecord, pendingId]);
 
   const filtered = useMemo(() => {
     return templates.filter((t) => {
@@ -523,7 +558,7 @@ export function MailTemplatesView() {
                         Attach Generated PDF Report
                       </div>
                       <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                        Renders dynamic WPS-compliant PDF to physical disk and includes in email payload
+                        Automatically generates and attaches the PDF document when sending
                       </div>
                     </div>
                   </div>

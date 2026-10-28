@@ -144,7 +144,7 @@ export function AIAssistantModal({ isOpen, onClose, onNavigate }) {
     {
       id: 'msg_welcome',
       sender: 'assistant',
-      text: `👋 **Welcome! I am your Permission-Scoped Enterprise AI Assistant.**\n\nI can analyze your authorized data across Employees, Attendance, Leaves, WPS Payroll, and Biometric Hardware under strict RBAC and multi-branch boundaries.\n\nAsk any question or pick a quick prompt chip below to begin.`,
+      text: `👋 **Welcome! I am your AI Assistant.**\n\nI can answer questions across your authorized data in Employees, Attendance, Leaves, Payroll, and Devices.\n\nAsk any question or pick a quick prompt below to begin.`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     },
   ]);
@@ -205,9 +205,9 @@ export function AIAssistantModal({ isOpen, onClose, onNavigate }) {
 
     if (hasPermission('employees.read') || hasPermission('employee.read') || hasAppAccess('hr')) {
       chips.push({
-        label: 'Show employees with QID expiring in 30 days',
+        label: 'Show employees with ID expiring in 30 days',
         query: 'Show employees with QID expiring in 30 days',
-        category: 'Compliance',
+        category: 'Documents',
         icon: '📋',
       });
       chips.push({
@@ -219,7 +219,7 @@ export function AIAssistantModal({ isOpen, onClose, onNavigate }) {
       chips.push({
         label: 'Which employees have visas expiring soon?',
         query: 'Show employees with visa expiring in 30 days',
-        category: 'Compliance',
+        category: 'Documents',
         icon: '🛂',
       });
     }
@@ -247,8 +247,8 @@ export function AIAssistantModal({ isOpen, onClose, onNavigate }) {
 
     if (hasPermission('payroll.read') || hasAppAccess('payroll')) {
       chips.push({
-        label: 'Status of recent WPS payroll batches',
-        query: 'Status of recent WPS payroll batches',
+        label: 'Status of recent payroll batches',
+        query: 'Status of recent payroll batches',
         category: 'Payroll',
         icon: '💵',
       });
@@ -379,14 +379,11 @@ export function AIAssistantModal({ isOpen, onClose, onNavigate }) {
                 <Sparkles className="w-4 h-4" />
               </div>
               <div>
-                <h2 id="ai-assistant-title" className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2 tracking-tight leading-none">
-                  <span>Enterprise AI Assistant</span>
-                  <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20">
-                    RBAC Protected
-                  </span>
+                <h2 id="ai-assistant-title" className="text-base font-semibold text-slate-900 dark:text-white tracking-tight leading-none">
+                  AI Assistant
                 </h2>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-none mt-1">
-                  Enforces zero-trust branch boundaries &amp; salary confidentiality
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-none mt-1">
+                  Ask questions about employees, attendance, leaves, and payroll
                 </p>
               </div>
             </div>
@@ -590,9 +587,9 @@ export function AIAssistantModal({ isOpen, onClose, onNavigate }) {
               <Send className="w-3.5 h-3.5" />
             </button>
           </form>
-          <div className="flex items-center justify-between text-[10.5px] text-slate-400 mt-2 px-1">
-            <span>Press <kbd className="font-mono bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded border border-slate-200 dark:border-slate-700">Enter</kbd> to send</span>
-            <span>All queries audited under SOX 404 / ISO 27001</span>
+          <div className="flex items-center justify-between text-xs text-slate-400 mt-2 px-1">
+            <span>Press <kbd className="font-mono bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700">Enter</kbd> to send</span>
+            <span>Scoped to {orgName}</span>
           </div>
         </div>
       </div>

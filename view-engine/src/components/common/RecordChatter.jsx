@@ -183,7 +183,7 @@ export function RecordChatter({ entityType, entityId, entityName }) {
             value={noteText}
             onChange={(e) => setNoteText(e.target.value)}
             rows={2}
-            placeholder="Write internal operational note, document verification remark, or compliance follow-up..."
+            placeholder="Write an internal note or update..."
             className="w-full text-[14px] p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
             disabled={isSubmittingNote}
             autoFocus
@@ -251,8 +251,14 @@ export function RecordChatter({ entityType, entityId, entityName }) {
             const firstDiffLabel = firstDiff
               ? firstDiff[0].replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
               : null;
-            const firstOldVal = firstDiff ? String(firstDiff[1]?.old ?? 'None') : '';
-            const firstNewVal = firstDiff ? String(firstDiff[1]?.new ?? 'None') : '';
+            const isStructuredFirstDiff =
+              firstDiff && typeof firstDiff[1] === 'object' && firstDiff[1] !== null && ('old' in firstDiff[1] || 'new' in firstDiff[1]);
+            const firstOldVal = firstDiff
+              ? String(isStructuredFirstDiff ? (firstDiff[1]?.old ?? '—') : '—')
+              : '';
+            const firstNewVal = firstDiff
+              ? String(isStructuredFirstDiff ? (firstDiff[1]?.new ?? '—') : (firstDiff[1] ?? '—'))
+              : '';
 
             return (
               <div
@@ -366,11 +372,11 @@ export function RecordChatter({ entityType, entityId, entityName }) {
                       </span>
                     ) : isCreate ? (
                       <span className="text-[12px] text-emerald-700 dark:text-emerald-400 font-medium truncate">
-                        Initial record created
+                        {evt.note || 'Record created'}
                       </span>
                     ) : (
-                      <span className="text-[12px] text-slate-500 truncate">
-                        Record state transitioned
+                      <span className="text-[12px] text-slate-600 dark:text-slate-300 truncate block">
+                        {evt.note || 'Record updated'}
                       </span>
                     )}
                   </div>
@@ -448,6 +454,7 @@ export function RecordChatter({ entityType, entityId, entityName }) {
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                             {changesEntries.map(([fName, diff]) => {
                               const label = fName.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+                              const isStruct = typeof diff === 'object' && diff !== null && ('old' in diff || 'new' in diff);
                               return (
                                 <div
                                   key={fName}
@@ -457,12 +464,16 @@ export function RecordChatter({ entityType, entityId, entityName }) {
                                     {label}:
                                   </span>
                                   <div className="flex items-center gap-1.5 font-mono shrink-0">
-                                    <span className="line-through text-slate-400">
-                                      {String(diff?.old ?? 'None')}
-                                    </span>
-                                    <span className="text-slate-400">→</span>
+                                    {isStruct && (
+                                      <>
+                                        <span className="line-through text-slate-400">
+                                          {String(diff?.old ?? '—')}
+                                        </span>
+                                        <span className="text-slate-400">→</span>
+                                      </>
+                                    )}
                                     <span className="text-emerald-600 dark:text-emerald-400 font-bold">
-                                      {String(diff?.new ?? 'None')}
+                                      {String(isStruct ? (diff?.new ?? '—') : (diff ?? '—'))}
                                     </span>
                                   </div>
                                 </div>

@@ -5,7 +5,7 @@ export const APP_MODULES = [
     name: "Human Resources",
     shortName: "HR",
     iconName: "Users",
-    description: "Expat workforce directory, QID/Visa compliance, contracts, biometric attendance & shift rosters",
+    description: "Employee directory, contracts, attendance, shift schedules, and leave requests",
     color: "#2563eb",
     menus: [
       {
@@ -22,7 +22,7 @@ export const APP_MODULES = [
       },
       {
         id: "attendances",
-        label: "Attendance Logs",
+        label: "Attendance",
         model: "attendance_logs",
         required_groups: ["hr.attendance_user", "hr.manager", "attendance.read"]
       },
@@ -40,7 +40,7 @@ export const APP_MODULES = [
       },
       {
         id: "hr_config",
-        label: "Configuration",
+        label: "HR Settings",
         model: "hr_settings",
         required_groups: ["hr.manager", "employee.write"]
       }
@@ -48,39 +48,39 @@ export const APP_MODULES = [
   },
   {
     id: "payroll",
-    name: "Payroll & WPS",
+    name: "Payroll",
     shortName: "Payroll",
     iconName: "Banknote",
-    description: "Qatar WPS SIF file generator, monthly salary batches, EOSB gratuity & allowance rules",
+    description: "Monthly payroll runs, bank export files, variable pay, and end-of-service settlements",
     color: "#d97706",
     menus: [
       {
         id: "batches",
-        label: "Payroll Batches & WPS",
+        label: "Payroll Batches",
         model: "payroll_batches",
         required_groups: ["payroll.batches_admin", "payroll.manager", "payroll.read"]
       },
       {
         id: "payroll_adjustments",
-        label: "Variable Pay & Approvals",
+        label: "Variable Pay",
         model: "payroll_adjustments",
         required_groups: ["payroll.read", "attendance.write", "hr.manager"]
       },
       {
         id: "eosb",
-        label: "EOSB & Final Settlement",
+        label: "End of Service",
         model: "eosb_gratuity",
         required_groups: ["payroll.read", "hr.contracts_read", "hr.manager"]
       },
       {
         id: "salary_rules",
-        label: "Salary Rules & Allowances",
+        label: "Salary Rules",
         model: "salary_rules",
         required_groups: ["hr.salary_manage", "payroll.manager"]
       },
       {
         id: "wps_config",
-        label: "WPS Bank Configuration",
+        label: "Bank Export Setup",
         model: "wps_settings",
         required_groups: ["hr.salary_manage", "payroll.manager"]
       }
@@ -88,21 +88,21 @@ export const APP_MODULES = [
   },
   {
     id: "operations",
-    name: "Operations & Hardware",
-    shortName: "Ops",
+    name: "Devices",
+    shortName: "Devices",
     iconName: "Cpu",
-    description: "Biometric ADMS terminals, ZKTeco push gateway, hardware health & API keys",
+    description: "Biometric attendance devices, punch logs, and device API keys",
     color: "#059669",
     menus: [
       {
         id: "terminals",
-        label: "Hardware Terminals",
+        label: "Attendance Devices",
         model: "terminals",
         required_groups: ["operations.terminals_admin", "operations.hardware_operator", "hardware.read"]
       },
       {
         id: "api_keys",
-        label: "ADMS API Keys",
+        label: "Device API Keys",
         model: "api_keys",
         required_groups: ["hardware.manage", "users.manage"]
       }
@@ -110,15 +110,15 @@ export const APP_MODULES = [
   },
   {
     id: "iam",
-    name: "Security & IAM",
-    shortName: "IAM",
+    name: "Users & Access",
+    shortName: "Access",
     iconName: "Shield",
-    description: "Identity lifecycle, zero-trust DragonflyDB sessions, RBAC permission matrices & 2FA",
+    description: "User accounts, roles, access permissions, and single sign-on",
     color: "#7c3aed",
     menus: [
       {
         id: "users",
-        label: "Users & Identities",
+        label: "Users",
         model: "users",
         required_groups: ["iam.users_admin", "iam.security_admin", "users.read", "users.manage"]
       },
@@ -130,7 +130,7 @@ export const APP_MODULES = [
       },
       {
         id: "windows_sso",
-        label: "Windows SSO & Directory",
+        label: "Single Sign-On",
         model: "sso_settings",
         required_groups: ["iam.security_admin", "users.manage", "org.manage"]
       }
@@ -138,41 +138,43 @@ export const APP_MODULES = [
   },
   {
     id: "settings",
-    name: "System Configuration",
+    name: "Settings",
     shortName: "Settings",
     iconName: "SlidersHorizontal",
-    description: "Organizations, Windows SSO federation, WhatsApp/SMS gateways, email templates, and automated triggers",
+    description: "Companies, branches, document layout, email & WhatsApp notifications, and automations",
     color: "#475569",
     menuGroups: [
       {
         id: "grp_tenancy",
-        label: "Company & Tenancy",
+        label: "Company",
         iconName: "Building2",
         menus: [
           { id: "orgs", label: "Companies & Branches", model: "organizations", required_groups: ["org.read", "org.manage"] },
-          { id: "windows_sso", label: "Windows SSO & Directory", model: "sso_settings", required_groups: ["iam.security_admin", "users.manage", "org.manage"] },
-          { id: "compliance_alerts", label: "QID & Visa Alert Rules", model: "compliance_settings", required_groups: ["org.manage", "hr.manager"] }
+          { id: "general_settings", label: "Regional & Preferences", model: "general_settings", required_groups: ["org.manage"] },
+          { id: "paper_format", label: "Paper & Document Layout", model: "paper_format", required_groups: ["org.manage"] },
+          { id: "windows_sso", label: "Single Sign-On", model: "sso_settings", required_groups: ["iam.security_admin", "users.manage", "org.manage"] },
+          { id: "compliance_alerts", label: "Expiry Alerts", model: "compliance_settings", required_groups: ["org.manage", "hr.manager"] }
         ]
       },
       {
         id: "grp_email",
-        label: "Email Communications",
+        label: "Email",
         iconName: "Mail",
         menus: [
           { id: "mail_servers", label: "Email Servers", model: "mail_servers", required_groups: ["org.manage"] },
           { id: "mail_templates", label: "Email Templates", model: "mail_templates", required_groups: ["org.manage", "hr.manager"] },
-          { id: "mail_logs", label: "Mail Logs", model: "mail_logs", required_groups: ["org.manage"] }
+          { id: "mail_logs", label: "Email Logs", model: "mail_logs", required_groups: ["org.manage"] }
         ]
       },
       {
         id: "grp_messaging",
-        label: "WhatsApp & SMS Gateway",
+        label: "WhatsApp & SMS",
         iconName: "MessageSquare",
         menus: [
-          { id: "whatsapp_accounts", label: "WhatsApp Cloud API", model: "whatsapp_accounts", required_groups: ["org.manage"] },
+          { id: "whatsapp_accounts", label: "WhatsApp Accounts", model: "whatsapp_accounts", required_groups: ["org.manage"] },
           { id: "whatsapp_templates", label: "WhatsApp Templates", model: "whatsapp_templates", required_groups: ["org.manage", "hr.manager"] },
           { id: "sms_gateways", label: "SMS Gateways", model: "sms_gateways", required_groups: ["org.manage"] },
-          { id: "sms_whatsapp_logs", label: "SMS & WhatsApp Logs", model: "sms_whatsapp_logs", required_groups: ["org.manage"] }
+          { id: "sms_whatsapp_logs", label: "Message Logs", model: "sms_whatsapp_logs", required_groups: ["org.manage"] }
         ]
       },
       {
@@ -180,22 +182,33 @@ export const APP_MODULES = [
         label: "Automations",
         iconName: "Sparkles",
         menus: [
-          { id: "automation_triggers", label: "Automation Triggers", model: "automation_triggers", required_groups: ["org.manage"] }
+          { id: "automation_triggers", label: "Automated Rules", model: "automation_triggers", required_groups: ["org.manage"] }
+        ]
+      },
+      {
+        id: "grp_about",
+        label: "About",
+        iconName: "Info",
+        menus: [
+          { id: "about", label: "About", model: "system_about", required_groups: ["org.read", "org.manage"] }
         ]
       }
     ],
     menus: [
       { id: "orgs", label: "Companies & Branches", model: "organizations" },
-      { id: "windows_sso", label: "Windows SSO & Directory", model: "sso_settings" },
-      { id: "compliance_alerts", label: "QID & Visa Alert Rules", model: "compliance_settings" },
+      { id: "general_settings", label: "Regional & Preferences", model: "general_settings" },
+      { id: "paper_format", label: "Paper & Document Layout", model: "paper_format" },
+      { id: "windows_sso", label: "Single Sign-On", model: "sso_settings" },
+      { id: "compliance_alerts", label: "Expiry Alerts", model: "compliance_settings" },
       { id: "mail_servers", label: "Email Servers", model: "mail_servers" },
       { id: "mail_templates", label: "Email Templates", model: "mail_templates" },
-      { id: "mail_logs", label: "Mail Logs", model: "mail_logs" },
-      { id: "whatsapp_accounts", label: "WhatsApp Cloud API", model: "whatsapp_accounts" },
+      { id: "mail_logs", label: "Email Logs", model: "mail_logs" },
+      { id: "whatsapp_accounts", label: "WhatsApp Accounts", model: "whatsapp_accounts" },
       { id: "whatsapp_templates", label: "WhatsApp Templates", model: "whatsapp_templates" },
       { id: "sms_gateways", label: "SMS Gateways", model: "sms_gateways" },
-      { id: "sms_whatsapp_logs", label: "SMS & WhatsApp Logs", model: "sms_whatsapp_logs" },
-      { id: "automation_triggers", label: "Automation Triggers", model: "automation_triggers" }
+      { id: "sms_whatsapp_logs", label: "Message Logs", model: "sms_whatsapp_logs" },
+      { id: "automation_triggers", label: "Automated Rules", model: "automation_triggers" },
+      { id: "about", label: "About", model: "system_about" }
     ]
   }
 ];

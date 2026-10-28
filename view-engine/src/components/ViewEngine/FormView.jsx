@@ -29,6 +29,7 @@ import { useLocale } from '../../context/LocaleContext';
 import { useTenancy } from '../../context/TenancyContext';
 import { useAuth } from '../../context/AuthContext';
 import { formatToLocalDatetimeInputValue, formatDateTime } from './Widgets';
+import { RecordChatter } from '../common/RecordChatter';
 
 export function FormView({
   schema,
@@ -70,9 +71,16 @@ export function FormView({
     onDirtyChange?.(false);
   }, [record?.id]);
 
+  // Synchronize dirty state with parent when parent saves or resets
+  useEffect(() => {
+    if (externalIsDirty === false) {
+      setIsDirty(false);
+    }
+  }, [externalIsDirty]);
+
   // Unsaved changes beforeunload listener
   useEffect(() => {
-    const effectiveDirty = isDirty || externalIsDirty;
+    const effectiveDirty = externalIsDirty !== undefined ? externalIsDirty : isDirty;
     if (!effectiveDirty) return;
     const handleBeforeUnload = (e) => {
       e.preventDefault();
@@ -84,7 +92,7 @@ export function FormView({
   }, [isDirty, externalIsDirty]);
 
   const handleBack = () => {
-    const effectiveDirty = isDirty || externalIsDirty;
+    const effectiveDirty = externalIsDirty !== undefined ? externalIsDirty : isDirty;
     if (effectiveDirty && !window.confirm('You have unsaved changes. Discard and return to list?')) {
       return;
     }
@@ -205,6 +213,13 @@ export function FormView({
       </div>
     );
   }
+
+  const handleBatchFieldChange = (updates) => {
+    setIsDirty(true);
+    onDirtyChange?.(true);
+    const updated = { ...record, ...updates };
+    onChangeRecord(updated);
+  };
 
   const handleFieldChange = (fieldName, value) => {
     setIsDirty(true);
@@ -482,19 +497,25 @@ export function FormView({
                   onChange={(e) => {
                     const val = e.target.value;
                     if (!val) {
-                      handleFieldChange('start_time', null);
-                      handleFieldChange('check_in', null);
+                      handleBatchFieldChange({
+                        start_time: null,
+                        check_in: null,
+                        duration_hours: 0,
+                      });
                       return;
                     }
                     const d = new Date(val);
                     const iso = !isNaN(d.getTime()) ? d.toISOString() : val;
-                    handleFieldChange('start_time', iso);
-                    handleFieldChange('check_in', iso);
                     const currentEnd = record.end_time || record.check_out;
+                    let diffH = 0;
                     if (currentEnd) {
-                      const diffH = Math.max(0, Math.round(((new Date(currentEnd) - new Date(iso)) / 3600000) * 100) / 100);
-                      handleFieldChange('duration_hours', diffH);
+                      diffH = Math.max(0, Math.round(((new Date(currentEnd) - new Date(iso)) / 3600000) * 100) / 100);
                     }
+                    handleBatchFieldChange({
+                      start_time: iso,
+                      check_in: iso,
+                      duration_hours: diffH,
+                    });
                   }}
                   className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
                 />
@@ -512,19 +533,25 @@ export function FormView({
                   onChange={(e) => {
                     const val = e.target.value;
                     if (!val) {
-                      handleFieldChange('end_time', null);
-                      handleFieldChange('check_out', null);
+                      handleBatchFieldChange({
+                        end_time: null,
+                        check_out: null,
+                        duration_hours: 0,
+                      });
                       return;
                     }
                     const d = new Date(val);
                     const iso = !isNaN(d.getTime()) ? d.toISOString() : val;
-                    handleFieldChange('end_time', iso);
-                    handleFieldChange('check_out', iso);
                     const currentStart = record.start_time || record.check_in;
+                    let diffH = 0;
                     if (currentStart) {
-                      const diffH = Math.max(0, Math.round(((new Date(iso) - new Date(currentStart)) / 3600000) * 100) / 100);
-                      handleFieldChange('duration_hours', diffH);
+                      diffH = Math.max(0, Math.round(((new Date(iso) - new Date(currentStart)) / 3600000) * 100) / 100);
                     }
+                    handleBatchFieldChange({
+                      end_time: iso,
+                      check_out: iso,
+                      duration_hours: diffH,
+                    });
                   }}
                   className="w-full h-10 bg-slate-50/50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-[14px] text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-slate-800 transition"
                 />
@@ -652,10 +679,10 @@ export function FormView({
               {currentStatus === 'pending_approval' && (
                 <div className="space-y-2.5">
                   {isMakerOrSubmitter && (
-                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
+                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-sm flex items-start gap-2">
                       <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                       <div className="leading-snug">
-                        <strong>SOX 404 Dual-Control:</strong> You authored/submitted this record. Approval must be performed by an independent checker (self-approval prohibited).
+                        <strong>Reviewer Required:</strong> You submitted this record, so another team member must approve it.
                       </div>
                     </div>
                   )}
@@ -743,76 +770,54 @@ export function FormView({
               </h4>
             </div>
 
-              <div className="space-y-3 text-xs">
-                <div className="flex items-center justify-between py-1 border-b border-slate-50 dark:border-slate-800/60">
-                  <span className="text-slate-400 dark:text-slate-500 font-medium">{t('record_id')}</span>
-                  <span className="font-mono text-slate-800 dark:text-slate-200 font-semibold">
-                    {record.code || (record.id ? `ATT-${String(record.id).slice(0, 8)}` : 'ATT-NEW')}
+              <div className="space-y-3 text-sm">
+                <div className="flex items-center justify-between py-1.5 border-b border-slate-100 dark:border-slate-800/60">
+                  <span className="text-slate-500 dark:text-slate-400">Reference</span>
+                  <span className="text-slate-900 dark:text-slate-100 font-semibold">
+                    {record.code || (record.id ? `ATT-${String(record.id).slice(0, 8)}` : 'New')}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between py-1 border-b border-slate-50 dark:border-slate-800/60">
-                  <span className="text-slate-400 dark:text-slate-500 font-medium">Terminal Gate</span>
+                <div className="flex items-center justify-between py-1.5 border-b border-slate-100 dark:border-slate-800/60">
+                  <span className="text-slate-500 dark:text-slate-400">Location / Device</span>
                   <span className="text-slate-800 dark:text-slate-200 font-medium">
-                    {record.terminal_id || 'Main Lobby Gate'}
+                    {record.terminal_id || 'Main Lobby'}
                   </span>
                 </div>
 
-                <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
-                  <span className="text-slate-400 dark:text-slate-500 font-medium">{t('ingestion_time')}</span>
-                  <span className="font-mono text-slate-700 dark:text-slate-300 text-[11px]">
+                <div className="flex items-center justify-between py-1.5 border-b border-slate-100 dark:border-slate-800/60">
+                  <span className="text-slate-500 dark:text-slate-400">Recorded At</span>
+                  <span className="tabular-nums text-slate-700 dark:text-slate-300 text-xs">
                     {formatDateTime(record.created_at || record.ingestion_time || record.check_in || new Date().toISOString())}
                   </span>
                 </div>
 
-                <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
-                  <span className="text-slate-400 dark:text-slate-500 font-medium">Source</span>
-                  <span className="text-slate-800 dark:text-slate-200 text-[11px] font-medium">
-                    {record.ingestion_source || record.source || 'Biometric Attendance Device'}
+                <div className="flex items-center justify-between py-1.5 border-b border-slate-100 dark:border-slate-800/60">
+                  <span className="text-slate-500 dark:text-slate-400">Created By</span>
+                  <span className="text-slate-800 dark:text-slate-200 font-medium">
+                    {record.created_by_name || record.last_modified_by || 'Staff'}
                   </span>
                 </div>
 
-                <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
-                  <span className="text-slate-400 dark:text-slate-500 font-medium">Created By (Maker)</span>
-                  <span className="font-mono text-slate-800 dark:text-slate-200 text-[11px] font-medium">
-                    {record.created_by_name || (record.created_by ? `User #${String(record.created_by).slice(0, 8)}` : (record.last_modified_by || 'Staff'))}
+                <div className="flex items-center justify-between py-1.5">
+                  <span className="text-slate-500 dark:text-slate-400">Approved By</span>
+                  <span className="text-slate-800 dark:text-slate-200 font-medium">
+                    {record.approved_by_name || (record.status === 'verified' || record.status === 'synced' ? 'Approved' : 'Pending')}
                   </span>
-                </div>
-
-                <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
-                  <span className="text-slate-400 dark:text-slate-500 font-medium">Submitted By</span>
-                  <span className="font-mono text-slate-800 dark:text-slate-200 text-[11px] font-medium">
-                    {record.submitted_by_name || (record.submitted_by ? `User #${String(record.submitted_by).slice(0, 8)}` : (record.status !== 'draft' ? (record.created_by_name || 'Direct Submit') : 'Pending Submission'))}
-                  </span>
-                </div>
-
-                <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
-                  <span className="text-slate-400 dark:text-slate-500 font-medium">Approved By (Checker)</span>
-                  <span className="font-mono text-slate-800 dark:text-slate-200 text-[11px] font-medium">
-                    {record.approved_by_name || (record.approved_by ? `User #${String(record.approved_by).slice(0, 8)}` : (record.status === 'verified' || record.status === 'synced' ? 'Approved' : 'Pending Review'))}
-                  </span>
-                </div>
-
-                {record.approved_at && (
-                  <div className="flex flex-col gap-0.5 py-1 border-b border-slate-50 dark:border-slate-800/60">
-                    <span className="text-slate-400 dark:text-slate-500 font-medium">Approved At</span>
-                    <span className="font-mono text-slate-700 dark:text-slate-300 text-[11px]">
-                      {formatDateTime(record.approved_at)}
-                    </span>
-                  </div>
-                )}
-
-                <div className="flex flex-col gap-0.5 py-1">
-                  <span className="text-slate-400 dark:text-slate-500 font-medium">SOX 404 Control</span>
-                  <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
-                    <span>Dual-Control Enforced</span>
-                  </div>
                 </div>
               </div>
           </div>
         </div>
       </div>
+
+      {/* Instant Activity & Audit Log */}
+      {!record.isNew && record.id && !String(record.id).startsWith('temp-') && String(record.id).includes('-') && (
+        <RecordChatter
+          entityType={isRoster ? 'shift_rosters' : 'attendance_logs'}
+          entityId={String(record.id)}
+          entityName={displayCode}
+        />
+      )}
     </div>
   );
 }

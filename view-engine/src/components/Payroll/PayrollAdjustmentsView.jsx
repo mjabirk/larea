@@ -66,9 +66,25 @@ export function PayrollAdjustmentsView() {
   const [showSummary, setShowSummary] = useState(false);
 
   // Modals
-  const [isNewEntryOpen, setIsNewEntryOpen] = useState(false);
+  const [isNewEntryOpen, setIsNewEntryOpen] = useState(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('view') === 'form'
+  );
   const [entryMode, setEntryMode] = useState('overtime'); // 'overtime' | 'task_benefit' | 'bonus' | 'deduction'
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: isNewEntryOpen } }));
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (isNewEntryOpen) p.set('view', 'form');
+      else p.delete('view');
+      const qs = p.toString();
+      window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+    } catch (e) {}
+    return () => {
+      if (isNewEntryOpen) window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: false } }));
+    };
+  }, [isNewEntryOpen]);
 
   // Rejection modal
   const [rejectingAdj, setRejectingAdj] = useState(null);
@@ -495,9 +511,9 @@ export function PayrollAdjustmentsView() {
             </button>
             <div>
               <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                <span>Payroll & WPS</span>
+                <span>Payroll</span>
                 <span>/</span>
-                <span>Variable Pay & Approvals</span>
+                <span>Variable Pay &amp; Approvals</span>
                 <span>/</span>
                 <span className="text-slate-900 dark:text-white font-medium">New Variable Payroll Entry</span>
               </div>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Building2,
   Plus,
@@ -7,23 +7,25 @@ import {
   CheckCircle2,
   AlertCircle,
   X,
-  Save,
   Archive,
   RotateCcw,
+  MapPin,
 } from 'lucide-react';
 import { useTenancy } from '../../context/TenancyContext';
 import { useAuth } from '../../context/AuthContext';
 import { DeleteBlockedModal } from '../common/DeleteBlockedModal';
+import { useSystemLookups } from '../../services/lookupService';
 
 export function OrganizationsView() {
   const { organizations, branches, refreshTenancyData, isTenancyLoading } = useTenancy();
   const { getAuthHeaders } = useAuth();
+  const { currencies } = useSystemLookups();
 
   const [feedback, setFeedback] = useState(null);
   const [editingOrg, setEditingOrg] = useState(null);
   const [isOrgDirty, setIsOrgDirty] = useState(false);
   const [branchModal, setBranchModal] = useState({ isOpen: false, isEdit: false, data: null });
-  const [activeTab, setActiveTab] = useState('active'); // 'active' | 'archived'
+  const [activeTab, setActiveTab] = useState('active'); // 'active' | 'archived' | 'all'
 
   // Relational deletion blockage state
   const [blockedError, setBlockedError] = useState(null);
@@ -40,16 +42,25 @@ export function OrganizationsView() {
     default_locale: 'en',
   });
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (refreshTenancyData) {
       refreshTenancyData();
     }
-  }, []);
+  }, [refreshTenancyData]);
 
   const showToast = (text, type = 'success') => {
     setFeedback({ text, type });
     setTimeout(() => setFeedback(null), 3500);
   };
+
+  const activeOrgsCount = organizations.filter((o) => o.is_active !== false).length;
+  const archivedOrgsCount = organizations.filter((o) => o.is_active === false).length;
+
+  const visibleOrganizations = organizations.filter((org) => {
+    if (activeTab === 'archived') return org.is_active === false;
+    if (activeTab === 'active') return org.is_active !== false;
+    return true;
+  });
 
   const handleCreateOrg = async (e) => {
     e.preventDefault();
@@ -58,15 +69,16 @@ export function OrganizationsView() {
     try {
       const res = await fetch('/api/v1/iam/organizations', {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify(newOrgData),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Failed to create organization');
+        throw new Error(err.detail || 'Failed to create company');
       }
-      showToast(`Organization "${newOrgData.legal_name}" created with primary operating branch.`);
+      showToast(`Company "${newOrgData.legal_name}" created.`);
       setIsCreatingOrg(false);
+      setActiveTab('active');
       setNewOrgData({
         legal_name: '',
         tax_id: '',
@@ -83,12 +95,13 @@ export function OrganizationsView() {
   };
 
   const handleDeleteOrg = async (org) => {
-    if (organizations.length <= 1) {
-      showToast('Cannot delete organization: At least 1 active organization must remain in the system.', 'error');
+    const isOrgActive = org.is_active !== false;
+    if (isOrgActive && activeOrgsCount <= 1) {
+      showToast('At least one active company must remain in the workspace.', 'error');
       return;
     }
     const confirmed = window.confirm(
-      `Permanently delete organization '${org.legal_name}' and all associated branches?`
+      `Permanently delete "${org.legal_name}" and all its branches?`
     );
     if (!confirmed) return;
 
@@ -103,15 +116,15 @@ export function OrganizationsView() {
           setBlockedError({
             ...errData.detail,
             item_type: 'organization',
-            item_id: org.id
+            item_id: org.id,
           });
           setIsBlockedModalOpen(true);
           return;
         }
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Failed to delete organization');
+        throw new Error(err.detail || 'Failed to delete company');
       }
-      showToast(`Organization "${org.legal_name}" and its branches were permanently deleted.`);
+      showToast(`Company "${org.legal_name}" permanently deleted.`);
       await refreshTenancyData();
     } catch (err) {
       showToast(err.message, 'error');
@@ -119,6 +132,11 @@ export function OrganizationsView() {
   };
 
   const handleToggleArchiveOrg = async (org) => {
+    const isCurrentlyActive = org.is_active !== false;
+    if (isCurrentlyActive && activeOrgsCount <= 1) {
+      showToast('At least one active company must remain active.', 'error');
+      return;
+    }
     try {
       const res = await fetch(`/api/v1/iam/organizations/${org.id}/toggle-archive`, {
         method: 'POST',
@@ -126,10 +144,10 @@ export function OrganizationsView() {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Failed to toggle archive');
+        throw new Error(err.detail || 'Failed to update company status');
       }
       const data = await res.json();
-      showToast(data.message || (data.is_active ? 'Company restored.' : 'Company archived.'));
+      showToast(data.message || (data.is_active ? 'Company restored to active.' : 'Company archived.'));
       await refreshTenancyData();
     } catch (err) {
       showToast(err.message, 'error');
@@ -144,7 +162,7 @@ export function OrganizationsView() {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Failed to toggle archive');
+        throw new Error(err.detail || 'Failed to update branch status');
       }
       const data = await res.json();
       showToast(data.message || (data.is_active ? 'Branch restored.' : 'Branch archived.'));
@@ -157,9 +175,10 @@ export function OrganizationsView() {
   const handleArchiveInstead = async () => {
     if (!blockedError) return;
     try {
-      const url = blockedError.item_type === 'branch'
-        ? `/api/v1/iam/branches/${blockedError.item_id}/toggle-archive`
-        : `/api/v1/iam/organizations/${blockedError.item_id}/toggle-archive`;
+      const url =
+        blockedError.item_type === 'branch'
+          ? `/api/v1/iam/branches/${blockedError.item_id}/toggle-archive`
+          : `/api/v1/iam/organizations/${blockedError.item_id}/toggle-archive`;
       const res = await fetch(url, {
         method: 'POST',
         headers: getAuthHeaders(),
@@ -169,7 +188,7 @@ export function OrganizationsView() {
         throw new Error(err.detail || 'Failed to archive record');
       }
       const data = await res.json();
-      showToast(data.message || 'Record successfully archived.');
+      showToast(data.message || 'Record archived.');
       setIsBlockedModalOpen(false);
       setBlockedError(null);
       await refreshTenancyData();
@@ -184,11 +203,12 @@ export function OrganizationsView() {
     try {
       const res = await fetch(`/api/v1/iam/organizations/${editingOrg.id}`, {
         method: 'PUT',
-        headers: getAuthHeaders(),
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify(editingOrg),
       });
-      if (!res.ok) throw new Error('Failed to update organization');
-      showToast('Organization details updated in PostgreSQL.');
+      if (!res.ok) throw new Error('Failed to save company details');
+      showToast('Company details saved.');
+      setEditingOrg(null);
       setIsOrgDirty(false);
       await refreshTenancyData();
     } catch (err) {
@@ -201,29 +221,33 @@ export function OrganizationsView() {
     const b = branchModal.data;
     if (!b?.name?.trim() || !b?.code?.trim()) return;
 
-    const cidrs = typeof b.ip_allowlist === 'string'
-      ? b.ip_allowlist.split(',').map((s) => s.trim()).filter(Boolean)
-      : b.ip_allowlist || ['127.0.0.1/32'];
+    const cidrs =
+      typeof b.ip_allowlist === 'string'
+        ? b.ip_allowlist
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : b.ip_allowlist || ['127.0.0.1/32'];
 
     try {
       const url = branchModal.isEdit ? `/api/v1/iam/branches/${b.id}` : '/api/v1/iam/branches';
       const method = branchModal.isEdit ? 'PUT' : 'POST';
       const res = await fetch(url, {
         method,
-        headers: getAuthHeaders(),
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           organization_id: b.organization_id,
           name: b.name,
           code: b.code,
           city: b.city || 'Doha',
-          ip_allowlist: cidrs,
+          ip_allowlist: cidrs.length > 0 ? cidrs : ['127.0.0.1/32'],
         }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Failed to save branch');
       }
-      showToast(branchModal.isEdit ? 'Branch updated.' : 'New operating branch created.');
+      showToast(branchModal.isEdit ? 'Branch updated.' : 'Branch added.');
       setBranchModal({ isOpen: false, isEdit: false, data: null });
       await refreshTenancyData();
     } catch (err) {
@@ -232,7 +256,7 @@ export function OrganizationsView() {
   };
 
   const handleDeleteBranch = async (branchId, branchName) => {
-    if (!window.confirm(`Delete operating branch "${branchName}"?`)) return;
+    if (!window.confirm(`Delete branch "${branchName}"?`)) return;
     try {
       const res = await fetch(`/api/v1/iam/branches/${branchId}`, {
         method: 'DELETE',
@@ -244,7 +268,7 @@ export function OrganizationsView() {
           setBlockedError({
             ...errData.detail,
             item_type: 'branch',
-            item_id: branchId
+            item_id: branchId,
           });
           setIsBlockedModalOpen(true);
           return;
@@ -252,7 +276,7 @@ export function OrganizationsView() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Cannot delete branch');
       }
-      showToast(`Branch "${branchName}" removed.`);
+      showToast(`Branch "${branchName}" deleted.`);
       await refreshTenancyData();
     } catch (err) {
       showToast(err.message, 'error');
@@ -261,48 +285,63 @@ export function OrganizationsView() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 animate-fadeIn">
-      {/* Control Panel */}
-      <div className="h-14 min-h-[56px] bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xs px-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 text-xs">
-            <span className="text-slate-400">System Configuration</span>
-            <span className="text-slate-300 dark:text-slate-700">/</span>
-            <span className="font-bold text-slate-900 dark:text-white text-sm">
-              Companies & Operating Branches
-            </span>
+      {/* Clean Page Header */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs p-4 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+            <Building2 className="w-5 h-5" />
           </div>
-          <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-            {isTenancyLoading && organizations.length === 0
-              ? 'Loading...'
-              : `${organizations.length} Organizations • ${branches.length} Branches`}
-          </span>
+          <div>
+            <h1 className="text-lg font-bold text-slate-900 dark:text-white leading-tight">
+              Companies & Branches
+            </h1>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {isTenancyLoading && organizations.length === 0
+                ? 'Loading companies...'
+                : `${activeOrgsCount} active ${activeOrgsCount === 1 ? 'company' : 'companies'}${archivedOrgsCount > 0 ? ` • ${archivedOrgsCount} archived` : ''} • ${branches.length} branches`}
+            </p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {/* Active vs Archived Filter Segment */}
-          <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Active / Archived / All Filter Tabs */}
+          <div className="inline-flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl border border-slate-200/70 dark:border-slate-700/70">
             <button
               type="button"
               onClick={() => setActiveTab('active')}
-              className={`px-3 py-1 text-xs font-semibold rounded-lg transition cursor-pointer ${
+              className={`px-3 py-1.5 text-sm font-medium rounded-lg transition cursor-pointer ${
                 activeTab === 'active'
-                  ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-2xs'
-                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-2xs font-semibold'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              Active Companies ({organizations.filter((o) => o.is_active !== false).length})
+              Active ({activeOrgsCount})
             </button>
             <button
               type="button"
               onClick={() => setActiveTab('archived')}
-              className={`px-3 py-1 text-xs font-semibold rounded-lg transition cursor-pointer ${
+              className={`px-3 py-1.5 text-sm font-medium rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
                 activeTab === 'archived'
-                  ? 'bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400 shadow-2xs'
-                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                  ? 'bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400 shadow-2xs font-semibold'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              Archived ({organizations.filter((o) => o.is_active === false).length})
+              <Archive className="w-3.5 h-3.5" />
+              <span>Archived ({archivedOrgsCount})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('all')}
+              className={`px-3 py-1.5 text-sm font-medium rounded-lg transition cursor-pointer ${
+                activeTab === 'all'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-2xs font-semibold'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              All ({organizations.length})
             </button>
           </div>
+
           <button
             type="button"
             onClick={() => {
@@ -310,96 +349,94 @@ export function OrganizationsView() {
               setEditingOrg(null);
               setBranchModal({ isOpen: false, isEdit: false, data: null });
             }}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-blue-600 hover:bg-blue-700 text-white transition shadow-xs cursor-pointer"
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-xl bg-blue-600 hover:bg-blue-700 text-white transition shadow-xs cursor-pointer"
           >
-            <Plus className="w-3.5 h-3.5" />
-            <span>New Organization</span>
+            <Plus className="w-4 h-4" />
+            <span>New Company</span>
           </button>
         </div>
       </div>
 
       {feedback && (
         <div
-          className={`p-3.5 rounded-xl border text-xs font-semibold flex items-center gap-2 ${feedback.type === 'error'
-              ? 'bg-rose-500/10 border-rose-500/20 text-rose-600 dark:text-rose-400'
-              : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400'
-            }`}
+          className={`p-3.5 rounded-xl border text-sm font-medium flex items-center justify-between gap-2 ${
+            feedback.type === 'error'
+              ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300'
+              : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+          }`}
         >
-          {feedback.type === 'error' ? <AlertCircle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
-          <span>{feedback.text}</span>
+          <div className="flex items-center gap-2">
+            {feedback.type === 'error' ? <AlertCircle className="w-4 h-4 shrink-0" /> : <CheckCircle2 className="w-4 h-4 shrink-0" />}
+            <span>{feedback.text}</span>
+          </div>
+          <button type="button" onClick={() => setFeedback(null)} className="text-current opacity-60 hover:opacity-100 cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 
-      {/* Inline Form Panel: Create Organization */}
+      {/* Inline Form Panel: Create Company */}
       {isCreatingOrg && (
-        <div className="bg-white dark:bg-slate-900 rounded-2xl border-2 border-blue-500/30 dark:border-blue-500/40 shadow-sm p-6 space-y-4 animate-fadeIn">
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-blue-200 dark:border-blue-800/60 shadow-sm p-6 space-y-5 animate-fadeIn">
           <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
-            <div>
-              <div className="flex items-center gap-1.5 text-xs text-slate-400">
-                <span>System Configuration</span>
-                <span>/</span>
-                <span>Companies & Branches</span>
-                <span>/</span>
-                <span className="text-slate-900 dark:text-white font-medium">New Company</span>
-              </div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">Create New Organization</h3>
-            </div>
+            <h3 className="text-base font-bold text-slate-900 dark:text-white">New Company</h3>
             <button
               type="button"
               onClick={() => setIsCreatingOrg(false)}
-              className="px-3 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer flex items-center gap-1"
+              className="px-3 py-1.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer flex items-center gap-1"
             >
-              <X className="w-3.5 h-3.5" />
-              <span>Cancel</span>
+              <X className="w-4 h-4" />
+              <span>Close</span>
             </button>
           </div>
 
-          <form onSubmit={handleCreateOrg} className="space-y-4 text-xs">
+          <form onSubmit={handleCreateOrg} className="space-y-4 text-sm">
             <div>
-              <label className="block font-semibold mb-1 text-slate-700 dark:text-slate-300">Company Legal Name *</label>
+              <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">Company Legal Name *</label>
               <input
                 type="text"
                 required
                 value={newOrgData.legal_name}
                 onChange={(e) => setNewOrgData({ ...newOrgData, legal_name: e.target.value })}
                 placeholder="e.g. Apex Qatar Construction W.L.L."
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block font-semibold mb-1 text-slate-700 dark:text-slate-300">Tax ID / CR Number</label>
+                <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">CR / Tax Registration Number</label>
                 <input
                   type="text"
                   value={newOrgData.tax_id}
                   onChange={(e) => setNewOrgData({ ...newOrgData, tax_id: e.target.value })}
                   placeholder="e.g. QA-10928374"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
               <div>
-                <label className="block font-semibold mb-1 text-slate-700 dark:text-slate-300">Base Currency *</label>
+                <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">Currency *</label>
                 <select
                   value={newOrgData.base_currency}
                   onChange={(e) => setNewOrgData({ ...newOrgData, base_currency: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono font-semibold text-slate-900 dark:text-white"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="QAR">QAR (Qatari Riyal)</option>
-                  <option value="USD">USD (US Dollar)</option>
-                  <option value="AED">AED (UAE Dirham)</option>
-                  <option value="SAR">SAR (Saudi Riyal)</option>
+                  {currencies.map((curr) => (
+                    <option key={curr.code} value={curr.code}>
+                      {curr.code} — {curr.name} ({curr.symbol})
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block font-semibold mb-1 text-slate-700 dark:text-slate-300">Timezone *</label>
+                <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">Timezone</label>
                 <select
                   value={newOrgData.default_timezone}
                   onChange={(e) => setNewOrgData({ ...newOrgData, default_timezone: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white cursor-pointer"
                 >
                   <option value="Asia/Qatar">Asia/Qatar (GMT+3)</option>
                   <option value="Asia/Dubai">Asia/Dubai (GMT+4)</option>
@@ -408,75 +445,61 @@ export function OrganizationsView() {
                 </select>
               </div>
               <div>
-                <label className="block font-semibold mb-1 text-slate-700 dark:text-slate-300">Default Locale *</label>
+                <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">Default Language</label>
                 <select
                   value={newOrgData.default_locale}
                   onChange={(e) => setNewOrgData({ ...newOrgData, default_locale: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 uppercase text-slate-900 dark:text-white"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white cursor-pointer"
                 >
-                  <option value="en">English (en)</option>
-                  <option value="ar">Arabic (ar)</option>
+                  <option value="en">English</option>
+                  <option value="ar">Arabic</option>
                 </select>
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
               <button
                 type="button"
                 onClick={() => setIsCreatingOrg(false)}
-                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={isSubmittingOrg || !newOrgData.legal_name.trim()}
-                className="px-4 py-2 rounded-xl font-semibold bg-blue-600 hover:bg-blue-700 text-white cursor-pointer shadow-xs transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                className="px-5 py-2 rounded-xl font-semibold bg-blue-600 hover:bg-blue-700 text-white cursor-pointer shadow-xs transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
               >
-                {isSubmittingOrg ? (
-                  <>
-                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Provisioning...</span>
-                  </>
-                ) : (
-                  <>
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Create Company</span>
-                  </>
-                )}
+                {isSubmittingOrg ? 'Creating...' : 'Create Company'}
               </button>
             </div>
           </form>
         </div>
       )}
 
-      {/* Inline Form Panel: Edit Organization */}
+      {/* Inline Form Panel: Edit Company */}
       {editingOrg && (
-        <div className="bg-white dark:bg-slate-900 rounded-2xl border-2 border-blue-500/30 dark:border-blue-500/40 shadow-sm p-6 space-y-4 animate-fadeIn">
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-blue-200 dark:border-blue-800/60 shadow-sm p-6 space-y-5 animate-fadeIn">
           <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
-            <div>
-              <div className="flex items-center gap-1.5 text-xs text-slate-400">
-                <span>System Configuration</span>
-                <span>/</span>
-                <span>Companies & Branches</span>
-                <span>/</span>
-                <span className="text-slate-900 dark:text-white font-medium">{editingOrg.legal_name}</span>
-              </div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">Edit Company Profile</h3>
-            </div>
+            <h3 className="text-base font-bold text-slate-900 dark:text-white">
+              Edit Company — {editingOrg.legal_name}
+            </h3>
             <button
               type="button"
-              onClick={() => { setEditingOrg(null); setIsOrgDirty(false); }}
-              className="px-3 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer flex items-center gap-1"
+              onClick={() => {
+                setEditingOrg(null);
+                setIsOrgDirty(false);
+              }}
+              className="px-3 py-1.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer flex items-center gap-1"
             >
-              <X className="w-3.5 h-3.5" />
-              <span>Cancel</span>
+              <X className="w-4 h-4" />
+              <span>Close</span>
             </button>
           </div>
-          <form onSubmit={handleSaveOrg} className="space-y-4 text-xs">
+          <form onSubmit={handleSaveOrg} className="space-y-4 text-sm">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block font-semibold mb-1">Legal Entity Name *</label>
+                <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">Legal Entity Name *</label>
                 <input
                   type="text"
                   required
@@ -485,11 +508,11 @@ export function OrganizationsView() {
                     setEditingOrg({ ...editingOrg, legal_name: e.target.value });
                     setIsOrgDirty(true);
                   }}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
                 />
               </div>
               <div>
-                <label className="block font-semibold mb-1">Commercial Registration (CR) / Tax ID</label>
+                <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">CR / Tax Registration Number</label>
                 <input
                   type="text"
                   value={editingOrg.tax_id || ''}
@@ -497,36 +520,37 @@ export function OrganizationsView() {
                     setEditingOrg({ ...editingOrg, tax_id: e.target.value });
                     setIsOrgDirty(true);
                   }}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
                 />
               </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block font-semibold mb-1">Base Currency</label>
+                <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">Currency</label>
                 <select
                   value={editingOrg.base_currency || 'QAR'}
                   onChange={(e) => {
                     setEditingOrg({ ...editingOrg, base_currency: e.target.value });
                     setIsOrgDirty(true);
                   }}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white cursor-pointer"
                 >
-                  <option value="QAR">QAR</option>
-                  <option value="USD">USD</option>
-                  <option value="AED">AED</option>
-                  <option value="SAR">SAR</option>
+                  {currencies.map((curr) => (
+                    <option key={curr.code} value={curr.code}>
+                      {curr.code} — {curr.name} ({curr.symbol})
+                    </option>
+                  ))}
                 </select>
               </div>
               <div>
-                <label className="block font-semibold mb-1">Timezone</label>
+                <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">Timezone</label>
                 <select
                   value={editingOrg.default_timezone || 'Asia/Qatar'}
                   onChange={(e) => {
                     setEditingOrg({ ...editingOrg, default_timezone: e.target.value });
                     setIsOrgDirty(true);
                   }}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white cursor-pointer"
                 >
                   <option value="Asia/Qatar">Asia/Qatar (GMT+3)</option>
                   <option value="Asia/Dubai">Asia/Dubai (GMT+4)</option>
@@ -535,21 +559,21 @@ export function OrganizationsView() {
                 </select>
               </div>
             </div>
-            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
               <button
                 type="button"
                 onClick={() => {
                   setEditingOrg(null);
                   setIsOrgDirty(false);
                 }}
-                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={!isOrgDirty}
-                className={`px-4 py-2 rounded-xl font-semibold transition ${
+                className={`px-5 py-2 rounded-xl font-semibold transition ${
                   isOrgDirty
                     ? 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer shadow-xs'
                     : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-slate-200 dark:border-slate-700 cursor-not-allowed opacity-60'
@@ -562,312 +586,347 @@ export function OrganizationsView() {
         </div>
       )}
 
-      {/* Inline Form Panel: Create / Edit Branch */}
+      {/* Inline Form Panel: Add / Edit Branch */}
       {branchModal.isOpen && (
-        <div className="bg-white dark:bg-slate-900 rounded-2xl border-2 border-purple-500/30 dark:border-purple-500/40 shadow-sm p-6 space-y-4 animate-fadeIn">
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-blue-200 dark:border-blue-800/60 shadow-sm p-6 space-y-5 animate-fadeIn">
           <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
-            <div>
-              <div className="flex items-center gap-1.5 text-xs text-slate-400">
-                <span>System Configuration</span>
-                <span>/</span>
-                <span>Companies & Branches</span>
-                <span>/</span>
-                <span className="text-slate-900 dark:text-white font-medium">
-                  {branchModal.isEdit ? `Edit Branch (${branchModal.data?.code})` : 'New Operating Branch'}
-                </span>
-              </div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">
-                {branchModal.isEdit ? 'Edit Operating Branch' : 'Add Operating Branch'}
-              </h3>
-            </div>
+            <h3 className="text-base font-bold text-slate-900 dark:text-white">
+              {branchModal.isEdit ? `Edit Branch — ${branchModal.data?.name}` : 'Add Branch'}
+            </h3>
             <button
               type="button"
               onClick={() => setBranchModal({ isOpen: false, isEdit: false, data: null })}
-              className="px-3 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer flex items-center gap-1"
+              className="px-3 py-1.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer flex items-center gap-1"
             >
-              <X className="w-3.5 h-3.5" />
-              <span>Cancel</span>
+              <X className="w-4 h-4" />
+              <span>Close</span>
             </button>
           </div>
-          <form onSubmit={handleSaveBranch} className="space-y-4 text-xs">
+          <form onSubmit={handleSaveBranch} className="space-y-4 text-sm">
             <div>
-              <label className="block font-semibold mb-1">Branch Name *</label>
+              <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">Branch Name *</label>
               <input
                 type="text"
                 required
                 value={branchModal.data.name}
                 onChange={(e) => setBranchModal({ ...branchModal, data: { ...branchModal.data, name: e.target.value } })}
-                placeholder="e.g. Ras Laffan Industrial Operations"
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
+                placeholder="e.g. Doha Main Office"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
               />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block font-semibold mb-1">Branch Code *</label>
+                <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">Branch Code *</label>
                 <input
                   type="text"
                   required
                   value={branchModal.data.code}
-                  onChange={(e) => setBranchModal({ ...branchModal, data: { ...branchModal.data, code: e.target.value.toUpperCase() } })}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono"
+                  onChange={(e) =>
+                    setBranchModal({ ...branchModal, data: { ...branchModal.data, code: e.target.value.toUpperCase() } })
+                  }
+                  placeholder="HQ-01"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
                 />
               </div>
               <div>
-                <label className="block font-semibold mb-1">City / Municipality</label>
+                <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">City / Location</label>
                 <input
                   type="text"
                   value={branchModal.data.city}
                   onChange={(e) => setBranchModal({ ...branchModal, data: { ...branchModal.data, city: e.target.value } })}
-                  placeholder="Doha / Al Wakra / Al Khor"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
+                  placeholder="Doha"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
                 />
               </div>
             </div>
             <div>
-              <label className="block font-semibold mb-1">Allowed CIDR Subnets</label>
+              <label className="block font-medium mb-1.5 text-slate-700 dark:text-slate-300">
+                Allowed Office IP Addresses <span className="text-slate-400 font-normal">(Optional)</span>
+              </label>
               <input
                 type="text"
                 value={branchModal.data.ip_allowlist}
-                onChange={(e) => setBranchModal({ ...branchModal, data: { ...branchModal.data, ip_allowlist: e.target.value } })}
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono"
+                onChange={(e) =>
+                  setBranchModal({ ...branchModal, data: { ...branchModal.data, ip_allowlist: e.target.value } })
+                }
+                placeholder="e.g. 192.168.1.0/24"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
               />
             </div>
-            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
               <button
                 type="button"
                 onClick={() => setBranchModal({ isOpen: false, isEdit: false, data: null })}
-                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
               >
                 Cancel
               </button>
-              <button type="submit" className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold cursor-pointer">
-                {branchModal.isEdit ? 'Update Branch' : 'Create Branch'}
+              <button
+                type="submit"
+                className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold cursor-pointer"
+              >
+                {branchModal.isEdit ? 'Save Branch' : 'Add Branch'}
               </button>
             </div>
           </form>
         </div>
       )}
 
-      {/* Organizations Grid */}
+      {/* Companies Grid */}
       {isTenancyLoading && organizations.length === 0 ? (
-        <div className="p-12 text-center text-slate-400 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800">
+        <div className="p-12 text-center text-slate-500 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800">
           <div className="flex items-center justify-center gap-2.5">
             <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-            <span className="text-xs">Loading companies and operating branches...</span>
+            <span className="text-sm">Loading companies and branches...</span>
           </div>
         </div>
-      ) : organizations.filter((org) => (activeTab === 'archived' ? org.is_active === false : org.is_active !== false)).length === 0 ? (
-        <div className="p-12 text-center text-slate-400 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs">
-          {activeTab === 'archived' ? 'No archived companies.' : 'No active organizations configured.'}
+      ) : visibleOrganizations.length === 0 ? (
+        <div className="p-12 text-center text-slate-500 dark:text-slate-400 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-2">
+          <Archive className="w-8 h-8 mx-auto text-slate-300 dark:text-slate-600" />
+          <p className="text-base font-medium text-slate-700 dark:text-slate-300">
+            {activeTab === 'archived' ? 'No archived companies' : 'No active companies found'}
+          </p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            {activeTab === 'archived'
+              ? 'Companies you archive will appear here and can be restored anytime.'
+              : 'Create a new company or check the Archived tab.'}
+          </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {organizations
-            .filter((org) => (activeTab === 'archived' ? org.is_active === false : org.is_active !== false))
-            .map((org) => {
-              const orgBranches = branches.filter((b) => b.organization_id === org.id);
-              const isOrgArchived = org.is_active === false;
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {visibleOrganizations.map((org) => {
+            const orgBranches = branches.filter((b) => b.organization_id === org.id);
+            const activeBranchCount = orgBranches.filter((b) => b.is_active !== false).length;
+            const isOrgArchived = org.is_active === false;
+            const canDeleteThisOrg = isOrgArchived || activeOrgsCount > 1;
+            const canArchiveThisOrg = isOrgArchived || activeOrgsCount > 1;
 
-          return (
-            <div
-              key={org.id}
-              className={`rounded-2xl border p-6 shadow-2xs space-y-5 transition ${
-                isOrgArchived
-                  ? 'bg-slate-100/70 dark:bg-slate-950/60 border-dashed border-slate-300 dark:border-slate-800 opacity-90'
-                  : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
-              }`}
-            >
-              {/* Org Header */}
-              <div className="flex items-start justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-xl text-white flex items-center justify-center font-bold text-sm shadow-xs ${isOrgArchived ? 'bg-slate-600' : 'bg-blue-600'}`}>
-                    {org.legal_name.slice(0, 1)}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-bold text-sm text-slate-900 dark:text-white leading-tight">
-                        {org.legal_name}
-                      </h3>
-                      {isOrgArchived && (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                          Archived
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-[11px] font-mono text-slate-400 mt-0.5">
-                      Qatar CR / Tax ID: <strong className="text-slate-600 dark:text-slate-300">{org.tax_id}</strong>
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs font-bold px-2.5 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700">
-                    {org.base_currency}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingOrg({ ...org });
-                      setIsOrgDirty(false);
-                    }}
-                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer"
-                    title="Edit Company Details"
-                  >
-                    <Edit2 className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleToggleArchiveOrg(org)}
-                    className={`p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 transition cursor-pointer ${
-                      isOrgArchived
-                        ? 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10'
-                        : 'text-amber-600 dark:text-amber-400 hover:bg-amber-500/10'
-                    }`}
-                    title={isOrgArchived ? 'Restore / Unarchive Company' : 'Archive Company (Preserve History)'}
-                  >
-                    {isOrgArchived ? <RotateCcw className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteOrg(org)}
-                    disabled={organizations.length <= 1}
-                    className={`p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 transition ${
-                      organizations.length <= 1
-                        ? 'opacity-40 cursor-not-allowed text-slate-400 dark:text-slate-600'
-                        : 'text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 hover:border-rose-500/40 cursor-pointer'
-                    }`}
-                    title={
-                      organizations.length <= 1
-                        ? 'Cannot delete: At least 1 organization must remain'
-                        : `Permanently delete ${org.legal_name}`
-                    }
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Org Metadata */}
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/80">
-                  <span className="text-[10px] text-slate-400 block">Default Timezone</span>
-                  <span className="font-semibold text-slate-800 dark:text-slate-200">{org.default_timezone}</span>
-                </div>
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/80">
-                  <span className="text-[10px] text-slate-400 block">Default Locale</span>
-                  <span className="font-semibold text-slate-800 dark:text-slate-200 uppercase">{org.default_locale || 'en'}</span>
-                </div>
-              </div>
-
-              {/* Operating Branches List */}
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                    Operating Branches ({orgBranches.length})
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setBranchModal({
-                        isOpen: true,
-                        isEdit: false,
-                        data: {
-                          organization_id: org.id,
-                          name: '',
-                          code: `BR-0${orgBranches.length + 1}`,
-                          city: 'Doha',
-                          ip_allowlist: '127.0.0.1/32, 192.168.1.0/24',
-                        },
-                      })
-                    }
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Add Branch</span>
-                  </button>
-                </div>
-
-                <div className="space-y-2">
-                  {orgBranches.map((branch) => (
+            return (
+              <div
+                key={org.id}
+                className={`rounded-2xl border p-6 shadow-2xs space-y-5 transition ${
+                  isOrgArchived
+                    ? 'bg-amber-50/30 dark:bg-slate-900/60 border-amber-200/80 dark:border-amber-900/40'
+                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
+                }`}
+              >
+                {/* Company Header */}
+                <div className="flex items-start justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-4">
+                  <div className="flex items-center gap-3.5 min-w-0">
                     <div
-                      key={branch.id}
-                      className={`p-3 rounded-xl border flex items-center justify-between text-xs transition ${
-                        branch.is_active === false
-                          ? 'border-dashed border-slate-300 dark:border-slate-800 bg-slate-100/50 dark:bg-slate-800/20 opacity-80'
-                          : 'border-slate-200/80 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/30'
+                      className={`w-11 h-11 rounded-xl text-white flex items-center justify-center font-bold text-base shadow-xs shrink-0 ${
+                        isOrgArchived ? 'bg-slate-500' : 'bg-blue-600'
                       }`}
                     >
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold text-slate-900 dark:text-white">
-                            {branch.name}
+                      {org.legal_name.slice(0, 1).toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="font-bold text-base text-slate-900 dark:text-white leading-snug truncate">
+                          {org.legal_name}
+                        </h3>
+                        {isOrgArchived && (
+                          <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                            Archived
                           </span>
-                          {branch.is_active === false && (
-                            <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                              Archived
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-                          {branch.city} • Code: {branch.code}
-                        </div>
+                        )}
                       </div>
+                      <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+                        {org.tax_id ? `Reg. No: ${org.tax_id}` : 'No registration number set'} • {org.base_currency}
+                      </p>
+                    </div>
+                  </div>
 
-                      <div className="flex items-center gap-3">
-                        <div className="text-right font-mono text-[11px]">
-                          <span className="text-slate-400 block text-[10px]">IP Subnet Allowlist</span>
-                          <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
-                            {(branch.ip_allowlist || ['127.0.0.1/32']).join(', ')}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setBranchModal({
-                                isOpen: true,
-                                isEdit: true,
-                                data: {
-                                  ...branch,
-                                  ip_allowlist: (branch.ip_allowlist || ['127.0.0.1/32']).join(', '),
-                                },
-                              })
-                            }
-                            className="p-1 text-slate-400 hover:text-blue-600 cursor-pointer"
-                            title="Edit Branch"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleToggleArchiveBranch(branch)}
-                            className={`p-1 cursor-pointer transition ${
-                              branch.is_active === false ? 'text-emerald-600 hover:text-emerald-500' : 'text-slate-400 hover:text-amber-500'
-                            }`}
-                            title={branch.is_active === false ? 'Restore Branch' : 'Archive Branch'}
-                          >
-                            {branch.is_active === false ? <RotateCcw className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
-                          </button>
-                          {orgBranches.length > 1 && (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {isOrgArchived ? (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleArchiveOrg(org)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-2xs transition cursor-pointer"
+                        title="Restore company to active workspace"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Restore</span>
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingOrg({ ...org });
+                            setIsOrgDirty(false);
+                          }}
+                          className="p-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer transition"
+                          title="Edit Company"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!canArchiveThisOrg}
+                          onClick={() => handleToggleArchiveOrg(org)}
+                          className={`p-2 rounded-xl border border-slate-200 dark:border-slate-700 transition ${
+                            !canArchiveThisOrg
+                              ? 'opacity-40 cursor-not-allowed text-slate-400'
+                              : 'text-slate-500 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 cursor-pointer'
+                          }`}
+                          title={
+                            !canArchiveThisOrg
+                              ? 'Cannot archive the only active company'
+                              : 'Archive Company'
+                          }
+                        >
+                          <Archive className="w-4 h-4" />
+                        </button>
+                      </>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteOrg(org)}
+                      disabled={!canDeleteThisOrg}
+                      className={`p-2 rounded-xl border border-slate-200 dark:border-slate-700 transition ${
+                        !canDeleteThisOrg
+                          ? 'opacity-40 cursor-not-allowed text-slate-400 dark:text-slate-600'
+                          : 'text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 cursor-pointer'
+                      }`}
+                      title={
+                        !canDeleteThisOrg
+                          ? 'At least one active company must remain'
+                          : `Delete ${org.legal_name}`
+                      }
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Company Details Summary */}
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/70 dark:border-slate-700/70">
+                    <span className="text-xs text-slate-500 dark:text-slate-400 block">Timezone</span>
+                    <span className="font-medium text-slate-800 dark:text-slate-200">{org.default_timezone}</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/70 dark:border-slate-700/70">
+                    <span className="text-xs text-slate-500 dark:text-slate-400 block">Language</span>
+                    <span className="font-medium text-slate-800 dark:text-slate-200">
+                      {org.default_locale === 'ar' ? 'Arabic' : 'English'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Operating Branches List */}
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                      Branches ({orgBranches.length})
+                    </span>
+                    {!isOrgArchived && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setBranchModal({
+                            isOpen: true,
+                            isEdit: false,
+                            data: {
+                              organization_id: org.id,
+                              name: '',
+                              code: `BR-0${orgBranches.length + 1}`,
+                              city: 'Doha',
+                              ip_allowlist: '',
+                            },
+                          })
+                        }
+                        className="inline-flex items-center gap-1 text-sm font-semibold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Add Branch</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    {orgBranches.map((branch) => {
+                      const isBranchArchived = branch.is_active === false;
+                      return (
+                        <div
+                          key={branch.id}
+                          className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 text-sm transition ${
+                            isBranchArchived
+                              ? 'border-dashed border-slate-300 dark:border-slate-700 bg-slate-100/60 dark:bg-slate-800/20 opacity-80'
+                              : 'border-slate-200/80 dark:border-slate-700/80 bg-slate-50/60 dark:bg-slate-800/30'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-slate-900 dark:text-white truncate">
+                                {branch.name}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-md text-xs font-medium bg-slate-200/70 dark:bg-slate-700/70 text-slate-700 dark:text-slate-300">
+                                {branch.code}
+                              </span>
+                              {isBranchArchived && (
+                                <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300">
+                                  Archived
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-1">
+                              <MapPin className="w-3 h-3 shrink-0" />
+                              <span>{branch.city || 'Doha'}</span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
                             <button
                               type="button"
-                              onClick={() => handleDeleteBranch(branch.id, branch.name)}
-                              className="p-1 text-slate-400 hover:text-rose-600 cursor-pointer"
-                              title="Delete Branch"
+                              onClick={() =>
+                                setBranchModal({
+                                  isOpen: true,
+                                  isEdit: true,
+                                  data: {
+                                    ...branch,
+                                    ip_allowlist: (branch.ip_allowlist || []).filter((ip) => ip !== '127.0.0.1/32').join(', '),
+                                  },
+                                })
+                              }
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-white dark:hover:bg-slate-800 cursor-pointer transition"
+                              title="Edit Branch"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <Edit2 className="w-4 h-4" />
                             </button>
-                          )}
+                            <button
+                              type="button"
+                              onClick={() => handleToggleArchiveBranch(branch)}
+                              className={`p-1.5 rounded-lg cursor-pointer transition ${
+                                isBranchArchived
+                                  ? 'text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/30'
+                                  : 'text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/30'
+                              }`}
+                              title={isBranchArchived ? 'Restore Branch' : 'Archive Branch'}
+                            >
+                              {isBranchArchived ? <RotateCcw className="w-4 h-4" /> : <Archive className="w-4 h-4" />}
+                            </button>
+                            {(isBranchArchived || activeBranchCount > 1) && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteBranch(branch.id, branch.name)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 cursor-pointer transition"
+                                title="Delete Branch"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                  ))}
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
       )}
 
       {/* Relational Delete Blocked Modal */}

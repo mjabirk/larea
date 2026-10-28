@@ -57,13 +57,13 @@ const PRESET_COLORS = [
   { id: 'teal', label: 'Teal', bg: 'bg-teal-600', ring: 'ring-teal-500' },
 ];
 
-// SOX 404 / ISO 27001 Segregation of Duties (SoD) Conflict Matrix
+// Separation of Duties (SoD) Conflict Matrix
 const SOD_CONFLICT_RULES = [
   {
     id: 'SOD_BANK_VS_PAYROLL',
     name: 'Employee/Vendor Bank Details vs. Payroll & Payment Approval',
     risk_level: 'CRITICAL',
-    sox_control: 'SOX-404-FIN-01',
+    rule_code: 'SOD-FIN-01',
     set_a: ['employees.create', 'employees.update', 'employees.write', 'hr.salary_manage', 'salary.write', 'salary.manage', 'employees.bank_update', 'banking.manage', 'banking.write', 'banking.update', 'vendors.manage', 'vendors.bank_update'],
     set_b: ['payroll.manage', 'payroll.approve', 'payroll.post', 'payroll.export_wps', 'payments.approve'],
     description: 'Personnel with authority to modify employee master records or bank coordinates cannot approve payroll batches.',
@@ -72,16 +72,16 @@ const SOD_CONFLICT_RULES = [
     id: 'SOD_IAM_ADMIN_VS_AUDIT',
     name: 'IAM Role/User Administration vs. Security & Audit Override',
     risk_level: 'CRITICAL',
-    sox_control: 'SOX-404-ITGC-02',
+    rule_code: 'SOD-SEC-02',
     set_a: ['roles.manage', 'roles.update', 'roles.create', 'users.manage', 'users.update', 'users.create'],
     set_b: ['audit.verify', 'audit.manage', 'audit.override', 'security.override', 'settings.manage'],
-    description: 'Administrators provisioning IAM user credentials or security policies cannot alter or verify cryptographic audit trails.',
+    description: 'Administrators provisioning IAM user credentials or security policies cannot alter or verify audit trails.',
   },
   {
     id: 'SOD_ATTENDANCE_VS_PAYROLL',
     name: 'Attendance Entry/Modification vs. Overtime & Payroll Approval',
     risk_level: 'HIGH',
-    sox_control: 'SOX-404-OPS-03',
+    rule_code: 'SOD-OPS-03',
     set_a: ['attendance_logs.create', 'attendance_logs.update', 'attendance_logs.write', 'attendance.write', 'attendance.create', 'attendance.update'],
     set_b: ['attendance.approve', 'attendance_logs.approve', 'payroll.manage', 'payroll.approve'],
     description: 'Operators who create or adjust manual attendance logs cannot approve overtime or finalize payroll batches.',
@@ -90,7 +90,7 @@ const SOD_CONFLICT_RULES = [
     id: 'SOD_CONTRACT_MAKER_VS_CHECKER',
     name: 'Contract Authoring vs. Contract Approval',
     risk_level: 'HIGH',
-    sox_control: 'SOX-404-HR-04',
+    rule_code: 'SOD-HR-04',
     set_a: ['employee_contracts.create', 'employee_contracts.update', 'employee_contracts.write', 'hr.contracts_manage', 'contracts.manage'],
     set_b: ['contracts.approve', 'employee_contracts.approve'],
     description: 'Personnel drafting or configuring employee contracts cannot unilaterally approve or activate contracts.',
@@ -158,12 +158,39 @@ export function RolesView() {
     if (refreshTenancyData) refreshTenancyData();
   }, []);
 
-  const [selectedRoleId, setSelectedRoleId] = useState('role_ops_lead');
+  const [selectedRoleId, setSelectedRoleId] = useState(() => {
+    if (typeof window === 'undefined') return 'role_ops_lead';
+    const urlId = new URLSearchParams(window.location.search).get('id');
+    return urlId && urlId !== 'new' ? urlId : 'role_ops_lead';
+  });
   const [roleSearch, setRoleSearch] = useState('');
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   // View mode & state
-  const [viewMode, setViewMode] = useState('list'); // 'list' | 'form'
+  const [viewMode, setViewMode] = useState(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('view') === 'form' ? 'form' : 'list'
+  ); // 'list' | 'form'
+
+  useEffect(() => {
+    const isForm = viewMode === 'form';
+    window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: isForm } }));
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (isForm) {
+        p.set('view', 'form');
+        p.set('id', 'new');
+      } else {
+        p.delete('view');
+        if (selectedRoleId && selectedRoleId !== 'role_ops_lead') p.set('id', selectedRoleId);
+        else p.delete('id');
+      }
+      const qs = p.toString();
+      window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+    } catch (e) {}
+    return () => {
+      if (isForm) window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: false } }));
+    };
+  }, [viewMode, selectedRoleId]);
   const [isDirty, setIsDirty] = useState(false);
   const [isSubmittingCreate, setIsSubmittingCreate] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -733,15 +760,11 @@ export function RolesView() {
       {/* Top Header Banner */}
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="space-y-1">
-          <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 text-xs font-semibold border border-blue-200/80 dark:border-blue-800/60">
-            <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Zero-Trust Authorization & Dynamic RBAC Engine</span>
-          </div>
-          <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 tracking-tight">
-            Security Roles & Permission Matrix
+          <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100 tracking-tight">
+            Roles & Permissions
           </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 max-w-2xl">
-            Configure system and user-defined roles with granular CRUD rights across domain entities. System roles are protected against accidental deletion.
+          <p className="text-sm text-slate-500 dark:text-slate-400 max-w-2xl">
+            Manage user roles, data access levels, and application menu visibility.
           </p>
         </div>
 
@@ -750,19 +773,19 @@ export function RolesView() {
           <button
             type="button"
             onClick={handleOpenCreateForm}
-            className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="h-9 px-3.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
           >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Create Custom Role</span>
+            <Plus className="w-4 h-4" />
+            <span>New Role</span>
           </button>
 
           <button
             type="button"
             onClick={resetRolesToDefaults}
-            className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition shadow-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 text-sm font-medium flex items-center gap-1.5 cursor-pointer transition shadow-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             title="Reset to Factory Defaults"
           >
-            <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
+            <RotateCcw className="w-4 h-4 text-slate-400" />
             <span className="hidden sm:inline">Reset Defaults</span>
           </button>
         </div>
@@ -928,17 +951,17 @@ export function RolesView() {
               {activeRoleConflicts.length > 0 && (
                 <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800/70 shadow-xs space-y-3 animate-fadeIn">
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-rose-800 dark:text-rose-200 font-bold text-xs">
+                    <div className="flex items-center gap-2 text-rose-800 dark:text-rose-200 font-semibold text-sm">
                       <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
-                      <span>SOX 404 Segregation of Duties (SoD) Conflict Detected</span>
+                      <span>Separation of Duties Warning</span>
                     </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-100 dark:bg-rose-900/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800">
-                      {activeRoleConflicts.length} {activeRoleConflicts.length === 1 ? 'VIOLATION' : 'VIOLATIONS'}
+                    <span className="px-2 py-0.5 rounded text-xs font-medium bg-rose-100 dark:bg-rose-900/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800">
+                      {activeRoleConflicts.length} {activeRoleConflicts.length === 1 ? 'Conflict' : 'Conflicts'}
                     </span>
                   </div>
 
-                  <p className="text-[11px] text-rose-700 dark:text-rose-300 leading-relaxed">
-                    This role configuration grants mutually exclusive operational permissions that violate internal controls dual-custody policies.
+                  <p className="text-xs text-rose-700 dark:text-rose-300 leading-relaxed">
+                    This role combines creation and approval permissions that are normally separated across two roles.
                   </p>
 
                   <div className="space-y-2.5 pt-1">
@@ -956,7 +979,7 @@ export function RolesView() {
                               ? 'bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
                               : 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
                           }`}>
-                            {v.risk_level} • {v.sox_control}
+                            {v.risk_level}
                           </span>
                         </div>
 
@@ -997,9 +1020,9 @@ export function RolesView() {
                 <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-200 flex items-start gap-2.5 animate-slideDown shadow-sm">
                   <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                   <div className="flex-1">
-                    <span className="font-bold block">Permission Assignment Blocked by SOX 404 Guard</span>
-                    <span className="text-[11px] leading-tight">
-                      {sodConflictToast.message || 'This action was blocked because it grants mutually exclusive permissions.'}
+                    <span className="font-semibold block">Conflicting Permission Blocked</span>
+                    <span className="text-xs leading-tight">
+                      {sodConflictToast.message || 'This action was blocked because it combines conflicting permissions.'}
                     </span>
                   </div>
                   <button
@@ -1015,12 +1038,12 @@ export function RolesView() {
               {/* Entity Permissions Cards */}
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                    Granular Entity Authorizations
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    Data Permissions
                   </span>
                   {!isSuperadmin && (
-                    <span className="text-[11px] text-slate-400">
-                      Changes persist automatically to RBAC security matrix
+                    <span className="text-xs text-slate-400">
+                      Saved automatically
                     </span>
                   )}
                 </div>
@@ -1125,20 +1148,13 @@ export function RolesView() {
               {/* NAVIGATION & MENU ACCESS SECTION */}
               {/* ========================================================================= */}
               <div className="space-y-4 pt-6 border-t border-slate-200 dark:border-slate-800">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block">
-                      Navigation & Menu Access
-                    </span>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      Govern visibility and launch permissions for workspaces and sub-navigation menus.
-                    </p>
-                  </div>
-                  {!isSuperadmin && (
-                    <span className="text-[11px] text-slate-400 font-mono">
-                      Stored in PostgreSQL roles.menu_access
-                    </span>
-                  )}
+                <div>
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 block">
+                    Menu Access
+                  </span>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Choose which applications and sub-menus are visible to users with this role.
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

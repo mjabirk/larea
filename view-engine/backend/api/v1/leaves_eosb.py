@@ -16,7 +16,7 @@ from backend.api.v1.payroll import (
     sync_employee_adjustments_to_payslips,
 )
 
-router = APIRouter(prefix="/api/v1/hr", tags=["Qatar Leave Management & EOSB Engine"])
+router = APIRouter(prefix="/api/v1/hr", tags=["Leave Management & End of Service"])
 
 
 # ==============================================================================
@@ -443,7 +443,7 @@ async def approve_leave_request(
                         float(leave["total_days"]), float(leave["daily_deduction_rate"] or 0.0),
                         float(leave["computed_deduction_qar"] or 0.0),
                         author_name, l1_by or author_name, l2_by or author_name,
-                        f"Automated statutory leave deduction from Leave Request {leave['code']} ({leave['start_date']} to {leave['end_date']})",
+                        f"Leave deduction from Leave Request {leave['code']} ({leave['start_date']} to {leave['end_date']})",
                         leave.get("organization_id")
                     )
                 else:
@@ -937,7 +937,7 @@ async def get_employee_settlement_statement(
                     "service_years": service_years,
                     "tenure_formatted": f"{t_years} Years, {t_months} Months, {t_days} Days",
                     "is_statutorily_eligible": is_eligible,
-                    "statute_reference": "Qatar Labour Law (Law No. 14 of 2004), Article 54 & Article 79",
+                    "policy_basis": "Company End-of-Service & Leave Policy",
                 },
                 "calculation_breakdown": {
                     "basic_monthly_salary": base_sal if can_read else None,

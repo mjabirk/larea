@@ -26,6 +26,11 @@ ENTITY_READ_PERMISSIONS: Dict[str, str] = {
     "leaves": "leaves.read",
     "leave": "leaves.read",
     "leave_requests": "leaves.read",
+    "users": "users.read",
+    "user": "users.read",
+    "shift_rosters": "attendance.read",
+    "shift_roster": "attendance.read",
+    "rosters": "attendance.read",
 }
 
 

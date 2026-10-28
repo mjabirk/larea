@@ -9,6 +9,9 @@ import { GanttView } from './GanttView';
 import { PrintReportModal } from './PrintReportModal';
 import { formatDateTime } from './Widgets';
 import { useTenancy } from '../../context/TenancyContext';
+import { getUrlParam, syncViewUrlParams, notifyRecordChatterUpdated } from '../../utils/urlState';
+
+const VALID_ENGINE_VIEWS = new Set(['list', 'form', 'graph', 'calendar', 'pivot', 'gantt']);
 
 export function ViewEngine({
   schema,
@@ -20,11 +23,27 @@ export function ViewEngine({
 }) {
   const tenancy = useTenancy();
   const currentUser = tenancy?.currentUser;
+  const defaultView = initialView || schema?.default_view || 'list';
 
-  const [currentView, setCurrentView] = useState(() => initialView || schema?.default_view || 'list');
-  const [previousView, setPreviousView] = useState('list');
+  const [currentView, setCurrentView] = useState(() => {
+    const urlView = getUrlParam('view');
+    if (urlView && VALID_ENGINE_VIEWS.has(urlView)) {
+      return urlView;
+    }
+    return defaultView;
+  });
+  const [previousView, setPreviousView] = useState(defaultView === 'form' ? 'list' : defaultView);
   const [records, setRecords] = useState(initialData);
-  const [activeRecordId, setActiveRecordId] = useState(initialData[0]?.id || null);
+  const [pendingRecordId, setPendingRecordId] = useState(() => {
+    const urlView = getUrlParam('view');
+    return urlView === 'form' ? (getUrlParam('id') || null) : null;
+  });
+  const [activeRecordId, setActiveRecordId] = useState(() => {
+    const urlView = getUrlParam('view');
+    const urlId = getUrlParam('id');
+    if (urlView === 'form' && urlId && urlId !== 'new') return urlId;
+    return initialData[0]?.id || null;
+  });
   const [draftRecord, setDraftRecord] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
   const [isDirty, setIsDirty] = useState(false);
@@ -58,14 +77,37 @@ export function ViewEngine({
     setRecords(initialData);
   }, [initialData, tenancy?.tenantEpoch]);
 
-  // Sync currentView if initialView or schema default_view updates
+  // Hydrate pendingRecordId from URL on browser reload once records load
   useEffect(() => {
-    if (initialView) {
-      setCurrentView(initialView);
-    } else if (schema?.default_view) {
-      setCurrentView(schema.default_view);
+    if (!pendingRecordId) return;
+    if (pendingRecordId === 'new') {
+      setPendingRecordId(null);
+      handleNew();
+      return;
     }
-  }, [initialView, schema?.default_view]);
+    if (records.length > 0) {
+      const found = records.find((r) => String(r.id) === String(pendingRecordId));
+      if (found) {
+        setActiveRecordId(found.id);
+        setDraftRecord({ ...found });
+      }
+      setPendingRecordId(null);
+    }
+  }, [pendingRecordId, records]);
+
+  // Keep URL synchronized with current ViewEngine view & record ID
+  useEffect(() => {
+    const isDefault = currentView === defaultView;
+    const isNewDraft = Boolean(draftRecord?.isNew || String(draftRecord?.id || '').startsWith('temp-'));
+    const effectiveId =
+      currentView === 'form'
+        ? (pendingRecordId || (isNewDraft ? 'new' : (draftRecord?.id || activeRecordId || null)))
+        : null;
+    syncViewUrlParams({
+      view: isDefault ? null : currentView,
+      id: effectiveId ? String(effectiveId) : null,
+    });
+  }, [currentView, defaultView, draftRecord, activeRecordId, pendingRecordId]);
 
   // Notify operational form state to hide compliance footer when in form mode
   useEffect(() => {
@@ -292,34 +334,59 @@ export function ViewEngine({
   };
 
   // Save changes from Form
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!draftRecord) return;
     const exists = records.some((r) => r.id === draftRecord.id);
+    let savedRecord = { ...draftRecord };
     let updatedRecords;
+
     if (exists) {
-      updatedRecords = records.map((r) => (r.id === draftRecord.id ? draftRecord : r));
       if (schema?.model !== 'shift_rosters' && tenancy?.updateAttendanceRecord) {
-        tenancy.updateAttendanceRecord(draftRecord.id, draftRecord);
+        const res = await tenancy.updateAttendanceRecord(draftRecord.id, draftRecord);
+        if (res && typeof res === 'object' && !Array.isArray(res)) {
+          savedRecord = { ...savedRecord, ...res };
+        }
       }
       if (onRecordUpdated) {
-        onRecordUpdated(draftRecord);
+        const res = await onRecordUpdated(savedRecord);
+        if (res && typeof res === 'object' && !Array.isArray(res)) {
+          savedRecord = { ...savedRecord, ...res };
+        }
       }
+      setIsDirty(false);
+      setDraftRecord(savedRecord);
+      updatedRecords = records.map((r) => (r.id === savedRecord.id ? savedRecord : r));
     } else {
-      updatedRecords = [draftRecord, ...records];
       if (schema?.model !== 'shift_rosters' && tenancy?.addAttendanceRecord) {
-        tenancy.addAttendanceRecord(draftRecord);
+        const res = await tenancy.addAttendanceRecord(draftRecord);
+        if (res && typeof res === 'object' && !Array.isArray(res)) {
+          savedRecord = { ...savedRecord, ...res };
+        }
       }
       if (onRecordCreated) {
-        onRecordCreated(draftRecord);
+        const res = await onRecordCreated(savedRecord);
+        if (res && typeof res === 'object' && !Array.isArray(res)) {
+          savedRecord = { ...savedRecord, ...res };
+        }
       }
+      setIsDirty(false);
+      savedRecord = { ...savedRecord, isNew: false };
+      setActiveRecordId(savedRecord.id);
+      setDraftRecord(savedRecord);
+      updatedRecords = [savedRecord, ...records];
     }
     setRecords(updatedRecords);
-    setIsDirty(false);
-    showNotification('Changes saved successfully');
+    const isRosterModel = schema?.model === 'shift_rosters' || schema?.title?.toLowerCase().includes('roster');
+    if (savedRecord?.id) {
+      notifyRecordChatterUpdated(savedRecord.id, isRosterModel ? 'shift_rosters' : 'attendance_logs');
+    }
+    showNotification('Changes saved');
   };
 
   // Form actions (SOX 404 dual-control submit, approve, reject)
   const handleFormAction = async (actName, rec) => {
+    const isRosterModel = schema?.model === 'shift_rosters' || schema?.title?.toLowerCase().includes('roster');
+    const entityType = isRosterModel ? 'shift_rosters' : 'attendance_logs';
     const token = typeof window !== 'undefined'
       ? (localStorage.getItem('enterprise_auth_token') || sessionStorage.getItem('enterprise_auth_token'))
       : null;
@@ -337,7 +404,8 @@ export function ViewEngine({
           const updated = await res.json();
           setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
           setDraftRecord(updated);
-          showNotification('Record submitted for dual-control checker approval.');
+          notifyRecordChatterUpdated(updated.id, entityType);
+          showNotification('Submitted for approval.');
           return;
         } else {
           const err = await res.json().catch(() => ({}));
@@ -356,7 +424,8 @@ export function ViewEngine({
           const updated = await res.json();
           setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
           setDraftRecord(updated);
-          showNotification('Record approved by independent checker.');
+          notifyRecordChatterUpdated(updated.id, entityType);
+          showNotification('Record approved.');
           return;
         } else {
           const err = await res.json().catch(() => ({}));
@@ -377,7 +446,8 @@ export function ViewEngine({
           const updated = await res.json();
           setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
           setDraftRecord(updated);
-          showNotification('Record rejected in dual-control review.', 'warning');
+          notifyRecordChatterUpdated(updated.id, entityType);
+          showNotification('Record rejected.', 'warning');
           return;
         } else {
           const err = await res.json().catch(() => ({}));
@@ -392,10 +462,13 @@ export function ViewEngine({
     setRecords((prev) => prev.map((r) => (r.id === rec.id ? rec : r)));
     setDraftRecord(rec);
     if (tenancy?.updateAttendanceRecord) {
-      tenancy.updateAttendanceRecord(rec.id, rec);
+      await tenancy.updateAttendanceRecord(rec.id, rec);
     }
     if (onRecordUpdated) {
-      onRecordUpdated(rec);
+      await onRecordUpdated(rec);
+    }
+    if (rec?.id) {
+      notifyRecordChatterUpdated(rec.id, entityType);
     }
     showNotification(`Status updated: ${rec.status}`);
   };
@@ -630,22 +703,29 @@ export function ViewEngine({
         )}
 
         {currentView === 'form' && (
-          <FormView
-            schema={schema}
-            record={draftRecord || currentRecord}
-            onChangeRecord={(updated) => {
-              setDraftRecord(updated);
-              setIsDirty(true);
-            }}
-            onFormAction={handleFormAction}
-            onBack={() => {
-              setIsDirty(false);
-              setDraftRecord(null);
-              setCurrentView(previousView || 'list');
-            }}
-            onDirtyChange={setIsDirty}
-            isDirty={isDirty}
-          />
+          pendingRecordId && pendingRecordId !== 'new' && records.length === 0 ? (
+            <div className="py-16 flex flex-col items-center justify-center gap-3 text-slate-400">
+              <div className="w-7 h-7 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm">Loading record...</span>
+            </div>
+          ) : (
+            <FormView
+              schema={schema}
+              record={draftRecord || currentRecord}
+              onChangeRecord={(updated) => {
+                setDraftRecord(updated);
+                setIsDirty(true);
+              }}
+              onFormAction={handleFormAction}
+              onBack={() => {
+                setIsDirty(false);
+                setDraftRecord(null);
+                setCurrentView(previousView || 'list');
+              }}
+              onDirtyChange={setIsDirty}
+              isDirty={isDirty}
+            />
+          )
         )}
 
         {currentView === 'graph' && (

@@ -1,11 +1,12 @@
-import React, { useEffect, useRef } from 'react';
-import { X, Printer } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { X, Printer, Loader2 } from 'lucide-react';
 import { formatDateTime } from './Widgets';
 import { useModalEscape } from '../../hooks/useModalEscape';
 
 export function PrintReportModal({ isOpen, onClose, schema, records = [] }) {
   const modalRef = useRef(null);
   useModalEscape(onClose, isOpen, modalRef);
+  const [isPrinting, setIsPrinting] = useState(false);
 
   if (!isOpen) return null;
 
@@ -14,8 +15,188 @@ export function PrintReportModal({ isOpen, onClose, schema, records = [] }) {
   const syncedCount = records.filter((r) => r.status === 'synced').length;
   const draftCount = records.filter((r) => r.status === 'draft').length;
 
+  /**
+   * Directly prints via an isolated hidden iframe.
+   * Completely bypasses window.print() and prevents dark background colors,
+   * browser URL headers, and web navigation scrollbars from leaking onto the paper.
+   */
   const handlePrint = () => {
-    window.print();
+    setIsPrinting(true);
+    const printableArea = modalRef.current?.querySelector('.report-export-unscaled');
+    if (!printableArea) {
+      setIsPrinting(false);
+      return;
+    }
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow.document;
+    doc.open();
+    doc.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>${schema?.title || 'Official Report'}</title>
+          <style>
+            @page {
+              size: A4 portrait;
+              margin: 15mm;
+            }
+            * {
+              box-sizing: border-box;
+            }
+            body {
+              margin: 0;
+              padding: 0;
+              background-color: #ffffff !important;
+              color: #0f172a !important;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+              font-size: 11px;
+              line-height: 1.4;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              margin-top: 8px;
+            }
+            th, td {
+              border: 1px solid #cbd5e1;
+              padding: 6px 8px;
+              text-align: left;
+            }
+            th {
+              background-color: #f1f5f9 !important;
+              font-weight: bold;
+              text-transform: uppercase;
+              font-size: 10px;
+            }
+            .grid {
+              display: grid;
+              grid-template-columns: repeat(4, 1fr);
+              gap: 12px;
+              margin: 12px 0;
+            }
+            .bg-slate-50 {
+              background-color: #f8fafc !important;
+              border: 1px solid #e2e8f0;
+              border-radius: 6px;
+              padding: 10px;
+            }
+            .font-mono {
+              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            }
+            .font-bold {
+              font-weight: bold;
+            }
+            .text-xl {
+              font-size: 16px;
+            }
+            .text-sm {
+              font-size: 12px;
+            }
+            .text-xs {
+              font-size: 11px;
+            }
+            .text-blue-600 {
+              color: #2563eb !important;
+            }
+            .text-emerald-600 {
+              color: #059669 !important;
+            }
+            .text-amber-600 {
+              color: #d97706 !important;
+            }
+            .text-right {
+              text-align: right;
+            }
+            .text-center {
+              text-align: center;
+            }
+            .border-b-2 {
+              border-bottom: 2px solid #0f172a;
+            }
+            .pb-4 {
+              padding-bottom: 12px;
+            }
+            .flex {
+              display: flex;
+            }
+            .justify-between {
+              justify-content: space-between;
+            }
+            .items-start {
+              align-items: flex-start;
+            }
+            .gap-4 {
+              gap: 12px;
+            }
+            .gap-12 {
+              gap: 36px;
+            }
+            .pt-8 {
+              padding-top: 24px;
+            }
+            .mt-8 {
+              margin-top: 24px;
+            }
+            .border-t {
+              border-top: 1px solid #cbd5e1;
+            }
+            .border-b {
+              border-bottom: 1px solid #94a3b8;
+            }
+            .w-48 {
+              width: 150px;
+            }
+            .space-y-6 > * + * {
+              margin-top: 16px;
+            }
+            .rounded {
+              border-radius: 4px;
+            }
+            .px-2 {
+              padding-left: 6px;
+              padding-right: 6px;
+            }
+            .py-0\\.5 {
+              padding-top: 2px;
+              padding-bottom: 2px;
+            }
+          </style>
+        </head>
+        <body>
+          ${printableArea.innerHTML}
+        </body>
+      </html>
+    `);
+    doc.close();
+
+    iframe.onload = () => {
+      setTimeout(() => {
+        try {
+          iframe.contentWindow.focus();
+          iframe.contentWindow.print();
+        } catch (e) {
+          console.error('Error invoking iframe print in PrintReportModal:', e);
+        }
+        setTimeout(() => {
+          try {
+            document.body.removeChild(iframe);
+          } catch (_) {}
+          setIsPrinting(false);
+        }, 1000);
+      }, 100);
+    };
   };
 
   return (
@@ -31,8 +212,8 @@ export function PrintReportModal({ isOpen, onClose, schema, records = [] }) {
         className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-fadeIn"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Modal Toolbar (hidden when printing) */}
-        <div className="px-6 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between print:hidden">
+        {/* Modal Toolbar */}
+        <div className="px-6 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Printer className="w-5 h-5 text-blue-600" />
             <h3 id="print-report-modal-title" className="font-bold text-slate-800 text-sm">
@@ -44,10 +225,20 @@ export function PrintReportModal({ isOpen, onClose, schema, records = [] }) {
             <button
               type="button"
               onClick={handlePrint}
-              className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+              disabled={isPrinting}
+              className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-xs disabled:opacity-50"
             >
-              <Printer className="w-3.5 h-3.5" />
-              <span>Print / Save as PDF</span>
+              {isPrinting ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Preparing Print...</span>
+                </>
+              ) : (
+                <>
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>Print Document</span>
+                </>
+              )}
             </button>
 
             <button

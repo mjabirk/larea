@@ -133,12 +133,12 @@ export function SetupWizard({ isOpen, onClose }) {
         return;
       }
       if (!adminData.date_of_birth) {
-        setError('Date of birth is required for superadmin age verification.');
+        setError('Date of birth is required.');
         return;
       }
       const age = calculateAge(adminData.date_of_birth);
       if (age < 18) {
-        setError('Root Superadmin must be an adult (at least 18 years of age) under statutory governance rules.');
+        setError('Administrator must be at least 18 years old.');
         return;
       }
       if (adminData.password !== adminData.confirm_password) {
@@ -154,7 +154,7 @@ export function SetupWizard({ isOpen, onClose }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!prefData.terms_consent) {
-      setError('You must affirmatively agree to the statutory Terms of Service and Privacy Policy to complete initialization.');
+      setError('Please accept the Terms of Use and Privacy Notice to complete setup.');
       return;
     }
     setError('');
@@ -391,15 +391,15 @@ export function SetupWizard({ isOpen, onClose }) {
                 />
               </div>
 
-              {/* Date of Birth & Age Compliance */}
+              {/* Date of Birth */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-semibold text-slate-700 block">
-                    Date of Birth (Statutory Adult Verification) <span className="text-rose-500">*</span>
+                    Date of Birth <span className="text-rose-500">*</span>
                   </label>
                   {adminData.date_of_birth && (
                     <span className="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                      Age: {calculateAge(adminData.date_of_birth)} (Verified Adult)
+                      Age: {calculateAge(adminData.date_of_birth)}
                     </span>
                   )}
                 </div>
@@ -539,11 +539,11 @@ export function SetupWizard({ isOpen, onClose }) {
                 </div>
               </div>
 
-              {/* Statutory Ethical Opt-In Checkboxes (Unchecked by default to prevent dark patterns) */}
+              {/* Terms & Privacy Checkboxes */}
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
                 <div className="font-bold text-xs text-slate-900 flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-blue-600" />
-                  <span>Statutory Consent & Legal Compliance Policies</span>
+                  <span>Terms & Privacy</span>
                 </div>
 
                 <label className="flex items-start gap-2.5 cursor-pointer">
@@ -554,7 +554,7 @@ export function SetupWizard({ isOpen, onClose }) {
                     className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
                   />
                   <span className="text-slate-700 text-xs leading-snug">
-                    I confirm that I have read and affirmatively accept the statutory <strong>Terms of Service</strong>, <strong>Privacy Policy</strong>, and <strong>GDPR Data Processing Agreement</strong>. <span className="text-rose-500">*</span>
+                    I accept the <strong>Terms of Use</strong> and <strong>Privacy Notice</strong>. <span className="text-rose-500">*</span>
                   </span>
                 </label>
 
@@ -566,7 +566,7 @@ export function SetupWizard({ isOpen, onClose }) {
                     className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
                   />
                   <span className="text-slate-600 text-[11px] leading-snug">
-                    Optional: Opt-in to receive statutory security advisory alerts and platform upgrade bulletins. (Unchecked by default).
+                    Optional: Receive security and product update notifications.
                   </span>
                 </label>
               </div>

@@ -183,33 +183,12 @@ export function BadgeWidget({ state }) {
   );
 }
 
-// Converts any date value (ISO string with/without timezone, Date object) to local YYYY-MM-DDTHH:mm for <input type="datetime-local">
 export function formatToLocalDatetimeInputValue(val) {
   if (!val) return '';
-  try {
-    if (typeof val === 'string') {
-      const trimmed = val.trim();
-      const hasTimezone = trimmed.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(trimmed);
-      // If it has NO timezone indicator, it is already wall-clock local time
-      if (!hasTimezone && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(trimmed)) {
-        return trimmed.slice(0, 16);
-      }
-    }
-
-    const d = new Date(val);
-    if (isNaN(d.getTime())) return typeof val === 'string' ? val.slice(0, 16) : '';
-
-    const pad = (n) => String(n).padStart(2, '0');
-    const y = d.getFullYear();
-    const m = pad(d.getMonth() + 1);
-    const day = pad(d.getDate());
-    const h = pad(d.getHours());
-    const min = pad(d.getMinutes());
-
-    return `${y}-${m}-${day}T${h}:${min}`;
-  } catch {
-    return '';
-  }
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return '';
+  const offset = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - offset).toISOString().slice(0, 16);
 }
 
 export function DateTimeWidget({ value, mode = 'readonly', onChange, required }) {

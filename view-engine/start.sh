@@ -15,6 +15,14 @@ if ! command -v node >/dev/null 2>&1; then
     exit 1
 fi
 
+# Ensure local binaries have executable permissions
+if [ -d "$DIR/node_modules/.bin" ]; then
+    chmod +x "$DIR/node_modules/.bin/"* 2>/dev/null || true
+fi
+if [ -d "$DIR/.venv_linux/bin" ]; then
+    chmod +x "$DIR/.venv_linux/bin/"* 2>/dev/null || true
+fi
+
 # Activate virtual environment if present
 if [ -f "$DIR/.venv_linux/bin/activate" ]; then
     echo "[Info] Activating Python virtual environment (.venv_linux)..."

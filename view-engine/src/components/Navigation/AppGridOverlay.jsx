@@ -142,20 +142,25 @@ export function AppGridOverlay({
       role="region"
       aria-label="Workspace Application Launcher"
     >
-      {/* 1. Header Row with Title and Circular Search Trigger */}
-      <div className="flex items-center justify-center gap-3 mb-6">
-        <h1 className="text-[22px] font-bold text-slate-900 dark:text-white tracking-tight">
-          Workspace Launcher
+      {/* 1. Clean Header & Search Bar */}
+      <div className="flex flex-col items-center justify-center gap-4 mb-8">
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+          Applications
         </h1>
 
         <button
           type="button"
           onClick={() => onOpenCommandPalette?.()}
-          className="w-9 h-9 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:border-blue-500 shadow-2xs flex items-center justify-center transition cursor-pointer"
-          aria-label="Search & Commands (Ctrl+K)"
-          title="Search & Commands (Ctrl+K)"
+          className="w-full max-w-md h-11 px-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-400 hover:border-blue-400 dark:hover:border-blue-500 shadow-2xs flex items-center justify-between text-sm transition cursor-pointer"
+          aria-label="Search applications or commands (Ctrl+K)"
         >
-          <Search className="w-4 h-4" />
+          <span className="flex items-center gap-2.5">
+            <Search className="w-4 h-4 text-slate-400" />
+            <span>Search apps, employees, or actions...</span>
+          </span>
+          <kbd className="px-2 py-0.5 text-xs bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-md border border-slate-200 dark:border-slate-700">
+            Ctrl K
+          </kbd>
         </button>
       </div>
 
@@ -210,7 +215,7 @@ export function AppGridOverlay({
                     </div>
 
                     {/* b) Module Name Below Icon */}
-                    <span className="text-[13px] sm:text-[14px] font-semibold text-slate-800 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400 text-center leading-snug transition-colors">
+                    <span className="text-sm sm:text-[15px] font-semibold text-slate-800 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400 text-center leading-snug transition-colors">
                       {app.name}
                     </span>
                   </button>
@@ -282,15 +287,9 @@ export function AppGridOverlay({
         </div>
       )}
 
-      {/* 5. Clean Keyboard Shortcuts Footer */}
-      <div className="mt-auto pt-8 pb-4 text-center text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center justify-center gap-2 sm:gap-4">
-        <span>
-          Press <kbd className="px-1.5 py-0.5 bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded text-slate-700 dark:text-slate-300 font-mono text-[11px]">Esc</kbd> or click 9-dots icon to return
-        </span>
-        <span className="hidden sm:inline">•</span>
-        <span>
-          Press <kbd className="px-1.5 py-0.5 bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded text-slate-700 dark:text-slate-300 font-mono text-[11px]">Ctrl + K</kbd> for Command Palette
-        </span>
+      {/* 5. Minimal Shortcut Hint */}
+      <div className="mt-auto pt-8 pb-2 text-center text-xs text-slate-400 dark:text-slate-500">
+        Tip: Start typing anywhere to search
       </div>
     </div>
   );

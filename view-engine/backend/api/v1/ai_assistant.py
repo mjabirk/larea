@@ -172,11 +172,11 @@ def run_deterministic_intent_analyzer(
                     "days": pass_days,
                 })
 
-        lines = [f"### 📋 Statutory Compliance & Document Expiry Analysis\n"]
+        lines = [f"### 📋 Document Expiry Overview\n"]
         total_expiring = len(expiring_qids) + len(expiring_visas) + len(expiring_passports)
 
         if total_expiring == 0:
-            lines.append("✅ **All employee identity documents are compliant!** No QIDs, Visas, or Passports are expiring within the next 30 days across your branch scope.")
+            lines.append("✅ **All employee identity documents are up to date!** No IDs, Visas, or Passports are expiring within the next 30 days across your branch scope.")
         else:
             if expiring_qids:
                 lines.append(f"**Qatar ID (QID) Expiries ({len(expiring_qids)} identified):**")

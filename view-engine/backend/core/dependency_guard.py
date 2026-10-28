@@ -5,9 +5,10 @@ from typing import Dict, Any, List, Optional
 # Parent Entity -> List of child tables to check before allowing deletion
 DEPENDENCY_REGISTRY = {
     "organizations": [
-        {"table": "branches", "fk": "organization_id", "label": "Operating Branches", "name_col": "name"},
         {"table": "employees", "fk": "organization_id", "label": "Employees", "name_col": "first_name"},
         {"table": "users", "fk": "organization_id", "label": "User Accounts", "name_col": "email"},
+        {"table": "employee_contracts", "fk": "organization_id", "label": "Employment Contracts", "name_col": "contract_reference"},
+        {"table": "attendance_logs", "fk": "organization_id", "label": "Attendance Records", "name_col": "code"},
         {"table": "payroll_batches", "fk": "organization_id", "label": "Payroll Batches", "name_col": "batch_code"},
         {"table": "zkteco_terminals", "fk": "organization_id", "label": "Biometric Terminals", "name_col": "alias"},
     ],
@@ -115,5 +116,5 @@ async def inspect_dependencies(
         "dependencies": violations,
         "message": f"Cannot permanently delete '{entity_name or entity_type}' because it is actively referenced by {total_blocked} records across the system.",
         "details": details,
-        "resolution": "To protect historical audit and statutory compliance, reassign or remove the linked records first, or use 'Archive' to deactivate this record while preserving historical reporting."
+        "resolution": "Reassign or remove the linked records first, or use 'Archive' to deactivate this record while preserving historical records."
     }

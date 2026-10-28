@@ -94,8 +94,8 @@ export const DEFAULT_ROLES = [
 export const RBAC_ENTITIES = [
   {
     key: "employees",
-    name: "International Employees Directory",
-    description: "Workforce directory, expat residency/visas, contracts, WPS banking, and encrypted vaults.",
+    name: "Employees Directory",
+    description: "Workforce directory, ID documents, contracts, bank details, and attachments.",
     category: "Human Resources",
     iconName: "Users",
   },

@@ -20,6 +20,8 @@ const EXCLUDED_AUTH_ENDPOINTS = [
   '/api/v1/auth/2fa',
   '/api/v1/auth/sso',
   '/api/v1/system/status',
+  '/api/v1/system/countries',
+  '/api/v1/system/currencies',
   '/api/v1/setup',
 ];
 

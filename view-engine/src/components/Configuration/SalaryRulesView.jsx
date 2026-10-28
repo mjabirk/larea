@@ -34,9 +34,9 @@ const WPS_CODES = [
     { code: 'TRANSPORT', label: 'TRANSPORT — Transport & Fuel' },
     { code: 'FOOD', label: 'FOOD — Food & Subsistence' },
     { code: 'TELECOM', label: 'TELECOM — Mobile & Utilities' },
-    { code: 'OVERTIME', label: 'OVERTIME — Statutory Overtime' },
+    { code: 'OVERTIME', label: 'OVERTIME — Overtime Pay' },
     { code: 'OTHER_ALW', label: 'OTHER_ALW — Other Allowance' },
-    { code: 'GOSI', label: 'GOSI — Qatari Pension / Social Insurance' },
+    { code: 'GOSI', label: 'GOSI — Pension / Social Insurance' },
     { code: 'LOAN_DED', label: 'LOAN_DED — Staff Advance / Loan Deduction' },
     { code: 'ABSENCE_DED', label: 'ABSENCE_DED — Unpaid Leave / Absence' },
 ];
@@ -805,8 +805,8 @@ export function SalaryRulesView() {
                                         onChange={(e) => setSalaryRuleForm({ ...salaryRuleForm, category: e.target.value })}
                                         className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
                                     >
-                                        <option value="allowance">Allowance (Contract Addition)</option>
-                                        <option value="deduction">Deduction (Statutory / Contract)</option>
+                                        <option value="allowance">Allowance (Addition)</option>
+                                        <option value="deduction">Deduction</option>
                                     </select>
                                 </div>
                             </div>
@@ -922,7 +922,7 @@ export function SalaryRulesView() {
 
                             <div>
                                 <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
-                                    Qatar WPS Banking Code
+                                    Pay Category Code
                                 </label>
                                 <select
                                     value={salaryRuleForm.wps_code}
@@ -1170,7 +1170,7 @@ export function SalaryRulesView() {
                                 <input
                                     type="text"
                                     required
-                                    placeholder="e.g. Authorized Examination / Study Leave (Qatar Art. 83)"
+                                    placeholder="e.g. Study Leave"
                                     value={leaveTypeForm.name}
                                     onChange={(e) => setLeaveTypeForm({ ...leaveTypeForm, name: e.target.value })}
                                     className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -1343,15 +1343,11 @@ export function SalaryRulesView() {
             {/* Header Banner */}
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="space-y-1">
-                    <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 text-xs font-semibold border border-amber-200/80 dark:border-amber-800/60">
-                        <Sliders className="w-3.5 h-3.5" />
-                        <span>Qatar WPS & Compensation Rule Engine</span>
-                    </div>
                     <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-                        Compensation, Overtime & Leave Centralized Configuration
+                        Salary, Overtime &amp; Leave Rules
                     </h2>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                        Configure statutory contract allowances, overtime multipliers with customizable salary bases, locked piece-rates, and Qatar Labour Law leave policies.
+                        Configure contract allowances, overtime rates, task piece-rates, and company leave types.
                     </p>
                 </div>
 
@@ -1536,10 +1532,10 @@ export function SalaryRulesView() {
                 <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs overflow-hidden">
                     <div className="p-4 bg-slate-50/70 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
                         <span className="font-bold text-slate-700 dark:text-slate-300">
-                            Qatar Statutory Contract Salary Allowances & Social Insurance Rules
+                            Contract Allowances &amp; Deductions
                         </span>
                         <span className="text-slate-400 text-[11px]">
-                            Used in Employee Contract packages & Qatar WPS .SIF exports
+                            Used in employee contracts &amp; payroll runs
                         </span>
                     </div>
 
@@ -1551,7 +1547,7 @@ export function SalaryRulesView() {
                                 <th className="py-3.5 px-4">Category</th>
                                 <th className="py-3.5 px-4">Calculation Basis</th>
                                 <th className="py-3.5 px-4">Default Value</th>
-                                <th className="py-3.5 px-4">Qatar WPS Code</th>
+                                <th className="py-3.5 px-4">Pay Code</th>
                                 {canManage && <th className="py-3.5 px-4 text-right">Actions</th>}
                             </tr>
                         </thead>
@@ -1796,10 +1792,10 @@ export function SalaryRulesView() {
                 <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs overflow-hidden">
                     <div className="p-4 bg-slate-50/70 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
                         <span className="font-bold text-slate-700 dark:text-slate-300">
-                            Qatar Labour Law Statutory Leave Categories & Payroll Deduction Rules
+                            Company Leave Types &amp; Pay Rules
                         </span>
                         <span className="text-slate-400 text-[11px]">
-                            {leaveTypes.length} statutory leave policies configured
+                            {leaveTypes.length} leave types configured
                         </span>
                     </div>
 

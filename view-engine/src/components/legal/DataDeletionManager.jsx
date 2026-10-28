@@ -74,7 +74,7 @@ export function DataDeletionManager({ user, onStatusChanged }) {
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           user_id: targetUser.id,
-          reason: 'Data subject requested right-to-be-forgotten under GDPR Art. 17',
+          reason: 'User requested account deletion',
           confirm_purge: true,
         }),
       });
@@ -151,19 +151,19 @@ export function DataDeletionManager({ user, onStatusChanged }) {
 
   return (
     <div className="space-y-4 text-xs animate-fadeIn">
-      {/* Informative GDPR Art 17 Banner */}
+      {/* Account Deletion Overview */}
       <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2">
-        <div className="flex items-center gap-2 font-bold text-slate-900 dark:text-white">
+        <div className="flex items-center gap-2 font-semibold text-slate-900 dark:text-white">
           <ShieldAlert className="w-4 h-4 text-rose-500" />
-          <span>GDPR Article 17: Right to Erasure ("Right-to-be-Forgotten")</span>
+          <span>Account Deletion</span>
         </div>
         <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
-          As a data subject, you may request permanent erasure of your personal data. To protect financial audit integrity and statutory labor reporting (Qatar Labor Law & WPS):
+          You can schedule permanent removal of your user account credentials and profile details:
         </p>
         <ul className="text-[11px] text-slate-600 dark:text-slate-300 space-y-1 list-disc pl-4">
-          <li><strong>30-Day Grace Period:</strong> You retain full rights to cancel this deletion request within 30 calendar days.</li>
-          <li><strong>Pseudonymization:</strong> Audit tables will replace your identity with a cryptographic hash (e.g. <code className="bg-slate-200 dark:bg-slate-700 px-1 py-0.5 rounded font-mono text-[10px]">DELETED_USER_XXXX</code>).</li>
-          <li><strong>Financial Record Retention:</strong> Historical verified shift totals and payroll wage totals will remain preserved in accordance with statutory accounting audit laws.</li>
+          <li><strong>30-Day Grace Period:</strong> You can cancel the deletion request anytime within 30 days.</li>
+          <li><strong>Activity History:</strong> Past activity logs replace your name with an anonymous placeholder (<code className="bg-slate-200 dark:bg-slate-700 px-1 py-0.5 rounded font-mono text-[10px]">DELETED_USER_XXXX</code>).</li>
+          <li><strong>Company Records:</strong> Historical attendance and payroll totals remain intact for internal company accounting.</li>
         </ul>
       </div>
 
@@ -195,8 +195,8 @@ export function DataDeletionManager({ user, onStatusChanged }) {
               </strong>
             </div>
             <div className="flex items-center justify-between text-slate-600 dark:text-slate-400">
-              <span>Financial Audit Aggregates:</span>
-              <span className="text-emerald-700 dark:text-emerald-400 font-semibold">Preserved (Lawful Basis)</span>
+              <span>Company Accounting Totals:</span>
+              <span className="text-emerald-700 dark:text-emerald-400 font-semibold">Preserved</span>
             </div>
           </div>
 
@@ -218,13 +218,13 @@ export function DataDeletionManager({ user, onStatusChanged }) {
       ) : (
         /* Deletion Request Trigger Form */
         <form onSubmit={handleRequestDeletion} className="p-4 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/50 dark:bg-rose-950/20 space-y-3">
-          <div className="flex items-center gap-2 text-rose-700 dark:text-rose-400 font-bold">
+          <div className="flex items-center gap-2 text-rose-700 dark:text-rose-400 font-semibold">
             <Trash2 className="w-4 h-4" />
-            <span>Initiate Right-to-be-Forgotten Data Purge</span>
+            <span>Delete My Account</span>
           </div>
 
           <p className="text-[11px] text-slate-600 dark:text-slate-300">
-            This will schedule your personal credentials and PII for removal. To prevent accidental triggering, type <strong>DELETE</strong> below and click the button.
+            This schedules your user credentials and personal profile for removal. Type <strong>DELETE</strong> below to confirm.
           </p>
 
           <div className="space-y-1.5">
@@ -257,7 +257,7 @@ export function DataDeletionManager({ user, onStatusChanged }) {
               }`}
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>{loading ? 'Submitting...' : 'Request Data Deletion / Purge'}</span>
+              <span>{loading ? 'Submitting...' : 'Request Account Deletion'}</span>
             </button>
           </div>
         </form>

@@ -512,12 +512,12 @@ async def update_attendance_log(
             if existing["created_by"] and user_id and str(user_id) == str(existing["created_by"]):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="SOX 404 Maker-Checker Violation: You cannot self-verify/approve an attendance log that you created."
+                    detail="You cannot approve an attendance log that you created."
                 )
             if existing["submitted_by"] and user_id and str(user_id) == str(existing["submitted_by"]):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="SOX 404 Maker-Checker Violation: You cannot self-verify/approve an attendance log that you submitted."
+                    detail="You cannot approve an attendance log that you submitted."
                 )
             approver_id = user_id
             approver_at = datetime.datetime.now(datetime.timezone.utc)
@@ -544,6 +544,36 @@ async def update_attendance_log(
             WHERE id = $14;
         """, emp_uuid, emp_name, dept, terminal, t_in, t_out, hours, stat, notes, author_name,
            approver_id, approver_at, appr_status, l_uuid)
+
+        changes_diff = {}
+        tracked = [
+            ("employee_name", existing["employee_name"], emp_name),
+            ("department", existing["department"], dept),
+            ("terminal_id", existing["terminal_id"], terminal),
+            ("check_in", existing["check_in"].isoformat() if existing["check_in"] else None, t_in.isoformat() if t_in else None),
+            ("check_out", existing["check_out"].isoformat() if existing["check_out"] else None, t_out.isoformat() if t_out else None),
+            ("duration_hours", float(existing["duration_hours"] or 0), float(hours or 0)),
+            ("status", existing["status"], stat),
+            ("notes", existing["notes"] or "", notes or ""),
+        ]
+        for k, old_v, new_v in tracked:
+            if str(old_v or "") != str(new_v or ""):
+                changes_diff[k] = {"old": old_v, "new": new_v}
+
+        if changes_diff:
+            client_ip = get_client_ip(request) if request else "127.0.0.1"
+            await record_audit_log(
+                conn=conn,
+                tenant_id=str(existing["organization_id"] or session.get("organization_id") or "default_tenant"),
+                entity_type="attendance_logs",
+                entity_id=str(l_uuid),
+                action="UPDATE",
+                changed_by_user_id=user_id,
+                changed_by_name=author_name,
+                changes=changes_diff,
+                note=f"Updated {len(changes_diff)} field(s) on attendance record.",
+                ip_address=client_ip,
+            )
 
         updated = await conn.fetchrow("""
             SELECT a.*, e.employee_number, e.job_title
@@ -651,12 +681,12 @@ async def approve_attendance_log(
         if existing["created_by"] and user_id and str(user_id) == str(existing["created_by"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="SOX 404 Maker-Checker Violation: You cannot approve an attendance log that you created. Dual control requires an independent checker."
+                detail="You cannot approve an attendance log that you created. Approval requires another reviewer."
             )
         if existing["submitted_by"] and user_id and str(user_id) == str(existing["submitted_by"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="SOX 404 Maker-Checker Violation: You cannot approve an attendance log that you submitted for approval. Dual control requires an independent checker."
+                detail="You cannot approve an attendance log that you submitted. Approval requires another reviewer."
             )
 
         await conn.execute("""
@@ -679,7 +709,7 @@ async def approve_attendance_log(
             action="APPROVE",
             changed_by_user_id=user_id,
             changed_by_name=session.get("full_name") or session.get("username") or "Authorized User",
-            note=f"Approved attendance adjustment {existing['code']} under SOX 404 Dual Control.",
+            note=f"Approved attendance adjustment {existing['code']}.",
             ip_address=client_ip,
             changes={"status": "verified", "approval_status": "approved", "approved_by": str(user_id) if user_id else None}
         )
@@ -739,7 +769,7 @@ async def reject_attendance_log(
             action="REJECT",
             changed_by_user_id=user_id,
             changed_by_name=session.get("full_name") or session.get("username") or "Authorized User",
-            note=f"Rejected attendance log {existing['code']} under SOX 404 Dual Control review.",
+            note=f"Rejected attendance log {existing['code']}.",
             ip_address=client_ip,
             changes={"approval_status": "rejected"}
         )

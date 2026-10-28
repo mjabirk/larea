@@ -156,11 +156,8 @@ export function EOSBGratuityView() {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-lg font-bold text-slate-900 dark:text-white">
-                  Qatar End-of-Service Gratuity (EOSB) & Final Settlement Engine
+                  End-of-Service Gratuity &amp; Final Settlement
                 </h1>
-                <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 font-bold border border-amber-200 dark:border-amber-900">
-                  Qatar Art. 54 & 79 Compliant
-                </span>
                 {!canReadSalary && (
                   <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-bold border border-slate-200 dark:border-slate-700 flex items-center gap-1">
                     <Lock className="w-3 h-3 text-slate-500" />
@@ -169,7 +166,7 @@ export function EOSBGratuityView() {
                 )}
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Statutory gratuity liability (21 days/year ≥ 1 year), annual leave encashment balance, and printable Official Clearance Certificates.
+                Accrued end-of-service gratuity, unused leave encashment, and printable clearance statements.
               </p>
             </div>
           </div>
@@ -239,7 +236,7 @@ export function EOSBGratuityView() {
             {summary.total_active_employees}
           </div>
           <div className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
-            {summary.eligible_employees_count} statutorily eligible (≥ 1 year)
+            {summary.eligible_employees_count} eligible (≥ 1 year)
           </div>
         </div>
 
@@ -254,7 +251,7 @@ export function EOSBGratuityView() {
               : `${Number(summary.total_eosb_liability_qar).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR`}
           </div>
           <div className="text-[11px] text-slate-400">
-            Accrued per Art. 54 (21d / year)
+            Accrued at 21 days / year
           </div>
         </div>
 
@@ -269,7 +266,7 @@ export function EOSBGratuityView() {
               : `${Number(summary.total_leave_encashment_qar).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR`}
           </div>
           <div className="text-[11px] text-slate-400">
-            Unused annual leave balances (Art. 79)
+            Unused annual leave balance
           </div>
         </div>
 
@@ -328,7 +325,7 @@ export function EOSBGratuityView() {
                 <th className="py-3 px-4">Employee</th>
                 <th className="py-3 px-3">Hire Date</th>
                 <th className="py-3 px-3">Tenure (Y/M/D)</th>
-                <th className="py-3 px-3">Statutory Eligibility</th>
+                <th className="py-3 px-3">Eligibility</th>
                 <th className="py-3 px-3">Gratuity Days</th>
                 <th className="py-3 px-3">Unused Leave</th>
                 <th className="py-3 px-3">Basic Salary</th>
@@ -367,7 +364,7 @@ export function EOSBGratuityView() {
                         {r.is_eligible ? (
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200">
                             <Check className="w-3 h-3" />
-                            <span>Eligible (Art. 54)</span>
+                            <span>Eligible</span>
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 border border-slate-200 dark:border-slate-700">
@@ -456,9 +453,8 @@ export function EOSBGratuityView() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                    Official End-of-Service Clearance Statement
+                    End-of-Service Clearance Statement
                   </h3>
-                  <p className="text-xs text-slate-400">Compliant with State of Qatar Labour Law No. 14 of 2004</p>
                 </div>
               </div>
 
@@ -484,7 +480,7 @@ export function EOSBGratuityView() {
             {isLoadingStatement ? (
               <div className="py-16 text-center text-slate-400 text-xs flex flex-col items-center gap-2">
                 <RefreshCw className="w-6 h-6 animate-spin text-purple-600" />
-                <span>Generating official statutory settlement accounting...</span>
+                <span>Generating settlement statement...</span>
               </div>
             ) : statementData ? (
               <div id="printable-settlement-certificate" className="space-y-6 text-xs text-slate-900 dark:text-white">
@@ -495,10 +491,10 @@ export function EOSBGratuityView() {
                       {statementData.employer_name}
                     </h2>
                     <p className="text-[11px] text-slate-500 font-mono">
-                      Commercial Registration: {statementData.cr_number} • Doha, State of Qatar
+                      Reg. No: {statementData.cr_number || '—'}
                     </p>
                     <div className="text-[11px] font-bold text-purple-700 dark:text-purple-400 mt-1">
-                      END-OF-SERVICE GRATUITY & FINAL CLEARANCE SETTLEMENT
+                      END-OF-SERVICE GRATUITY &amp; FINAL CLEARANCE SETTLEMENT
                     </div>
                   </div>
                   <div className="text-right font-mono text-[11px]">
@@ -514,7 +510,7 @@ export function EOSBGratuityView() {
                     <strong className="text-slate-900 dark:text-white">{statementData.employee.full_name}</strong>
                   </div>
                   <div>
-                    <span className="text-slate-400 block text-[10px] uppercase">Qatar ID (QID)</span>
+                    <span className="text-slate-400 block text-[10px] uppercase">National ID</span>
                     <strong className="font-mono text-slate-900 dark:text-white">{statementData.employee.national_id_number || 'N/A'}</strong>
                   </div>
                   <div>
@@ -539,7 +535,7 @@ export function EOSBGratuityView() {
                 <div className="p-4 rounded-xl border border-amber-200/80 dark:border-amber-900/40 bg-amber-50/40 dark:bg-amber-950/20 space-y-1">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-amber-900 dark:text-amber-200">
-                      Continuous Service Period (Qatar Labour Law Art. 54)
+                      Continuous Service Period
                     </span>
                     <span className="font-mono font-bold text-amber-900 dark:text-amber-200">
                       {statementData.service_tenure.tenure_formatted}
@@ -555,8 +551,8 @@ export function EOSBGratuityView() {
                   <table className="w-full text-xs">
                     <thead className="bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 uppercase font-bold text-[10px]">
                       <tr>
-                        <th className="py-2.5 px-4 text-left">Statutory Entitlement / Line Item</th>
-                        <th className="py-2.5 px-4 text-left">Basis & Ratio</th>
+                        <th className="py-2.5 px-4 text-left">Settlement Item</th>
+                        <th className="py-2.5 px-4 text-left">Basis &amp; Ratio</th>
                         <th className="py-2.5 px-4 text-right">Amount (QAR)</th>
                       </tr>
                     </thead>
@@ -571,7 +567,7 @@ export function EOSBGratuityView() {
                         </td>
                       </tr>
                       <tr>
-                        <td className="py-2.5 px-4 font-sans font-semibold">2. End-of-Service Gratuity (Art. 54)</td>
+                        <td className="py-2.5 px-4 font-sans font-semibold">2. End-of-Service Gratuity</td>
                         <td className="py-2.5 px-4 text-slate-500">
                           {statementData.calculation_breakdown.accrued_gratuity_days} days @ daily rate
                         </td>
@@ -582,7 +578,7 @@ export function EOSBGratuityView() {
                         </td>
                       </tr>
                       <tr>
-                        <td className="py-2.5 px-4 font-sans font-semibold">3. Annual Leave Encashment (Art. 79)</td>
+                        <td className="py-2.5 px-4 font-sans font-semibold">3. Annual Leave Encashment</td>
                         <td className="py-2.5 px-4 text-slate-500">
                           {statementData.calculation_breakdown.unused_leave_days} unused days ({statementData.calculation_breakdown.annual_leave_taken_days} taken)
                         </td>
@@ -617,10 +613,10 @@ export function EOSBGratuityView() {
                   </table>
                 </div>
 
-                {/* Statutory Acknowledgement & Triple Sign-Off */}
+                {/* Settlement Acknowledgement */}
                 <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-6">
                   <p className="text-[10px] text-slate-500 italic leading-relaxed">
-                    "I hereby certify that I have received all statutory wages, end-of-service gratuity compensation, leave encashment, and all financial entitlements due to me under Qatar Labour Law No. 14 of 2004, and I confirm full clearance with no outstanding financial claims against {statementData.employer_name}."
+                    "I hereby acknowledge receipt of all wages, end-of-service gratuity, leave encashment, and final settlement amounts due to me, and confirm full clearance with no remaining financial claims against {statementData.employer_name}."
                   </p>
 
                   <div className="grid grid-cols-3 gap-6 pt-4 text-center text-xs">

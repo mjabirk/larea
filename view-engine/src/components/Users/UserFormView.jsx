@@ -34,6 +34,8 @@ import { useAccessControl } from '../../context/AccessControlContext';
 import { DEFAULT_ROLES } from '../../schema/rbacSchema';
 import { validatePasswordComplexity } from '../../schema/securityValidation';
 import { ResetPasswordModal } from './ResetPasswordModal';
+import { RecordChatter } from '../common/RecordChatter';
+import { notifyRecordChatterUpdated } from '../../utils/urlState';
 
 export function UserFormView({ user, usersList = [], onSelectUser, onBackToList }) {
   const { users, currentUser, organizations, branches, organization_memberships, updateUser, createUser, refreshTenancyData } = useTenancy();
@@ -201,11 +203,11 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
 
       if (isMinor) {
         if (!formData.guardian_name.trim() || !formData.guardian_email.trim()) {
-          setValidationError('Minor applicant: Parent or legal guardian name and email are mandatory under GDPR Art. 8.');
+          setValidationError('Parent or guardian name and email are required for users under 18.');
           return;
         }
         if (!formData.age_consent_verified) {
-          setValidationError('Minor applicant: Explicit parental/guardian consent verification must be confirmed.');
+          setValidationError('Parent or guardian consent must be confirmed for users under 18.');
           return;
         }
       }
@@ -265,6 +267,7 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
           auto_sso_enabled: Boolean(formData.auto_sso_enabled),
         });
         setIsDirty(false);
+        notifyRecordChatterUpdated(activeUser.id, 'users');
         setNotification('User profile successfully saved.');
         setTimeout(() => setNotification(''), 3000);
       } catch (err) {
@@ -413,6 +416,7 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
         onClose={() => setIsResetPasswordModalOpen(false)}
         targetUser={activeUser}
         onSuccess={(msg) => {
+          if (activeUser?.id) notifyRecordChatterUpdated(activeUser.id, 'users');
           setNotification(msg);
           setTimeout(() => setNotification(''), 3500);
         }}
@@ -739,16 +743,16 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
                 </label>
               </div>
 
-              {/* Date of Birth & Age Compliance */}
+              {/* Date of Birth */}
               <div className="md:col-span-2 pt-3 border-t border-slate-100 dark:border-slate-800">
                 <div className="flex items-center justify-between mb-1.5">
                   <label htmlFor="user-dob" className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block">
-                    Date of Birth (GDPR Art. 8 / Age Verification)
+                    Date of Birth
                   </label>
                   {currentAge !== null && (
                     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[12px] font-semibold ${isMinor ? 'ui-badge-pending' : 'ui-badge-valid'
                       }`}>
-                      {currentAge} years old {isMinor ? '• Minor (Guardian Consent Required)' : '• Verified Adult'}
+                      {currentAge} years old{isMinor ? ' • Under 18' : ''}
                     </span>
                   )}
                 </div>
@@ -761,12 +765,12 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
                 />
               </div>
 
-              {/* Minor Guardian Consent Safeguard if under 18 */}
+              {/* Guardian Consent if under 18 */}
               {isMinor && (
                 <div className="md:col-span-2 p-4 rounded-xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/80 space-y-3">
                   <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300 font-semibold text-xs">
                     <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
-                    <span>Statutory Child Privacy Protection & Guardian Consent (COPPA / GDPR Art. 8)</span>
+                    <span>Guardian Consent (Under 18)</span>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
@@ -991,6 +995,15 @@ export function UserFormView({ user, usersList = [], onSelectUser, onBackToList 
           )}
         </div>
       </div>
+
+      {/* Instant Activity & Audit Log */}
+      {!isCreateMode && activeUser?.id && (
+        <RecordChatter
+          entityType="users"
+          entityId={activeUser.id}
+          entityName={activeUser.full_name}
+        />
+      )}
 
       {/* CONFIRMATION MODAL FOR SESSION REVOCATION */}
       {sessionToRevoke && (

@@ -417,7 +417,7 @@ export function UserProfileModal({ isOpen, onClose }) {
             }`}
           >
             <ShieldAlert className="w-3.5 h-3.5 text-rose-500" />
-            <span>Privacy & GDPR</span>
+            <span>Account &amp; Privacy</span>
           </button>
         </div>
 

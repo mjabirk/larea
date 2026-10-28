@@ -40,6 +40,7 @@ import { useTenancy } from '../../context/TenancyContext';
 import { useAccessControl } from '../../context/AccessControlContext';
 import { SendEmailModal } from '../common/SendEmailModal';
 import { SendMessageModal } from '../common/SendMessageModal';
+import { PrintDocumentModal } from './PrintDocumentModal';
 
 function formatMonthName(ym) {
   if (!ym) return 'N/A';
@@ -79,7 +80,11 @@ export function PayrollBatchesView() {
   const canReadPayroll = hasPermission('payroll.read');
 
   // Master-Detail View Mode: 'registry' (default list) | 'detail' (deep-dive payslips)
-  const [viewMode, setViewMode] = useState('registry');
+  const [viewMode, setViewMode] = useState(() => {
+    if (typeof window === 'undefined') return 'registry';
+    const p = new URLSearchParams(window.location.search);
+    return p.get('view') === 'detail' && p.get('id') ? 'detail' : 'registry';
+  });
   const [selectedYearTab, setSelectedYearTab] = useState('ALL');
   const [registryStatusFilter, setRegistryStatusFilter] = useState('ALL');
   const [registrySearch, setRegistrySearch] = useState('');
@@ -87,7 +92,31 @@ export function PayrollBatchesView() {
 
   // State
   const [batches, setBatches] = useState([]);
-  const [selectedBatchId, setSelectedBatchId] = useState(null);
+  const [selectedBatchId, setSelectedBatchId] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    const p = new URLSearchParams(window.location.search);
+    return p.get('view') === 'detail' ? (p.get('id') || null) : null;
+  });
+
+  useEffect(() => {
+    const isDetail = viewMode === 'detail' && Boolean(selectedBatchId);
+    window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: isDetail } }));
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (isDetail) {
+        p.set('view', 'detail');
+        p.set('id', String(selectedBatchId));
+      } else {
+        p.delete('view');
+        p.delete('id');
+      }
+      const qs = p.toString();
+      window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+    } catch (e) {}
+    return () => {
+      if (isDetail) window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: false } }));
+    };
+  }, [viewMode, selectedBatchId]);
   const [currentBatchData, setCurrentBatchData] = useState(null); // { batch, payslips, ... }
   const [isLoadingBatches, setIsLoadingBatches] = useState(false);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
@@ -202,6 +231,7 @@ export function PayrollBatchesView() {
         } else if (selectedBatchId && !batchList.some((b) => b.id === selectedBatchId)) {
           setSelectedBatchId(null);
           setCurrentBatchData(null);
+          setViewMode('registry');
         }
       } else {
         const err = await res.json().catch(() => ({}));
@@ -472,7 +502,7 @@ export function PayrollBatchesView() {
 
       setActionMessage({
         type: 'success',
-        text: `Official Qatar WPS file "${filename}" downloaded successfully.`,
+        text: `Bank salary file "${filename}" downloaded.`,
       });
       fetchBatches();
       if (selectedBatchId === bId) {
@@ -480,7 +510,7 @@ export function PayrollBatchesView() {
       }
     } catch (err) {
       console.error('Export SIF error:', err);
-      setActionMessage({ type: 'error', text: err.message || 'Error exporting WPS .SIF file.' });
+      setActionMessage({ type: 'error', text: err.message || 'Error exporting bank file.' });
     }
   };
 
@@ -644,50 +674,46 @@ export function PayrollBatchesView() {
                   setGenerateTitle(`Payroll Reconciliation - ${ym}`);
                   setIsGenerateModalOpen(true);
                 }}
-                className="h-7 px-2.5 text-[11px] font-bold rounded-md bg-amber-600 hover:bg-amber-700 text-white flex items-center gap-1 shadow-xs transition cursor-pointer"
+                className="h-9 px-3.5 text-sm font-medium rounded-lg bg-amber-600 hover:bg-amber-700 text-white flex items-center gap-1.5 shadow-xs transition cursor-pointer"
                 title="Generate Monthly Batch"
               >
-                <Plus className="w-3.5 h-3.5" />
-                <span>+ Generate Batch</span>
+                <Plus className="w-4 h-4" />
+                <span>Generate Batch</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => fetchBatches()}
                 disabled={isLoadingBatches}
-                className="h-7 w-7 rounded-md text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition cursor-pointer"
+                className="h-9 w-9 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition cursor-pointer"
                 title="Refresh Batches"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingBatches ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-4 h-4 ${isLoadingBatches ? 'animate-spin' : ''}`} />
               </button>
 
-              <span className="font-bold text-[13px] text-slate-900 dark:text-white shrink-0 ml-1">
+              <span className="font-semibold text-base text-slate-900 dark:text-white shrink-0 ml-1">
                 Payroll Batches
-              </span>
-
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 font-semibold">
-                Registry
               </span>
             </div>
 
-            {/* Center: Slim Search & Inline Dropdowns */}
-            <div className="flex items-center gap-1.5 flex-1 max-w-xl mx-2">
+            {/* Center: Search & Inline Dropdowns */}
+            <div className="flex items-center gap-2 flex-1 max-w-xl mx-2">
               <div className="relative flex-1">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type="text"
                   value={registrySearch}
                   onChange={(e) => setRegistrySearch(e.target.value)}
                   placeholder="Search batch code, title, month..."
-                  className="w-full h-7 text-[12px] font-normal pl-8 pr-6 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  className="w-full h-9 text-sm font-normal pl-9 pr-7 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500"
                 />
                 {registrySearch && (
                   <button
                     type="button"
                     onClick={() => setRegistrySearch('')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                   >
-                    <X className="w-3 h-3" />
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 )}
               </div>
@@ -696,7 +722,7 @@ export function PayrollBatchesView() {
               <select
                 value={selectedYearTab}
                 onChange={(e) => setSelectedYearTab(e.target.value)}
-                className="h-7 text-[11.5px] font-medium px-2 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer shrink-0"
+                className="h-9 text-sm font-medium px-2.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 cursor-pointer shrink-0"
               >
                 {availableYears.map((yr) => (
                   <option key={yr} value={yr}>
@@ -709,9 +735,9 @@ export function PayrollBatchesView() {
               <select
                 value={registryStatusFilter}
                 onChange={(e) => setRegistryStatusFilter(e.target.value)}
-                className="h-7 text-[11.5px] font-medium px-2 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer shrink-0"
+                className="h-9 text-sm font-medium px-2.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 cursor-pointer shrink-0"
               >
-                <option value="ALL">Status: All</option>
+                <option value="ALL">All Statuses</option>
                 <option value="draft">Draft</option>
                 <option value="locked">Locked</option>
                 <option value="exported">Exported</option>
@@ -757,7 +783,7 @@ export function PayrollBatchesView() {
                     <th className="py-1 px-2.5">Status</th>
                     <th className="py-1 px-2.5">Employees</th>
                     <th className="py-1 px-2.5 text-right">Total Net Payout</th>
-                    <th className="py-1 px-2.5">WPS Compliance</th>
+                    <th className="py-1 px-2.5">Bank Info</th>
                     <th className="py-1 px-2.5">Date Created</th>
                     <th className="py-1 px-2.5 text-right w-44">Actions</th>
                   </tr>
@@ -882,9 +908,9 @@ export function PayrollBatchesView() {
                                 type="button"
                                 onClick={() => handleExportSIF(b.id, b.batch_code)}
                                 className="h-6 px-2 rounded text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
-                                title="Export WPS (.SIF)"
+                                title="Export Bank File (.SIF)"
                               >
-                                SIF
+                                Export
                               </button>
 
                               {isDraftBatch && (
@@ -986,10 +1012,10 @@ export function PayrollBatchesView() {
                   type="button"
                   onClick={() => handleExportSIF(selectedBatch.id, selectedBatch.batch_code)}
                   className="flex items-center gap-1.5 h-10 px-3 py-2 text-xs font-semibold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs transition-colors cursor-pointer"
-                  title="Download official Qatar Central Bank .SIF file"
+                  title="Download salary bank transfer file (.SIF)"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>Export WPS (.SIF)</span>
+                  <span>Export Bank File</span>
                 </button>
               )}
 
@@ -1061,7 +1087,7 @@ export function PayrollBatchesView() {
                 {selectedBatch ? selectedBatch.total_employees : 0} <span className="text-[11px] font-normal text-slate-500 font-sans">active</span>
               </span>
               <span className="text-[11px] text-slate-500 dark:text-slate-400 block mt-0.5">
-                {kpiMetrics.readyCount} WPS Ready ({kpiMetrics.wpsPct}%)
+                {kpiMetrics.readyCount} Bank Ready ({kpiMetrics.wpsPct}%)
               </span>
             </div>
 
@@ -1111,7 +1137,7 @@ export function PayrollBatchesView() {
       ) : (
         <div className="h-7 min-h-[28px] px-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg flex items-center justify-between text-[11.5px] text-slate-600 dark:text-slate-400">
           <div className="flex items-center gap-4">
-            <span>Staff: <strong className="font-mono text-slate-900 dark:text-white">{selectedBatch ? selectedBatch.total_employees : 0}</strong> ({kpiMetrics.readyCount} WPS Ready)</span>
+            <span>Staff: <strong className="font-mono text-slate-900 dark:text-white">{selectedBatch ? selectedBatch.total_employees : 0}</strong> ({kpiMetrics.readyCount} Bank Ready)</span>
             <span>Base: <strong className="font-mono text-slate-900 dark:text-white">{Number(selectedBatch?.total_base_salary || 0).toLocaleString()} QAR</strong></span>
             <span>Allowances: <strong className="font-mono text-slate-900 dark:text-white">+{Number(selectedBatch?.total_allowances || 0).toLocaleString()} QAR</strong></span>
             <span>OT/Var: <strong className="font-mono text-emerald-600 dark:text-emerald-400">+{Number(selectedBatch?.total_overtime_pay || 0).toLocaleString()} QAR</strong></span>
@@ -1144,7 +1170,7 @@ export function PayrollBatchesView() {
       {/* 4. Full-Width Employee Payslips Table */}
       {!selectedBatch ? (
         <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-12 text-center text-slate-400 text-xs">
-          Select or generate a payroll batch above to view detailed payslips and generate WPS files.
+          Select or generate a payroll batch above to view employee payslips.
         </div>
       ) : (
         <div className="bg-white dark:bg-slate-900 rounded-lg border border-slate-200/80 dark:border-slate-800 shadow-2xs overflow-hidden">
@@ -1154,7 +1180,7 @@ export function PayrollBatchesView() {
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
-                placeholder="Search employee, ID, QID, department..."
+                placeholder="Search employee, ID, department..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full h-7 pl-8 pr-2 text-[12px] rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-amber-500"
@@ -1162,15 +1188,15 @@ export function PayrollBatchesView() {
             </div>
 
             <div className="flex items-center gap-1.5">
-              {/* WPS Status Filter */}
+              {/* Bank Info Filter */}
               <select
                 value={wpsFilter}
                 onChange={(e) => setWpsFilter(e.target.value)}
                 className="h-7 text-[11.5px] font-medium px-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none"
               >
-                <option value="ALL">WPS: All</option>
-                <option value="ready">WPS Ready</option>
-                <option value="missing">Missing IBAN / QID</option>
+                <option value="ALL">Bank: All</option>
+                <option value="ready">Bank Ready</option>
+                <option value="missing">Missing IBAN / ID</option>
               </select>
 
               {/* Department Filter */}
@@ -1195,7 +1221,7 @@ export function PayrollBatchesView() {
               <thead className="sticky top-0 z-20 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-[11.5px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
                 <tr className="h-8">
                   <th className="py-1 px-2.5">Employee</th>
-                  <th className="py-1 px-2.5">WPS Status</th>
+                  <th className="py-1 px-2.5">Bank Info</th>
                   <th className="py-1 px-2.5">Days</th>
                   <th className="py-1 px-2.5">Hours / OT</th>
                   <th className="py-1 px-2.5 text-right">Base Wage</th>
@@ -1432,7 +1458,7 @@ export function PayrollBatchesView() {
                 </label>
                 <input
                   type="text"
-                  placeholder="October 2026 Shift Reconciliation & WPS Payroll"
+                  placeholder="October 2026 Monthly Payroll"
                   value={generateTitle}
                   onChange={(e) => setGenerateTitle(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-amber-500"
@@ -1644,335 +1670,17 @@ export function PayrollBatchesView() {
         </div>
       )}
 
-      {/* 6. MODAL: Official Qatar Payslip Printable View */}
-      {isPrintModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fadeIn"
-          onClick={() => setIsPrintModalOpen(false)}
-        >
-          <div
-            className="bg-white dark:bg-slate-900 w-full max-w-4xl rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header controls (hidden on print) */}
-            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800 print:hidden">
-              <div className="flex items-center gap-2">
-                <Printer className="w-5 h-5 text-blue-600" />
-                <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                  {printSinglePayslip ? `Payslip: ${printSinglePayslip.employee_name}` : `All Payslips (${filteredPayslips.length} employees)`}
-                </h3>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs cursor-pointer"
-                >
-                  <Printer className="w-4 h-4" />
-                  <span>Print / Save PDF</span>
-                </button>
-                {printSinglePayslip && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => openEmailPayslip(printSinglePayslip)}
-                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 text-xs font-bold shadow-xs cursor-pointer"
-                    >
-                      <Mail className="w-4 h-4 text-indigo-600" />
-                      <span>Send by Email</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openMessagePayslip(printSinglePayslip)}
-                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 text-emerald-700 dark:text-emerald-300 text-xs font-bold shadow-xs cursor-pointer"
-                    >
-                      <MessageCircle className="w-4 h-4 text-emerald-600" />
-                      <span>Send WhatsApp / SMS</span>
-                    </button>
-                  </>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setIsPrintModalOpen(false)}
-                  className="flex items-center gap-1.5 p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer group"
-                  title="Close (Esc)"
-                  aria-label="Close dialog"
-                >
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 group-hover:border-slate-300">
-                    Esc
-                  </span>
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Printable Content */}
-            <div className="space-y-8 print:space-y-12">
-              {(printSinglePayslip ? [printSinglePayslip] : filteredPayslips).map((p) => {
-                const breakdown = Array.isArray(p.adjustments_breakdown)
-                  ? p.adjustments_breakdown
-                  : (typeof p.adjustments_breakdown === 'string'
-                      ? (function() { try { return JSON.parse(p.adjustments_breakdown || '[]'); } catch { return []; } })()
-                      : []);
-                const earningAdjustments = breakdown.filter((item) => item.type !== 'deduction');
-                const deductionAdjustments = breakdown.filter((item) => item.type === 'deduction');
-
-                const totAllowances =
-                  Number(p.housing_allowance || 0) +
-                  Number(p.transport_allowance || 0) +
-                  Number(p.other_allowances || 0);
-                const grossSalary =
-                  Number(p.base_salary || 0) +
-                  totAllowances +
-                  Number(p.overtime_pay || 0) +
-                  Number(p.task_benefit_pay || 0) +
-                  Number(p.bonus_pay || 0);
-
-                const statutoryDeductions = Math.max(
-                  0,
-                  Number(p.deductions || 0) -
-                    (Number(p.loan_deduction || 0) +
-                      Number(p.penalty_deduction || 0) +
-                      Number(p.other_deductions || 0))
-                );
-
-                return (
-                  <div
-                    key={p.id}
-                    className="p-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 print:border-black print:text-black space-y-5 print:p-8"
-                  >
-                    {/* Header: Company & Ministry */}
-                    <div className="flex items-start justify-between border-b pb-4 border-slate-200 dark:border-slate-800 print:border-black">
-                      <div>
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-amber-600 dark:text-amber-400 print:text-black">
-                          State of Qatar • Ministry of Labour & WPS Compliant
-                        </span>
-                        <h4 className="text-lg font-bold text-slate-900 dark:text-white print:text-black">
-                          OFFICIAL SALARY DISBURSEMENT SLIP / قسيمة الراتب
-                        </h4>
-                        <p className="text-xs text-slate-500 print:text-black">
-                          Payroll Month: <strong>{selectedBatch?.salary_year_month}</strong> • Batch: {selectedBatch?.batch_code}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <span className="inline-block px-3 py-1 rounded-md text-xs font-mono font-bold bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 print:border print:border-black">
-                          {p.wps_status === 'ready' ? 'WPS VERIFIED' : 'PENDING WPS'}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Employee Profile Grid */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs bg-slate-50 dark:bg-slate-800/40 p-4 rounded-xl print:bg-gray-100 print:border">
-                      <div>
-                        <span className="text-slate-400 block text-[10px] uppercase print:text-gray-600">Employee Name:</span>
-                        <span className="font-bold text-slate-900 dark:text-white print:text-black">{p.employee_name}</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block text-[10px] uppercase print:text-gray-600">Employee ID:</span>
-                        <span className="font-mono font-bold">{p.employee_number || 'N/A'}</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block text-[10px] uppercase print:text-gray-600">Qatar QID / Visa:</span>
-                        <span className="font-mono font-bold">{p.national_id_number || p.visa_number || 'N/A'}</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block text-[10px] uppercase print:text-gray-600">Department / Title:</span>
-                        <span className="font-semibold">{p.department} - {p.job_title}</span>
-                      </div>
-                      <div className="col-span-2">
-                        <span className="text-slate-400 block text-[10px] uppercase print:text-gray-600">Disbursement IBAN:</span>
-                        <span className="font-mono font-semibold">{p.bank_iban || 'No IBAN on file'} ({p.bank_name || 'Bank'})</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block text-[10px] uppercase print:text-gray-600">Working Days:</span>
-                        <span className="font-mono font-bold">{p.working_days || 30} days</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block text-[10px] uppercase print:text-gray-600">Verified Attendance:</span>
-                        <span className="font-mono font-bold">{Number(p.verified_attendance_hours || 0).toFixed(1)} hrs</span>
-                      </div>
-                    </div>
-
-                    {/* Earnings & Deductions Breakdown Tables */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                      {/* Earnings */}
-                      <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-2">
-                        <div className="font-bold text-slate-900 dark:text-white print:text-black border-b pb-1 text-[11px] uppercase tracking-wider text-emerald-600">
-                          Earnings Breakdown (QAR)
-                        </div>
-                        <div className="flex justify-between py-1">
-                          <span className="text-slate-500 print:text-black">Basic Salary</span>
-                          <span className="font-mono font-semibold">{Number(p.base_salary || 0).toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between py-1">
-                          <span className="text-slate-500 print:text-black">Housing Allowance</span>
-                          <span className="font-mono font-semibold">{Number(p.housing_allowance || 0).toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between py-1">
-                          <span className="text-slate-500 print:text-black">Transport Allowance</span>
-                          <span className="font-mono font-semibold">{Number(p.transport_allowance || 0).toFixed(2)}</span>
-                        </div>
-                        {Number(p.other_allowances || 0) > 0 && (
-                          <div className="flex justify-between py-1">
-                            <span className="text-slate-500 print:text-black">Other Fixed Allowances</span>
-                            <span className="font-mono font-semibold">{Number(p.other_allowances || 0).toFixed(2)}</span>
-                          </div>
-                        )}
-                        {Number(p.overtime_pay || 0) > 0 && (
-                          <div className="flex justify-between py-1">
-                            <span className="text-slate-500 print:text-black">Overtime Pay ({Number(p.overtime_hours || 0).toFixed(1)} hrs)</span>
-                            <span className="font-mono font-semibold text-emerald-600">+{Number(p.overtime_pay || 0).toFixed(2)}</span>
-                          </div>
-                        )}
-                        {Number(p.task_benefit_pay || 0) > 0 && (
-                          <div className="flex justify-between py-1">
-                            <span className="text-slate-500 print:text-black">Task / Trip Benefit Pay</span>
-                            <span className="font-mono font-semibold text-cyan-600">+{Number(p.task_benefit_pay || 0).toFixed(2)}</span>
-                          </div>
-                        )}
-                        {Number(p.bonus_pay || 0) > 0 && (
-                          <div className="flex justify-between py-1">
-                            <span className="text-slate-500 print:text-black">Bonuses & Incentives</span>
-                            <span className="font-mono font-semibold text-indigo-600">+{Number(p.bonus_pay || 0).toFixed(2)}</span>
-                          </div>
-                        )}
-
-                        {/* Itemized Variable Adjustments (Earnings) */}
-                        {earningAdjustments.length > 0 && (
-                          <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800 print:border-gray-200">
-                            <span className="text-[10px] uppercase font-bold text-slate-400 print:text-gray-600 block mb-1">
-                              Approved Variable Earnings Detail:
-                            </span>
-                            <div className="space-y-1">
-                              {earningAdjustments.map((adj, i) => (
-                                <div key={i} className="flex justify-between text-[11px] bg-slate-50 dark:bg-slate-800/40 p-1.5 rounded print:bg-transparent">
-                                  <div>
-                                    <span className="font-semibold text-slate-800 dark:text-slate-200 print:text-black">{adj.title}</span>
-                                    {adj.quantity && adj.unit_rate ? (
-                                      <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-1 print:text-gray-600">
-                                        ({adj.quantity} {adj.unit_label || 'units'} @ {Number(adj.unit_rate).toFixed(2)} QAR)
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                  <span className="font-mono font-semibold text-emerald-600">+{Number(adj.amount || 0).toFixed(2)}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="flex justify-between pt-2 border-t font-bold text-slate-900 dark:text-white print:text-black">
-                          <span>Gross Earnings</span>
-                          <span className="font-mono">{grossSalary.toFixed(2)}</span>
-                        </div>
-                      </div>
-
-                      {/* Deductions */}
-                      <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-2">
-                        <div className="font-bold text-slate-900 dark:text-white print:text-black border-b pb-1 text-[11px] uppercase tracking-wider text-rose-600">
-                          Deductions (QAR)
-                        </div>
-                        {statutoryDeductions > 0 && (
-                          <div className="flex justify-between py-1">
-                            <span className="text-slate-500 print:text-black">Contract / Statutory / Unpaid</span>
-                            <span className="font-mono font-semibold text-rose-600">
-                              -{statutoryDeductions.toFixed(2)}
-                            </span>
-                          </div>
-                        )}
-                        {Number(p.loan_deduction || 0) > 0 && (
-                          <div className="flex justify-between py-1">
-                            <span className="text-slate-500 print:text-black">Company Loan Installment</span>
-                            <span className="font-mono font-semibold text-rose-600">
-                              -{Number(p.loan_deduction || 0).toFixed(2)}
-                            </span>
-                          </div>
-                        )}
-                        {Number(p.penalty_deduction || 0) > 0 && (
-                          <div className="flex justify-between py-1">
-                            <span className="text-slate-500 print:text-black">Disciplinary Penalties / Fines</span>
-                            <span className="font-mono font-semibold text-rose-600">
-                              -{Number(p.penalty_deduction || 0).toFixed(2)}
-                            </span>
-                          </div>
-                        )}
-                        {Number(p.other_deductions || 0) > 0 && (
-                          <div className="flex justify-between py-1">
-                            <span className="text-slate-500 print:text-black">Other Recoveries / Deductions</span>
-                            <span className="font-mono font-semibold text-rose-600">
-                              -{Number(p.other_deductions || 0).toFixed(2)}
-                            </span>
-                          </div>
-                        )}
-                        {Number(p.deductions || 0) === 0 && (
-                          <div className="flex justify-between py-1">
-                            <span className="text-slate-400 print:text-black">No deductions applied</span>
-                            <span className="font-mono font-semibold text-slate-400">0.00</span>
-                          </div>
-                        )}
-
-                        {/* Itemized Variable Adjustments (Deductions) */}
-                        {deductionAdjustments.length > 0 && (
-                          <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800 print:border-gray-200">
-                            <span className="text-[10px] uppercase font-bold text-slate-400 print:text-gray-600 block mb-1">
-                              Approved Variable Deductions Detail:
-                            </span>
-                            <div className="space-y-1">
-                              {deductionAdjustments.map((adj, i) => (
-                                <div key={i} className="flex justify-between text-[11px] bg-slate-50 dark:bg-slate-800/40 p-1.5 rounded print:bg-transparent">
-                                  <div>
-                                    <span className="font-semibold text-slate-800 dark:text-slate-200 print:text-black">{adj.title}</span>
-                                    {adj.notes ? (
-                                      <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-1 print:text-gray-600">
-                                        ({adj.notes})
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                  <span className="font-mono font-semibold text-rose-600">-{Number(adj.amount || 0).toFixed(2)}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="flex justify-between pt-2 border-t font-bold text-slate-900 dark:text-white print:text-black">
-                          <span>Total Deductions</span>
-                          <span className="font-mono text-rose-600">-{Number(p.deductions || 0).toFixed(2)}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Net Payable Banner */}
-                    <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 flex items-center justify-between text-amber-900 dark:text-amber-200 print:border-black print:text-black">
-                      <div>
-                        <span className="text-xs uppercase font-bold tracking-wider">Net Amount Payable (صافي الراتب):</span>
-                        <p className="text-[11px] text-amber-700 dark:text-amber-400 print:text-black">Disbursed via Qatar WPS Central Bank Protocol</p>
-                      </div>
-                      <div className="text-xl font-bold font-mono">
-                        {Number(p.net_salary || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} QAR
-                      </div>
-                    </div>
-
-                    {/* Signatures */}
-                    <div className="grid grid-cols-2 gap-8 pt-6 border-t border-slate-200 dark:border-slate-800 print:border-black text-xs text-slate-500 print:text-black">
-                      <div className="space-y-6">
-                        <span>Prepared & Authorized By (Finance / HR Officer):</span>
-                        <div className="border-b border-dashed border-slate-400 w-48 pt-4" />
-                        <span className="text-[10px] text-slate-400">Stamp & Official Signature</span>
-                      </div>
-                      <div className="space-y-6 text-right">
-                        <span>Employee Acknowledgment:</span>
-                        <div className="border-b border-dashed border-slate-400 w-48 ml-auto pt-4" />
-                        <span className="text-[10px] text-slate-400">Signature / Date Received</span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* 6. MODAL: Professional Vector A4 PDF Print & Export Dialog */}
+      <PrintDocumentModal
+        isOpen={isPrintModalOpen}
+        onClose={() => setIsPrintModalOpen(false)}
+        batch={selectedBatch}
+        payslip={printSinglePayslip}
+        totalEmployees={filteredPayslips.length}
+        getAuthHeaders={getAuthHeaders}
+        onOpenEmail={openEmailPayslip}
+        onOpenMessage={openMessagePayslip}
+      />
 
       {/* 7. MODAL: Lock Batch Confirmation */}
       {isLockConfirmOpen && (

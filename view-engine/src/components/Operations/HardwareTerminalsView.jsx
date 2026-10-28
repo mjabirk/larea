@@ -64,7 +64,21 @@ export function HardwareTerminalsView() {
   }), [sessionToken]);
 
   // Tab State
-  const [activeTab, setActiveTab] = useState('terminals'); // 'terminals', 'directory', 'transactions', 'commands'
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window === 'undefined') return 'terminals';
+    const urlTab = new URLSearchParams(window.location.search).get('tab');
+    return ['terminals', 'directory', 'transactions', 'commands'].includes(urlTab) ? urlTab : 'terminals';
+  }); // 'terminals', 'directory', 'transactions', 'commands'
+
+  useEffect(() => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (activeTab && activeTab !== 'terminals') p.set('tab', activeTab);
+      else p.delete('tab');
+      const qs = p.toString();
+      window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+    } catch (e) {}
+  }, [activeTab]);
 
   // Data States
   const [terminals, setTerminals] = useState([]);
@@ -546,23 +560,15 @@ export function HardwareTerminalsView() {
 
   return (
     <div className="space-y-6 animate-fadeIn pb-12">
-      {/* Top Banner / Header */}
-      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-2xl p-6 text-white shadow-xl border border-indigo-900/40 relative overflow-hidden">
-        <div className="absolute end-0 top-0 bottom-0 w-96 opacity-10 pointer-events-none flex items-center justify-center">
-          <Cpu className="w-96 h-96 -me-20 -mt-10" />
-        </div>
-
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
+      {/* Clean Page Header */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-xs border border-slate-200 dark:border-slate-800">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 text-indigo-400 font-bold text-xs uppercase tracking-wider mb-1">
-              <Cpu className="w-4 h-4 text-emerald-400 animate-pulse" />
-              <span>{t('adms_gateway_title')}</span>
-            </div>
-            <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-3">
-              {t('hardware_terminals')}
+            <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-white">
+              Attendance Devices
             </h1>
-            <p className="text-xs text-slate-300 max-w-2xl mt-1">
-              {t('adms_gateway_desc')}
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+              Manage biometric clocks, device status, and employee punch synchronization.
             </p>
           </div>
 
@@ -570,10 +576,10 @@ export function HardwareTerminalsView() {
             <button
               onClick={reloadAll}
               disabled={isLoading}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/20 text-white transition-all backdrop-blur-sm border border-white/15 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-sm font-medium bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition cursor-pointer disabled:opacity-50"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-              {t('refresh') || 'Refresh'}
+              <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+              <span>{t('refresh') || 'Refresh'}</span>
             </button>
 
             {canManageHardware && (
@@ -589,10 +595,10 @@ export function HardwareTerminalsView() {
                   });
                   setShowSimulateModal(true);
                 }}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm transition-all"
+                className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs transition cursor-pointer"
               >
-                <Play className="w-3.5 h-3.5" />
-                {t('simulate_punch')}
+                <Play className="w-4 h-4" />
+                <span>{t('simulate_punch')}</span>
               </button>
             )}
 
@@ -615,46 +621,45 @@ export function HardwareTerminalsView() {
                   });
                   setShowRegisterModal(true);
                 }}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition-all"
+                className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white shadow-2xs transition cursor-pointer"
               >
-                <Plus className="w-3.5 h-3.5" />
-                {t('register_terminal')}
+                <Plus className="w-4 h-4" />
+                <span>Add Device</span>
               </button>
             )}
           </div>
         </div>
 
-        {/* Quick KPI Bar */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 pt-4 border-t border-white/10 text-xs">
-          <div className="bg-white/5 backdrop-blur-xs rounded-xl p-3 border border-white/5">
-            <span className="text-slate-400 block text-[11px]">{t('total_clocks')}</span>
-            <div className="text-lg font-bold text-white mt-0.5 flex items-center gap-2">
-              <Server className="w-4 h-4 text-indigo-400" />
-              {terminals.length}
-              <span className="text-[10px] text-emerald-400 font-normal">({totalActiveTerminals} {t('active_terminals')})</span>
+        {/* Quick Summary Strip */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 pt-5 border-t border-slate-100 dark:border-slate-800 text-sm">
+          <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3.5 border border-slate-200/70 dark:border-slate-800">
+            <span className="text-slate-500 dark:text-slate-400 block text-xs font-medium">Registered Devices</span>
+            <div className="text-lg font-semibold text-slate-900 dark:text-white mt-0.5 flex items-center gap-2 tabular-nums">
+              <Server className="w-4 h-4 text-blue-500" />
+              <span>{terminals.length}</span>
+              <span className="text-xs text-emerald-600 dark:text-emerald-400 font-normal">({totalActiveTerminals} active)</span>
             </div>
           </div>
-          <div className="bg-white/5 backdrop-blur-xs rounded-xl p-3 border border-white/5">
-            <span className="text-slate-400 block text-[11px]">{t('enrollment_station')}</span>
-            <div className="text-sm font-semibold text-emerald-300 mt-1 flex items-center gap-1.5 truncate">
-              <ScanFace className="w-4 h-4 text-emerald-400 shrink-0" />
+          <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3.5 border border-slate-200/70 dark:border-slate-800">
+            <span className="text-slate-500 dark:text-slate-400 block text-xs font-medium">Enrollment Device</span>
+            <div className="text-sm font-medium text-slate-900 dark:text-white mt-1 flex items-center gap-1.5 truncate">
+              <ScanFace className="w-4 h-4 text-emerald-500 shrink-0" />
               <span className="truncate">{enrollmentTerminal ? enrollmentTerminal.alias : (t('none_assigned') || 'None Assigned')}</span>
             </div>
           </div>
-          <div className="bg-white/5 backdrop-blur-xs rounded-xl p-3 border border-white/5">
-            <span className="text-slate-400 block text-[11px]">{t('adms_command_queue')}</span>
-            <div className="text-lg font-bold text-white mt-0.5 flex items-center gap-2">
-              <TerminalIcon className="w-4 h-4 text-amber-400" />
-              {totalPendingCommands}
-              <span className="text-[10px] text-slate-400 font-normal">{t('pending_dispatch') || 'Pending Dispatch'}</span>
+          <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3.5 border border-slate-200/70 dark:border-slate-800">
+            <span className="text-slate-500 dark:text-slate-400 block text-xs font-medium">Pending Sync Queue</span>
+            <div className="text-lg font-semibold text-slate-900 dark:text-white mt-0.5 flex items-center gap-2 tabular-nums">
+              <TerminalIcon className="w-4 h-4 text-amber-500" />
+              <span>{totalPendingCommands}</span>
+              <span className="text-xs text-slate-500 font-normal">queued</span>
             </div>
           </div>
-          <div className="bg-white/5 backdrop-blur-xs rounded-xl p-3 border border-white/5">
-            <span className="text-slate-400 block text-[11px]">{t('raw_punches')}</span>
-            <div className="text-lg font-bold text-white mt-0.5 flex items-center gap-2">
-              <Activity className="w-4 h-4 text-sky-400" />
-              {transactions.length}
-              <span className="text-[10px] text-sky-300 font-normal">{t('transactions_count') || 'Transactions'}</span>
+          <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3.5 border border-slate-200/70 dark:border-slate-800">
+            <span className="text-slate-500 dark:text-slate-400 block text-xs font-medium">Recorded Punches</span>
+            <div className="text-lg font-semibold text-slate-900 dark:text-white mt-0.5 flex items-center gap-2 tabular-nums">
+              <Activity className="w-4 h-4 text-sky-500" />
+              <span>{transactions.length}</span>
             </div>
           </div>
         </div>

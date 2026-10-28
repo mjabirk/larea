@@ -137,7 +137,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
     }
   };
 
-  const orgName = currentOrganization?.legal_name || 'Enterprise View Engine';
+  const orgName = currentOrganization?.legal_name || 'Larea';
 
   const ssoModeLabel = ssoConfig?.entra_enabled
     ? 'Microsoft Entra ID'
@@ -145,7 +145,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
     ? 'Windows Domain (IWA)'
     : ssoConfig?.ldap_enabled
     ? `${ssoConfig.ldap_domain || 'Active Directory'} LDAP`
-    : 'Windows Identity';
+    : 'Windows SSO';
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col justify-between text-slate-100 font-sans selection:bg-blue-600 selection:text-white">
@@ -155,15 +155,17 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
           <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center font-bold text-sm shadow-md">
             <Building2 className="w-4 h-4" aria-hidden="true" />
           </div>
-          <span className="font-bold text-sm sm:text-base tracking-tight text-white truncate max-w-[280px] sm:max-w-none">
+          <span className="font-bold text-base tracking-tight text-white truncate max-w-[280px] sm:max-w-none">
             {orgName}
           </span>
         </div>
 
-        <div className="flex items-center gap-2 text-xs font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2.5 py-1 rounded-full">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true" />
-          <span>{ssoConfig?.sso_available ? `${t('windows_sso_active')} (${ssoModeLabel})` : t('windows_sso_ready')}</span>
-        </div>
+        {ssoConfig?.sso_available && (
+          <div className="flex items-center gap-2 text-xs font-medium text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-3 py-1 rounded-full">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" aria-hidden="true" />
+            <span>{ssoModeLabel}</span>
+          </div>
+        )}
       </header>
 
       {/* Main Authentication Container */}
@@ -171,17 +173,13 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
         <div className="w-full max-w-md bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-2xl shadow-2xl p-6 sm:p-8 space-y-6">
           {/* Header */}
           <div className="space-y-1.5 text-center">
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-600/20 text-blue-400 border border-blue-500/30 text-xs font-semibold">
-              <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{t('enterprise_sso')}</span>
-            </div>
-            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
+            <h1 className="text-2xl font-semibold tracking-tight text-white">
               {requires2FA ? t('authenticator_2fa') : t('sign_in_workspace')}
             </h1>
-            <p className="text-xs text-slate-400">
+            <p className="text-sm text-slate-400">
               {requires2FA
                 ? t('totp_helper_text')
-                : t('login_subtitle')}
+                : 'Sign in with your account credentials to continue.'}
             </p>
           </div>
 
@@ -319,18 +317,18 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
               </div>
 
               {/* Login Form */}
-              <form onSubmit={handleSubmit} className="space-y-4 text-xs" noValidate>
+              <form onSubmit={handleSubmit} className="space-y-4 text-sm" noValidate>
                 {/* Work Email or Domain Account */}
                 <div className="space-y-1.5">
                   <label
                     htmlFor="login-email"
-                    className="font-semibold text-slate-200 block text-xs"
+                    className="font-medium text-slate-200 block text-sm"
                   >
-                    {t('work_email_or_windows')} <span className="text-rose-400">*</span>
+                    Email or Username <span className="text-rose-400">*</span>
                   </label>
                   <div className="relative">
                     <Mail
-                      className="w-4 h-4 text-slate-500 absolute start-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                      className="w-4 h-4 text-slate-500 absolute start-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
                       aria-hidden="true"
                     />
                     <input
@@ -342,8 +340,8 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="name@enterprise.com or DOMAIN\username"
-                      className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl ps-9 pe-3 py-2.5 text-white placeholder-slate-500 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 font-mono transition"
+                      placeholder="name@company.com"
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl ps-10 pe-3 py-2.5 text-white placeholder-slate-500 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 transition"
                     />
                   </div>
                 </div>
@@ -353,14 +351,14 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                   <div className="flex items-center justify-between">
                     <label
                       htmlFor="login-password"
-                      className="font-semibold text-slate-200 block text-xs"
+                      className="font-medium text-slate-200 block text-sm"
                     >
-                      {t('account_password')} <span className="text-rose-400">*</span>
+                      Password <span className="text-rose-400">*</span>
                     </label>
                   </div>
                   <div className="relative">
                     <Lock
-                      className="w-4 h-4 text-slate-500 absolute start-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                      className="w-4 h-4 text-slate-500 absolute start-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
                       aria-hidden="true"
                     />
                     <input
@@ -372,7 +370,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder={t('password_placeholder')}
-                      className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl ps-9 pe-10 py-2.5 text-white placeholder-slate-500 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 font-mono transition"
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl ps-10 pe-10 py-2.5 text-white placeholder-slate-500 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 transition"
                     />
                     <button
                       type="button"
@@ -389,7 +387,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                   </div>
                 </div>
 
-                {/* Remember Me Checkbox (Unchecked by default) */}
+                {/* Remember Me Checkbox */}
                 <div className="pt-1 flex items-center justify-between">
                   <label className="flex items-center gap-2 cursor-pointer select-none">
                     <input
@@ -398,7 +396,7 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                       onChange={(e) => setRememberMe(e.target.checked)}
                       className="w-4 h-4 rounded border-slate-700 bg-slate-950 text-blue-600 focus:ring-blue-500 cursor-pointer focus-visible:ring-2 focus-visible:ring-blue-500"
                     />
-                    <span className="text-slate-300 text-xs font-medium">
+                    <span className="text-slate-300 text-sm font-medium">
                       {t('remember_me')}
                     </span>
                   </label>
@@ -408,16 +406,16 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
                 <button
                   type="submit"
                   disabled={isLoading || isSsoLoading}
-                  className="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center justify-center gap-2 cursor-pointer transition shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 mt-2"
+                  className="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-sm flex items-center justify-center gap-2 cursor-pointer transition shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 mt-2"
                 >
                   {isLoading ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>{t('validating_session')}</span>
+                      <span>Signing in...</span>
                     </>
                   ) : (
                     <>
-                      <span>{t('sign_in_workspace')}</span>
+                      <span>Sign In</span>
                       <ArrowRight className="w-4 h-4" aria-hidden="true" />
                     </>
                   )}
@@ -428,15 +426,17 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
         </div>
       </main>
 
-      {/* Statutory Footer */}
-      <footer className="py-4 border-t border-slate-800 text-center text-xs text-slate-400 space-y-2">
-        <div className="flex flex-wrap items-center justify-center gap-4 text-[11px]">
+      {/* Clean Footer */}
+      <footer className="py-4 border-t border-slate-800/70 text-center text-xs text-slate-400">
+        <div className="flex flex-wrap items-center justify-center gap-4">
+          <span>&copy; {new Date().getFullYear()} {orgName}</span>
           {onOpenPolicy && (
             <>
+              <span>•</span>
               <button
                 type="button"
                 onClick={() => onOpenPolicy('privacy')}
-                className="hover:text-white hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded px-1"
+                className="hover:text-white hover:underline cursor-pointer"
               >
                 {t('privacy_policy')}
               </button>
@@ -444,25 +444,12 @@ export function LoginView({ onOpenPolicy, onOpenBusinessModal }) {
               <button
                 type="button"
                 onClick={() => onOpenPolicy('terms')}
-                className="hover:text-white hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded px-1"
+                className="hover:text-white hover:underline cursor-pointer"
               >
                 {t('terms_of_service')}
               </button>
-              <span>•</span>
             </>
           )}
-          {onOpenBusinessModal && (
-            <button
-              type="button"
-              onClick={onOpenBusinessModal}
-              className="hover:text-white hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded px-1"
-            >
-              {t('business_verification')}
-            </button>
-          )}
-        </div>
-        <div className="text-[10px] text-slate-500">
-          {t('security_tagline')}
         </div>
       </footer>
     </div>

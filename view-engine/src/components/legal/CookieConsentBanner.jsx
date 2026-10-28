@@ -108,15 +108,12 @@ export function CookieConsentBanner({ onOpenPolicy }) {
 
           <div className="flex-1 space-y-1">
             <div className="flex items-center justify-between">
-              <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-1.5">
-                <span>Privacy & Granular Storage Preferences</span>
-                <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 font-mono font-semibold">
-                  GDPR Compliant
-                </span>
+              <h3 className="font-semibold text-sm text-slate-900 dark:text-white">
+                Storage Preferences
               </h3>
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              We use localized storage to secure your authenticated sessions and isolate multi-tenant data. Non-essential storage (preferences & telemetry) is strictly opt-in under GDPR Art. 6. Essential operations are never blocked.
+              We use browser storage to keep your session signed in and remember your display preferences. Optional preferences can be customized anytime.
             </p>
           </div>
         </div>

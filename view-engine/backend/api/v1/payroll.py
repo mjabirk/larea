@@ -1,6 +1,7 @@
 import uuid
 import json
 import datetime
+import calendar
 import re
 import logging
 from typing import Optional, Dict, Any, List
@@ -10,6 +11,7 @@ from backend.core.database import get_db_pool, log_audit_event
 from backend.core.dependencies import get_current_user_session, get_client_ip, require_permission, check_permission, build_branch_filter
 from backend.core.audit import record_audit_log
 from backend.core.sequences import uuid7, get_next_payroll_batch_code, get_atomic_counter
+from backend.core.report_engine import generate_payslip_pdf, generate_salary_register_pdf
 
 logger = logging.getLogger("payroll")
 
@@ -57,46 +59,250 @@ def can_read_salary(session: Dict[str, Any]) -> bool:
     return bool(check_permission(session, "hr.salary_read") or check_permission(session, "hr.salary_manage"))
 
 
-async def get_employee_salary_basis(conn, employee_id: uuid.UUID) -> Dict[str, Any]:
+async def compute_employee_contract_compensation(
+    conn,
+    employee_id: uuid.UUID,
+    ym: str
+) -> Dict[str, Any]:
     """
-    Returns {"base_salary": float, "housing_allowance": float, "allowances_by_rule": Dict[str, float]}
-    by checking employee's active contract in employee_contracts + contract_benefit_lines,
-    falling back to employees.base_salary and 25% housing if no active contract.
+    Computes unified contract compensation for an employee in target salary_year_month (YYYY-MM).
+    Supports single-contract months and mid-month multi-contract splits (amendments/promotions),
+    prorating base salary and grade-based benefit lines proportionally to active days.
     """
-    contract = await conn.fetchrow("""
-        SELECT id, wage_base
-        FROM employee_contracts
-        WHERE employee_id = $1 AND LOWER(status) = 'active'
-        ORDER BY created_at DESC LIMIT 1;
-    """, employee_id)
+    try:
+        parts = ym.strip().split("-")
+        year, month = int(parts[0]), int(parts[1])
+    except Exception:
+        today = datetime.date.today()
+        year, month = today.year, today.month
+        ym = f"{year:04d}-{month:02d}"
 
-    allowances_by_rule: Dict[str, float] = {}
-    housing_allowance = 0.0
+    _, total_month_days = calendar.monthrange(year, month)
+    month_start = datetime.date(year, month, 1)
+    month_end = datetime.date(year, month, total_month_days)
 
-    if contract:
-        base_salary = float(contract["wage_base"] or 0.0)
-        benefit_rows = await conn.fetch("""
-            SELECT cbl.rule_id, cbl.computed_monthly_total, sr.wps_code
+    contracts = await conn.fetch("""
+        SELECT c.*, g.code AS grade_code, g.name AS grade_name
+        FROM employee_contracts c
+        LEFT JOIN employee_grades g ON c.grade_id = g.id
+        WHERE c.employee_id = $1
+          AND LOWER(c.status) IN ('active', 'amended', 'expired', 'posted')
+          AND c.start_date <= $2
+          AND (c.end_date IS NULL OR c.end_date >= $3)
+        ORDER BY c.start_date ASC, c.created_at ASC;
+    """, employee_id, month_end, month_start)
+
+    # 1. Fallback: No contracts found
+    if not contracts:
+        emp = await conn.fetchrow("SELECT base_salary, currency FROM employees WHERE id = $1;", employee_id)
+        base = float(emp["base_salary"] or 0.0) if emp else 0.0
+        housing = round(base * 0.25, 2)
+        return {
+            "base_salary": round(base, 2),
+            "housing_allowance": round(housing, 2),
+            "transport_allowance": 0.0,
+            "other_allowances": 0.0,
+            "contract_deductions": 0.0,
+            "is_prorated": False,
+            "proration_items": [],
+            "proration_summary": "",
+            "contracts_count": 0,
+            "allowances_by_rule": {"ALW_HOUSING": housing}
+        }
+
+    # 2. Single contract month
+    if len(contracts) == 1:
+        c = contracts[0]
+        base = float(c["wage_base"] or 0.0)
+        contract_grade_id = c["grade_id"]
+        bl_rows = await conn.fetch("""
+            SELECT cbl.rule_id, cbl.calculation_type, cbl.amount_value, cbl.computed_monthly_total,
+                   sr.category, sr.wps_code, sr.default_amount, sr.percentage_rate
             FROM contract_benefit_lines cbl
             JOIN salary_rules sr ON cbl.rule_id = sr.id
             WHERE cbl.contract_id = $1;
-        """, contract["id"])
-        for r in benefit_rows:
-            amt = float(r["computed_monthly_total"] or 0.0)
-            r_id = r["rule_id"]
-            allowances_by_rule[r_id] = round(amt, 2)
-            if r["wps_code"] == "HOUSING" or "HOUSING" in r_id.upper():
-                housing_allowance += amt
-    else:
-        emp = await conn.fetchrow("SELECT base_salary FROM employees WHERE id = $1;", employee_id)
-        base_salary = float(emp["base_salary"] or 0.0) if emp else 0.0
-        housing_allowance = round(base_salary * 0.25, 2)
-        allowances_by_rule["ALW_HOUSING"] = housing_allowance
+        """, c["id"])
+
+        housing = 0.0
+        transport = 0.0
+        other_alw = 0.0
+        deductions = 0.0
+        allowances_by_rule: Dict[str, float] = {}
+
+        for bl in bl_rows:
+            calc_type = bl["calculation_type"] or "fixed_amount"
+            amt_val = float(bl["amount_value"] or 0.0)
+            rid = bl["rule_id"]
+
+            if calc_type == "grade_based":
+                grade_amt = None
+                if contract_grade_id:
+                    grade_amt = await conn.fetchval(
+                        "SELECT amount FROM salary_rule_grade_rates WHERE rule_id = $1 AND grade_id = $2;",
+                        rid, contract_grade_id
+                    )
+                if grade_amt is not None:
+                    monthly_amt = float(grade_amt)
+                elif amt_val > 0:
+                    monthly_amt = amt_val
+                else:
+                    monthly_amt = float(bl["default_amount"] or 0.0)
+            elif calc_type == "percentage_of_base":
+                monthly_amt = round((base * amt_val) / 100.0, 2)
+            else:
+                monthly_amt = float(bl["computed_monthly_total"] if bl["computed_monthly_total"] is not None else amt_val)
+
+            wps_code = str(bl.get("wps_code") or "").upper()
+            cat = str(bl.get("category") or "").lower()
+
+            if wps_code == "HOUSING" or "HOUSING" in rid.upper():
+                housing += monthly_amt
+                allowances_by_rule[rid] = monthly_amt
+            elif wps_code == "TRANSPORT" or "TRANSPORT" in rid.upper():
+                transport += monthly_amt
+                allowances_by_rule[rid] = monthly_amt
+            elif cat == "allowance":
+                other_alw += monthly_amt
+                allowances_by_rule[rid] = monthly_amt
+            elif cat == "deduction":
+                deductions += monthly_amt
+
+        return {
+            "base_salary": round(base, 2),
+            "housing_allowance": round(housing, 2),
+            "transport_allowance": round(transport, 2),
+            "other_allowances": round(other_alw, 2),
+            "contract_deductions": round(deductions, 2),
+            "is_prorated": False,
+            "proration_items": [],
+            "proration_summary": "",
+            "contracts_count": 1,
+            "allowances_by_rule": allowances_by_rule
+        }
+
+    # 3. Multi-contract (split/amended mid-month) proration
+    total_base = 0.0
+    total_housing = 0.0
+    total_transport = 0.0
+    total_other = 0.0
+    total_deductions = 0.0
+    proration_parts = []
+    proration_items = []
+    allowances_by_rule: Dict[str, float] = {}
+
+    for c in contracts:
+        c_start = c["start_date"]
+        c_end = c["end_date"]
+        p_start = max(c_start, month_start)
+        p_end = min(c_end if c_end else month_end, month_end)
+
+        if p_end < p_start:
+            continue
+
+        days = (p_end - p_start).days + 1
+        ratio = days / float(total_month_days)
+
+        c_wage = float(c["wage_base"] or 0.0)
+        prorated_base = round(c_wage * ratio, 2)
+        total_base += prorated_base
+
+        c_grade = c.get("grade_code") or (c.get("grade_id") or "G1").replace("GRADE_", "G")
+        currency = c.get("currency") or "QAR"
+
+        p_start_str = f"{p_start.strftime('%b')} {p_start.day}"
+        p_end_str = f"{p_end.day}" if p_start.month == p_end.month else f"{p_end.strftime('%b')} {p_end.day}"
+        part_str = f"{p_start_str}-{p_end_str} ({c_grade} @ {c_wage:,.0f}) = {prorated_base:,.2f} {currency}"
+        proration_parts.append(part_str)
+
+        # Benefit lines for this contract
+        bl_rows = await conn.fetch("""
+            SELECT cbl.rule_id, cbl.calculation_type, cbl.amount_value, cbl.computed_monthly_total,
+                   sr.category, sr.wps_code, sr.default_amount, sr.percentage_rate
+            FROM contract_benefit_lines cbl
+            JOIN salary_rules sr ON cbl.rule_id = sr.id
+            WHERE cbl.contract_id = $1;
+        """, c["id"])
+
+        contract_grade_id = c["grade_id"]
+        for bl in bl_rows:
+            calc_type = bl["calculation_type"] or "fixed_amount"
+            amt_val = float(bl["amount_value"] or 0.0)
+            rid = bl["rule_id"]
+
+            if calc_type == "grade_based":
+                grade_amt = None
+                if contract_grade_id:
+                    grade_amt = await conn.fetchval(
+                        "SELECT amount FROM salary_rule_grade_rates WHERE rule_id = $1 AND grade_id = $2;",
+                        rid, contract_grade_id
+                    )
+                if grade_amt is not None:
+                    monthly_amt = float(grade_amt)
+                elif amt_val > 0:
+                    monthly_amt = amt_val
+                else:
+                    monthly_amt = float(bl["default_amount"] or 0.0)
+            elif calc_type == "percentage_of_base":
+                monthly_amt = round((c_wage * amt_val) / 100.0, 2)
+            else:
+                monthly_amt = float(bl["computed_monthly_total"] if bl["computed_monthly_total"] is not None else amt_val)
+
+            prorated_line = round(monthly_amt * ratio, 2)
+            wps_code = str(bl.get("wps_code") or "").upper()
+            cat = str(bl.get("category") or "").lower()
+
+            if wps_code == "HOUSING" or "HOUSING" in rid.upper():
+                total_housing += prorated_line
+                allowances_by_rule[rid] = allowances_by_rule.get(rid, 0.0) + prorated_line
+            elif wps_code == "TRANSPORT" or "TRANSPORT" in rid.upper():
+                total_transport += prorated_line
+                allowances_by_rule[rid] = allowances_by_rule.get(rid, 0.0) + prorated_line
+            elif cat == "allowance":
+                total_other += prorated_line
+                allowances_by_rule[rid] = allowances_by_rule.get(rid, 0.0) + prorated_line
+            elif cat == "deduction":
+                total_deductions += prorated_line
+
+    summary_text = "Prorated Base: " + " | ".join(proration_parts)
+
+    proration_items.append({
+        "id": f"proration_{employee_id}_{ym}",
+        "code": "PRORATION_SPLIT",
+        "type": "contract_proration",
+        "subtype": "mid_month_split",
+        "title": "Mid-Month Contract Proration",
+        "quantity": len(contracts),
+        "unit_label": "periods",
+        "unit_rate": 0.0,
+        "amount": round(total_base, 2),
+        "notes": summary_text
+    })
 
     return {
-        "base_salary": round(base_salary, 2),
-        "housing_allowance": round(housing_allowance, 2),
-        "allowances_by_rule": allowances_by_rule,
+        "base_salary": round(total_base, 2),
+        "housing_allowance": round(total_housing, 2),
+        "transport_allowance": round(total_transport, 2),
+        "other_allowances": round(total_other, 2),
+        "contract_deductions": round(total_deductions, 2),
+        "is_prorated": True,
+        "proration_items": proration_items,
+        "proration_summary": summary_text,
+        "contracts_count": len(contracts),
+        "allowances_by_rule": allowances_by_rule
+    }
+
+
+async def get_employee_salary_basis(conn, employee_id: uuid.UUID, ym: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Returns {"base_salary": float, "housing_allowance": float, "allowances_by_rule": Dict[str, float]}
+    derived from active or split prorated contracts for the month.
+    """
+    target_ym = ym or datetime.date.today().strftime("%Y-%m")
+    comp = await compute_employee_contract_compensation(conn, employee_id, target_ym)
+    return {
+        "base_salary": comp["base_salary"],
+        "housing_allowance": comp["housing_allowance"],
+        "allowances_by_rule": comp.get("allowances_by_rule", {}),
     }
 
 
@@ -557,32 +763,12 @@ async def create_payroll_batch(
                 payslip_rows = []
                 for emp in employees:
                     e_id = emp["id"]
-                    contract = contract_by_emp.get(e_id)
-
-                    housing_allowance = 0.0
-                    transport_allowance = 0.0
-                    other_allowances = 0.0
-                    contract_deductions = 0.0
-
-                    if contract:
-                        base_salary = float(contract["wage_base"] or 0.0)
-                        bls = benefit_lines_by_contract.get(contract["id"], [])
-                        for bl in bls:
-                            amt = float(bl["computed_monthly_total"] or 0.0)
-                            wps_code = str(bl.get("wps_code") or "").upper()
-                            rule_id = str(bl.get("rule_id") or "").upper()
-                            cat = str(bl.get("category") or "").lower()
-
-                            if wps_code == "HOUSING" or "HOUSING" in rule_id:
-                                housing_allowance += amt
-                            elif wps_code == "TRANSPORT" or "TRANSPORT" in rule_id:
-                                transport_allowance += amt
-                            elif cat == "allowance":
-                                other_allowances += amt
-                            elif cat == "deduction":
-                                contract_deductions += amt
-                    else:
-                        base_salary = float(emp["base_salary"] or 0.0)
+                    comp = await compute_employee_contract_compensation(conn, e_id, ym)
+                    base_salary = comp["base_salary"]
+                    housing_allowance = comp["housing_allowance"]
+                    transport_allowance = comp["transport_allowance"]
+                    other_allowances = comp["other_allowances"]
+                    contract_deductions = comp["contract_deductions"]
 
                     verified_attendance_hours = att_by_emp.get(e_id, 0.0)
 
@@ -597,6 +783,10 @@ async def create_payroll_batch(
                     other_ded = 0.0
                     unpaid_days = 0.0
                     breakdown = []
+
+                    # Include contract proration items if mid-month split
+                    for p_item in comp.get("proration_items", []):
+                        breakdown.append(p_item)
 
                     for a in emp_adjs:
                         a_type = a["adjustment_type"]
@@ -778,7 +968,7 @@ async def update_payslip(
             if existing["batch_status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail=f"SOX 404 / ISO 27001 Violation: Cannot edit payslips in a {existing['batch_status']} payroll batch. Sealed financial records are strictly immutable. Batch must be draft."
+                    detail=f"Cannot edit payslips in a {existing['batch_status']} payroll batch. Batch must be in draft status."
                 )
 
             batch_id = existing["batch_id"]
@@ -884,17 +1074,19 @@ async def recalculate_payslip(
             if existing["batch_status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail=f"SOX 404 / ISO 27001 Violation: Cannot recalculate payslips in a {existing['batch_status']} payroll batch. Sealed financial records are strictly immutable. Batch must be draft."
+                    detail=f"Cannot recalculate payslips in a {existing['batch_status']} payroll batch. Batch must be in draft status."
                 )
 
             batch_id = existing["batch_id"]
             employee_id = existing["employee_id"]
             ym = existing["salary_year_month"]
 
-            basis_data = await get_employee_salary_basis(conn, employee_id)
-            base_salary = float(basis_data["base_salary"])
-            housing_allowance = float(basis_data["housing_allowance"])
-            transport_allowance = float(basis_data["allowances_by_rule"].get("ALW_TRANSPORT") or existing["transport_allowance"] or 0.0)
+            comp = await compute_employee_contract_compensation(conn, employee_id, ym)
+            base_salary = comp["base_salary"]
+            housing_allowance = comp["housing_allowance"]
+            transport_allowance = comp["transport_allowance"]
+            contract_other_allowances = comp["other_allowances"]
+            contract_deductions = comp["contract_deductions"]
 
             att_row = await conn.fetchrow("""
                 SELECT
@@ -909,7 +1101,8 @@ async def recalculate_payslip(
             days_worked = int(att_row["days_worked"] or 30)
 
             adj_rows = await conn.fetch("""
-                SELECT adjustment_type, category_subtype, computed_amount, quantity
+                SELECT id, code, rule_id, title, unit_label, unit_rate, notes,
+                       adjustment_type, category_subtype, computed_amount, quantity
                 FROM payroll_adjustments
                 WHERE employee_id = $1
                   AND salary_year_month = $2
@@ -922,11 +1115,32 @@ async def recalculate_payslip(
             task_benefit_pay = 0.0
             adj_deductions = 0.0
             adj_allowances = 0.0
+
+            breakdown = []
+            for p_item in comp.get("proration_items", []):
+                breakdown.append(p_item)
+
             for adj in adj_rows:
                 amt = float(adj["computed_amount"] or 0.0)
                 a_type = adj["adjustment_type"]
                 sub = adj["category_subtype"] or ""
                 qty = float(adj.get("quantity") or 0.0)
+                rate = float(adj.get("unit_rate") or 0.0)
+
+                breakdown.append({
+                    "id": str(adj["id"]),
+                    "code": adj.get("code") or "ADJ",
+                    "rule_id": adj.get("rule_id"),
+                    "type": a_type,
+                    "subtype": sub,
+                    "title": adj.get("title") or a_type,
+                    "quantity": qty,
+                    "unit_label": adj.get("unit_label") or "units",
+                    "unit_rate": rate,
+                    "amount": amt,
+                    "notes": adj.get("notes")
+                })
+
                 if a_type == "overtime":
                     ot_hours += qty
                     ot_pay += amt
@@ -940,8 +1154,8 @@ async def recalculate_payslip(
                 elif a_type == "deduction":
                     adj_deductions += amt
 
-            other_allowances = float(existing["other_allowances"] or 0.0) + adj_allowances
-            deductions = adj_deductions
+            other_allowances = round(contract_other_allowances + adj_allowances, 2)
+            deductions = round(contract_deductions + adj_deductions, 2)
 
             net_salary = round(
                 base_salary + housing_allowance + transport_allowance + other_allowances + ot_pay + bonus_pay + task_benefit_pay - deductions,
@@ -963,10 +1177,11 @@ async def recalculate_payslip(
                     deductions = $10,
                     net_salary = $11,
                     working_days = $12,
+                    adjustments_breakdown = $13::jsonb,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = $1;
             """, p_uuid, base_salary, housing_allowance, transport_allowance, other_allowances,
-               ot_hours, ot_pay, bonus_pay, task_benefit_pay, deductions, net_salary, days_worked)
+               ot_hours, ot_pay, bonus_pay, task_benefit_pay, deductions, net_salary, days_worked, json.dumps(breakdown))
 
             await update_batch_totals_from_payslips(conn, batch_id)
 
@@ -1346,6 +1561,199 @@ async def export_qatar_wps_sif(
     )
 
 
+async def resolve_report_branding_and_paper(conn, batch: Dict[str, Any]) -> tuple:
+    """
+    Retrieves organization branding and paper format settings from system_metadata
+    key 'cfg:paper_format', falling back to wps/business configurations and organization data.
+    """
+    meta_fmt_raw = await conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:paper_format';")
+    paper_format = {}
+    if meta_fmt_raw:
+        try:
+            paper_format = json.loads(meta_fmt_raw) if isinstance(meta_fmt_raw, str) else dict(meta_fmt_raw)
+        except Exception:
+            paper_format = {}
+
+    wps_raw = await conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:qatar_wps_config';")
+    wps_cfg = {}
+    if wps_raw:
+        try:
+            wps_cfg = json.loads(wps_raw) if isinstance(wps_raw, str) else dict(wps_raw)
+        except Exception:
+            pass
+
+    biz_raw = await conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:business_details';")
+    biz_cfg = {}
+    if biz_raw:
+        try:
+            biz_cfg = json.loads(biz_raw) if isinstance(biz_raw, str) else dict(biz_raw)
+        except Exception:
+            pass
+
+    org_row = None
+    if batch.get("organization_id"):
+        try:
+            org_row = await conn.fetchrow("SELECT * FROM organizations WHERE id = $1;", batch["organization_id"])
+        except Exception:
+            pass
+    if not org_row:
+        try:
+            org_row = await conn.fetchrow("SELECT * FROM organizations ORDER BY created_at ASC LIMIT 1;")
+        except Exception:
+            pass
+    org_dict = dict(org_row) if org_row else {}
+
+    org_info = {
+        "company_name": paper_format.get("company_name") or org_dict.get("legal_name") or biz_cfg.get("legal_entity_name") or "Larea Industrial & Contracting W.L.L.",
+        "company_name_ar": paper_format.get("company_name_ar") or biz_cfg.get("legal_entity_name_ar") or org_dict.get("legal_name_ar") or "شركة لاريا للصناعة والمقاولات ذ.م.م",
+        "cr_number": paper_format.get("cr_number") or biz_cfg.get("cr_number") or org_dict.get("tax_id") or "QA-3849102-CR",
+        "wps_establishment_id": paper_format.get("wps_establishment_id") or wps_cfg.get("employer_eid") or biz_cfg.get("wps_establishment_id") or "10293847",
+        "tax_id": paper_format.get("tax_id") or org_dict.get("tax_id") or biz_cfg.get("tax_id") or "VAT-100293848",
+        "logo_path": paper_format.get("logo_path") or biz_cfg.get("logo_path"),
+    }
+    return org_info, paper_format
+
+
+@router.get("/batches/{batch_id}/payslips/pdf")
+async def get_batch_payslips_pdf(
+    batch_id: str,
+    mode: str = Query("blank", pattern="^(blank|letterhead)$"),
+    payslip_id: Optional[str] = Query(None),
+    session: Dict[str, Any] = Depends(get_current_user_session),
+):
+    """
+    Generates high-performance true vector A4 PDF payslips for a payroll batch using ReportLab.
+    Supports single payslip filtering or batch multi-payslip output (1 page per employee).
+    Supports 'blank' (complete vector corporate branding) and 'letterhead' (stationery margins).
+    """
+    require_permission(session, "payroll.read")
+    if not can_read_salary(session):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Session lacks salary viewing privileges."
+        )
+
+    pool = get_db_pool()
+    try:
+        b_uuid = uuid.UUID(batch_id)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid batch UUID format.")
+
+    async with pool.acquire() as conn:
+        batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", b_uuid)
+        if not batch:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll batch not found.")
+
+        branch_ids = session.get("branch_ids")
+        if not session.get("is_superadmin") and branch_ids and "all" not in branch_ids:
+            if batch.get("branch_id") and str(batch["branch_id"]) not in branch_ids:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied for batch branch.")
+
+        if payslip_id:
+            try:
+                p_uuid = uuid.UUID(payslip_id)
+            except Exception:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid payslip UUID format.")
+            rows = await conn.fetch("""
+                SELECT * FROM payslips
+                WHERE batch_id = $1 AND id = $2
+                ORDER BY employee_number ASC, employee_name ASC;
+            """, b_uuid, p_uuid)
+            if not rows:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target payslip not found in this batch.")
+        else:
+            rows = await conn.fetch("""
+                SELECT * FROM payslips
+                WHERE batch_id = $1
+                ORDER BY employee_number ASC, employee_name ASC;
+            """, b_uuid)
+            if not rows:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No payslips found for this batch.")
+
+        payslips = [serialize_row(dict(r)) for r in rows]
+        org_info, paper_format = await resolve_report_branding_and_paper(conn, dict(batch))
+
+    batch_month = batch.get("salary_year_month") or "payroll"
+    pdf_bytes = generate_payslip_pdf(
+        payslips=payslips,
+        org_info=org_info,
+        paper_format=paper_format,
+        mode=mode
+    )
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=Payslips_{batch_month}_{mode}.pdf",
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        }
+    )
+
+
+@router.get("/batches/{batch_id}/salary-register/pdf")
+async def get_batch_salary_register_pdf(
+    batch_id: str,
+    mode: str = Query("blank", pattern="^(blank|letterhead)$"),
+    session: Dict[str, Any] = Depends(get_current_user_session),
+):
+    """
+    Generates a publication-grade Landscape A4 PDF Salary Register / Payroll Journal using ReportLab.
+    Includes all 12 statutory wage breakdown columns and bottom grand totals row.
+    """
+    require_permission(session, "payroll.read")
+    if not can_read_salary(session):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Session lacks salary viewing privileges."
+        )
+
+    pool = get_db_pool()
+    try:
+        b_uuid = uuid.UUID(batch_id)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid batch UUID format.")
+
+    async with pool.acquire() as conn:
+        batch = await conn.fetchrow("SELECT * FROM payroll_batches WHERE id = $1;", b_uuid)
+        if not batch:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll batch not found.")
+
+        branch_ids = session.get("branch_ids")
+        if not session.get("is_superadmin") and branch_ids and "all" not in branch_ids:
+            if batch.get("branch_id") and str(batch["branch_id"]) not in branch_ids:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied for batch branch.")
+
+        rows = await conn.fetch("""
+            SELECT * FROM payslips
+            WHERE batch_id = $1
+            ORDER BY employee_number ASC, employee_name ASC;
+        """, b_uuid)
+        if not rows:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No payslips found for this batch.")
+
+        payslips = [serialize_row(dict(r)) for r in rows]
+        org_info, paper_format = await resolve_report_branding_and_paper(conn, dict(batch))
+
+    batch_month = batch.get("salary_year_month") or "payroll"
+    pdf_bytes = generate_salary_register_pdf(
+        batch_data=serialize_row(dict(batch)),
+        payslips=payslips,
+        org_info=org_info,
+        paper_format=paper_format,
+        mode=mode
+    )
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=Salary_Register_{batch_month}_{mode}.pdf",
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        }
+    )
+
+
 class BatchPostPayload(BaseModel):
     notes: Optional[str] = None
 
@@ -1456,7 +1864,7 @@ async def reverse_payroll_batch(
     require_permission(session, "payroll.manage")
     clean_reason = (payload.reversal_reason or "").strip()
     if not clean_reason:
-        raise HTTPException(status_code=400, detail="An auditable reversal_reason is required by SOX 404 compliance.")
+        raise HTTPException(status_code=400, detail="A reversal reason is required.")
 
     pool = get_db_pool()
     try:
@@ -2008,16 +2416,16 @@ async def approve_payroll_adjustment(
             if current_status == "rejected":
                 raise HTTPException(status_code=400, detail="Cannot approve a rejected adjustment. Please re-submit.")
 
-            # SOX 404 Maker-Checker Dual Control Hard Guard
+            # Dual Control Hard Guard
             if adj.get("created_by") and user_id and str(user_id) == str(adj["created_by"]):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="SOX 404 Maker-Checker Violation: You cannot approve a payroll adjustment that you created. Dual control requires an independent checker."
+                    detail="You cannot approve a payroll adjustment that you created. Approval requires another reviewer."
                 )
             if adj.get("submitted_by") and user_id and str(user_id) == str(adj["submitted_by"]):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="SOX 404 Maker-Checker Violation: You cannot approve a payroll adjustment that you submitted for approval. Dual control requires an independent checker."
+                    detail="You cannot approve a payroll adjustment that you submitted. Approval requires another reviewer."
                 )
 
             new_status = current_status

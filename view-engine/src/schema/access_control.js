@@ -71,7 +71,7 @@ export const security_groups = [
   {
     key: "employee.write",
     name: "Manage Employees",
-    description: "Create and update employee records, WPS banking data, and expat compliance.",
+    description: "Create and update employee records, bank details, and ID documents.",
     category: "Human Resources",
     app_id: "hr",
   },
@@ -92,7 +92,7 @@ export const security_groups = [
   {
     key: "hr.manager",
     name: "HR Management Role",
-    description: "Full HR management privileges over workforce and immigration compliance.",
+    description: "Full HR management privileges over workforce and employee documents.",
     category: "Human Resources",
     app_id: "hr",
   },
@@ -196,7 +196,7 @@ export const security_groups = [
   {
     key: "payroll.manage",
     name: "Lock & Export Payroll Batches",
-    description: "Cryptographically seal monthly payroll batches and generate WPS bank disbursement payloads.",
+    description: "Approve monthly payroll batches and generate bank salary export files.",
     category: "Payroll Engine",
     app_id: "payroll",
   },
@@ -278,7 +278,7 @@ export const app_access_profiles = [
   {
     id: "app_iam_auditor",
     app_id: "iam",
-    name: "IAM Compliance Auditor",
+    name: "Security & Access Reviewer",
     description: "Read-only inspection of corporate directory, security profiles, and tenancy branches.",
     granted_groups: [
       "users.read",
@@ -313,7 +313,7 @@ export const app_access_profiles = [
     id: "app_payroll_officer",
     app_id: "payroll",
     name: "Payroll Operations Officer",
-    description: "Reconciliation of verified shifts, batch locking, and WPS export dispatch.",
+    description: "Reconciliation of verified shifts, batch locking, and bank salary export.",
     granted_groups: [
       "payroll.read",
       "payroll.manage",
@@ -357,6 +357,10 @@ export const MENU_PERMISSIONS = {
   users: "users.read",
   roles: "roles.read",
   orgs: "org.read",
+  general_settings: "org.manage",
+  paper_format: "org.manage",
+  windows_sso: "org.manage",
+  about: "org.read",
   compliance_alerts: "org.manage",
   mail_servers: "org.manage",
   mail_templates: "org.manage",

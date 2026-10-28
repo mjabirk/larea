@@ -75,8 +75,25 @@ export function LeaveManagementView() {
   const [showSummary, setShowSummary] = useState(false);
 
   // ERP View Switcher: 'list' | 'form'
-  const [viewMode, setViewMode] = useState('list');
+  const [viewMode, setViewMode] = useState(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('view') === 'form' ? 'form' : 'list'
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    const isForm = viewMode === 'form';
+    window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: isForm } }));
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (isForm) p.set('view', 'form');
+      else p.delete('view');
+      const qs = p.toString();
+      window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+    } catch (e) {}
+    return () => {
+      if (isForm) window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: false } }));
+    };
+  }, [viewMode]);
 
   // Rejection modal
   const [rejectingLeave, setRejectingLeave] = useState(null);
@@ -569,7 +586,7 @@ export function LeaveManagementView() {
             <div className="lg:col-span-8 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs p-6 space-y-5">
               <div className="border-b border-slate-100 dark:border-slate-800 pb-3">
                 <h2 className="text-[15px] font-semibold text-slate-900 dark:text-white">
-                  Absence Details & Statutory Policy
+                  Leave Details
                 </h2>
               </div>
 
@@ -593,10 +610,10 @@ export function LeaveManagementView() {
                 </select>
               </div>
 
-              {/* Statutory Leave Policy */}
+              {/* Leave Type */}
               <div>
                 <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                  Statutory Leave Policy <span className="text-rose-500">*</span>
+                  Leave Type <span className="text-rose-500">*</span>
                 </label>
                 <select
                   required
@@ -708,7 +725,7 @@ export function LeaveManagementView() {
                 ) : (
                   <div className="p-3.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 text-xs flex items-center gap-2">
                     <ShieldCheck className="w-4 h-4 text-purple-600 shrink-0" />
-                    <span>Statutory leave compensation and deductions are calculated automatically by the Qatar Payroll Engine.</span>
+                    <span>Leave pay and deductions are calculated automatically during payroll.</span>
                   </div>
                 )
               )}
@@ -782,7 +799,7 @@ export function LeaveManagementView() {
                     <div className="space-y-3">
                       <div className="flex items-center justify-between text-xs">
                         <span className="font-semibold text-slate-800 dark:text-slate-200">
-                          {activePolicy?.name || 'Statutory Leave'}
+                          {activePolicy?.name || 'Leave'}
                         </span>
                         <span className="font-mono text-slate-500 text-[11px]">
                           {employeeBalances?.maxQuota || 21} Days / Year
@@ -838,28 +855,22 @@ export function LeaveManagementView() {
                       </div>
                     </div>
 
-                    {/* Statutory Policy Card */}
+                    {/* Leave Allowance Summary */}
                     {activePolicy && (
                       <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 text-xs space-y-2">
                         <div className="flex items-center gap-1.5 font-semibold text-slate-800 dark:text-slate-200">
                           <FileText className="w-3.5 h-3.5 text-purple-600" />
-                          <span>Policy Terms & Provisions</span>
+                          <span>Leave Allowance</span>
                         </div>
                         <div className="text-[12px] text-slate-600 dark:text-slate-400 space-y-1.5">
                           <div className="flex justify-between">
-                            <span>Statutory Basis:</span>
-                            <span className="font-medium text-slate-700 dark:text-slate-300">
-                              {activePolicy.code || 'Law No. 14 / 2004'}
-                            </span>
-                          </div>
-                          <div className="flex justify-between">
                             <span>Pay Coverage:</span>
                             <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-                              {activePolicy.pay_percentage}% of gross basis
+                              {activePolicy.pay_percentage}% paid
                             </span>
                           </div>
                           <div className="flex justify-between">
-                            <span>Max Annual Allowance:</span>
+                            <span>Annual Limit:</span>
                             <span className="font-medium text-slate-700 dark:text-slate-300">
                               {activePolicy.max_days_per_year} Days
                             </span>
@@ -916,10 +927,6 @@ export function LeaveManagementView() {
                 Leaves
               </span>
 
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border border-purple-200 dark:border-purple-900 font-semibold">
-                Qatar Law
-              </span>
-
               {!canReadSalary && (
                 <span className="inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
                   <Lock className="w-2.5 h-2.5" />
@@ -955,7 +962,7 @@ export function LeaveManagementView() {
                 onChange={(e) => setTypeFilter(e.target.value)}
                 className="h-7 text-[11.5px] font-medium px-2 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-purple-500 cursor-pointer shrink-0 max-w-[130px] truncate"
               >
-                <option value="ALL">Policy: All</option>
+                <option value="ALL">Type: All</option>
                 {leaveTypes.map((lt) => (
                   <option key={lt.id} value={lt.id}>
                     {lt.name}
@@ -969,8 +976,8 @@ export function LeaveManagementView() {
                 className="h-7 text-[11.5px] font-medium px-2 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-purple-500 cursor-pointer shrink-0 max-w-[130px] truncate"
               >
                 <option value="ALL">Status: All</option>
-                <option value="pending_supervisor">Pending L1</option>
-                <option value="pending_hr">Pending L2</option>
+                <option value="pending_supervisor">Pending Manager</option>
+                <option value="pending_hr">Pending HR</option>
                 <option value="approved">Approved</option>
                 <option value="rejected">Rejected</option>
               </select>
@@ -1036,29 +1043,28 @@ export function LeaveManagementView() {
               <table className="w-full text-left border-collapse">
                 <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-[11.5px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
                   <tr className="h-8">
-                    <th className="py-1 px-2.5">Request Code</th>
+                    <th className="py-1 px-2.5">Code</th>
                     <th className="py-1 px-2.5">Employee</th>
-                    <th className="py-1 px-2.5">Policy / Type</th>
-                    <th className="py-1 px-2.5">Date Range</th>
+                    <th className="py-1 px-2.5">Leave Type</th>
+                    <th className="py-1 px-2.5">Dates</th>
                     <th className="py-1 px-2.5">Days</th>
-                    <th className="py-1 px-2.5">Coverage</th>
+                    <th className="py-1 px-2.5">Pay</th>
                     <th className="py-1 px-2.5 text-right">Deduction (QAR)</th>
                     <th className="py-1 px-2.5">Status</th>
-                    <th className="py-1 px-2.5">Audit Trail</th>
                     <th className="py-1 px-2.5 text-right w-40">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-[12.5px] text-slate-800 dark:text-slate-200">
                   {isLoading ? (
                     <tr>
-                      <td colSpan={10} className="py-8 text-center text-[12px] text-slate-400">
+                      <td colSpan={9} className="py-8 text-center text-[12px] text-slate-400">
                         <RefreshCw className="w-4 h-4 animate-spin mx-auto mb-1 text-purple-500" />
                         <span>Loading leave requests...</span>
                       </td>
                     </tr>
                   ) : pagedLeaves.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="py-8 text-center text-[12px] text-slate-400">
+                      <td colSpan={9} className="py-8 text-center text-[12px] text-slate-400">
                         <Calendar className="w-6 h-6 mx-auto mb-1 opacity-40" />
                         <p className="font-semibold text-slate-700 dark:text-slate-300">No leave requests found for {selectedYm}</p>
                         <p className="text-[11px] text-slate-500 mt-0.5">Click &quot;+ Request Time Off&quot; to submit an absence.</p>
@@ -1160,19 +1166,12 @@ export function LeaveManagementView() {
 
                           {/* Status */}
                           <td className="py-1 px-2.5 align-middle whitespace-nowrap">
-                            <span className={`inline-flex items-center justify-center gap-1 h-5 text-[10.5px] font-semibold px-1.5 rounded uppercase border ${statusBadgeColor}`}>
-                              {isApproved && <Check className="w-2.5 h-2.5" />}
-                              <span>{leave.approval_status.replace('_', ' ')}</span>
-                            </span>
-                          </td>
-
-                          {/* Audit Trail */}
-                          <td className="py-1 px-2.5 align-middle whitespace-nowrap">
                             <span
-                              className="inline-flex items-center justify-center h-5 text-[10.5px] font-medium px-1.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700 cursor-help"
+                              className={`inline-flex items-center justify-center gap-1 h-5 text-[10.5px] font-semibold px-1.5 rounded uppercase border ${statusBadgeColor}`}
                               title={auditText}
                             >
-                              {auditLabel}
+                              {isApproved && <Check className="w-2.5 h-2.5" />}
+                              <span>{leave.approval_status.replace('_', ' ')}</span>
                             </span>
                           </td>
 
@@ -1350,7 +1349,7 @@ export function LeaveManagementView() {
             emailLeave.employee_email ||
             ''
           }
-          defaultSubject={`Apex Global HR: Leave Request Update - ${emailLeave.employee_name} [${emailLeave.code || 'LEAVE'}]`}
+          defaultSubject={`Leave Request Update — ${emailLeave.employee_name}`}
           recordData={{
             employee_name: emailLeave.employee_name,
             employee_number: emailLeave.employee_number,

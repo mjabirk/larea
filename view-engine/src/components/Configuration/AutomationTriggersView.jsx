@@ -61,7 +61,14 @@ export function AutomationTriggersView() {
   const [actionMessage, setActionMessage] = useState(null);
 
   // Standard in-place view mode
-  const [viewMode, setViewMode] = useState('list'); // 'list' | 'form'
+  const [viewMode, setViewMode] = useState(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('view') === 'form' ? 'form' : 'list'
+  ); // 'list' | 'form'
+  const [pendingId, setPendingId] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    const p = new URLSearchParams(window.location.search);
+    return p.get('view') === 'form' ? (p.get('id') || 'new') : null;
+  });
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [isDirty, setIsDirty] = useState(false);
   const [formData, setFormData] = useState(DEFAULT_NEW_FORM);
@@ -103,6 +110,41 @@ export function AutomationTriggersView() {
   useEffect(() => {
     fetchAllData();
   }, [fetchAllData]);
+
+  useEffect(() => {
+    if (!pendingId) return;
+    if (pendingId === 'new') {
+      if (whatsappTemplates.length > 0 || smsGateways.length > 0) {
+        setPendingId(null);
+        setFormData((prev) => ({
+          ...prev,
+          whatsapp_template_id: prev.whatsapp_template_id || whatsappTemplates[0]?.id || '',
+          sms_gateway_id: prev.sms_gateway_id || smsGateways[0]?.id || '',
+        }));
+      }
+      return;
+    }
+    if (triggers.length > 0) {
+      const found = triggers.find((item) => String(item.id) === String(pendingId));
+      if (found) loadRecordIntoForm(found);
+      setPendingId(null);
+    }
+  }, [pendingId, triggers, whatsappTemplates, smsGateways]);
+
+  useEffect(() => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (viewMode === 'form') {
+        p.set('view', 'form');
+        p.set('id', String(pendingId || selectedRecord?.id || 'new'));
+      } else {
+        p.delete('view');
+        p.delete('id');
+      }
+      const qs = p.toString();
+      window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+    } catch (e) {}
+  }, [viewMode, selectedRecord, pendingId]);
 
   const filtered = useMemo(() => {
     return triggers.filter((t) => {

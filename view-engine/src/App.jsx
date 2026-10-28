@@ -50,6 +50,7 @@ import { APP_MODULES, getModuleById, getMenuById } from './registry/moduleRegist
 import { useClickOutside } from './hooks/useClickOutside';
 import { VIEW_SCHEMA, MOCK_RECORDS } from './schema/view_schema';
 import { SHIFT_ROSTER_VIEW_SCHEMA } from './schema/attendanceSchema';
+import { clearChildViewUrlParams } from './utils/urlState';
 import { LegalPolicyModal } from './components/legal/LegalPolicyModal';
 import { BusinessVerificationModal } from './components/legal/BusinessVerificationModal';
 import { CookieConsentBanner } from './components/legal/CookieConsentBanner';
@@ -108,12 +109,17 @@ function parseNavigationState() {
 
   // 1. Resolve Launcher state: bound directly to URL query param or route
   let isLauncherOpen = false;
-  if (paramView === 'launcher' || isAppsPath) {
+  let paramLauncher = null;
+  try {
+    paramLauncher = new URLSearchParams(window.location.search).get('launcher');
+  } catch (e) {}
+
+  if (paramView === 'launcher' || paramLauncher === '1' || isAppsPath) {
     isLauncherOpen = true;
   } else if (!paramApp && !paramMenu) {
     // When loaded at application root without specific parameters, route to Workspace Launcher
     isLauncherOpen = paramView !== 'workspace';
-  } else if (storedActiveView === 'launcher') {
+  } else if (!paramApp && !paramMenu && storedActiveView === 'launcher') {
     isLauncherOpen = true;
   }
 
@@ -141,9 +147,10 @@ function parseNavigationState() {
   let resolvedUserId = null;
 
   if (resolvedModuleId === 'iam' && resolvedMenuId === 'users' && !isLauncherOpen) {
-    if (paramView === 'form' || storedView === 'form') {
+    const hasExplicitUrl = Boolean(paramApp || paramMenu);
+    if (paramView === 'form' || (!hasExplicitUrl && storedView === 'form')) {
       resolvedUserViewMode = 'form';
-      resolvedUserId = paramUserId || storedUserId || null;
+      resolvedUserId = paramUserId || (!hasExplicitUrl ? storedUserId : null) || 'new';
     }
   }
 
@@ -244,9 +251,13 @@ function MainAppShell() {
   // User Management List/Form View Mode
   const [userViewMode, setUserViewMode] = useState(initialNav.userViewMode);
   const [employeeResetKey, setEmployeeResetKey] = useState(0);
+  const [menuResetKey, setMenuResetKey] = useState(0);
+  const [pendingUrlUserId, setPendingUrlUserId] = useState(
+    initialNav.selectedUserId && initialNav.selectedUserId !== 'new' ? initialNav.selectedUserId : null
+  );
   const [targetContractEmployeeId, setTargetContractEmployeeId] = useState(null);
   const [selectedUserForForm, setSelectedUserForForm] = useState(() => {
-    if (initialNav.selectedUserId && users?.length > 0) {
+    if (initialNav.selectedUserId && initialNav.selectedUserId !== 'new' && users?.length > 0) {
       return users.find((u) => u.id === initialNav.selectedUserId) || null;
     }
     return null;
@@ -379,17 +390,23 @@ function MainAppShell() {
 
   // Re-hydrate selectedUserForForm if users list is populated or updated
   React.useEffect(() => {
-    if (userViewMode === 'form' && !selectedUserForForm && initialNav.selectedUserId && users?.length > 0) {
-      const found = users.find((u) => u.id === initialNav.selectedUserId);
+    if (userViewMode === 'form' && pendingUrlUserId && users?.length > 0) {
+      const found = users.find((u) => String(u.id) === String(pendingUrlUserId));
       if (found) {
         setSelectedUserForForm(found);
       }
+      setPendingUrlUserId(null);
     }
-  }, [users, userViewMode, selectedUserForForm, initialNav.selectedUserId]);
+  }, [users, userViewMode, pendingUrlUserId]);
 
   // Flags to distinguish initial mount vs user interaction vs popstate
   const isInitialMountRef = useRef(true);
   const isPopStateRef = useRef(false);
+  const prevNavRef = useRef({
+    app: initialNav.moduleId,
+    menu: initialNav.menuId,
+    launcher: initialNav.isLauncherOpen,
+  });
 
   // 1. Persist navigation state to localStorage
   React.useEffect(() => {
@@ -398,20 +415,32 @@ function MainAppShell() {
       localStorage.setItem(STORAGE_NAV_MODULE_KEY, activeModuleId);
       localStorage.setItem(STORAGE_NAV_MENU_KEY, activeMenuId);
       localStorage.setItem(STORAGE_NAV_USER_VIEW_KEY, userViewMode);
-      if (selectedUserForForm?.id) {
-        localStorage.setItem(STORAGE_NAV_USER_ID_KEY, selectedUserForForm.id);
-      } else {
+      const effectiveUserId = selectedUserForForm?.id || pendingUrlUserId;
+      if (effectiveUserId) {
+        localStorage.setItem(STORAGE_NAV_USER_ID_KEY, effectiveUserId);
+      } else if (userViewMode !== 'form') {
         localStorage.removeItem(STORAGE_NAV_USER_ID_KEY);
       }
     } catch (e) {
       console.error('Failed to persist navigation state to localStorage:', e);
     }
-  }, [isLauncherOpen, activeModuleId, activeMenuId, userViewMode, selectedUserForForm]);
+  }, [isLauncherOpen, activeModuleId, activeMenuId, userViewMode, selectedUserForForm, pendingUrlUserId]);
 
   // 2. Synchronize navigation state with browser URL search parameters and history
   React.useEffect(() => {
     let newPath = window.location.pathname === '/apps' ? '/apps' : '/';
     let newQuery = '';
+
+    const didChangeSection =
+      prevNavRef.current.app !== activeModuleId ||
+      prevNavRef.current.menu !== activeMenuId ||
+      prevNavRef.current.launcher !== isLauncherOpen;
+
+    prevNavRef.current = {
+      app: activeModuleId,
+      menu: activeMenuId,
+      launcher: isLauncherOpen,
+    };
 
     if (isLauncherOpen) {
       if (window.location.pathname === '/apps') {
@@ -423,13 +452,26 @@ function MainAppShell() {
       }
     } else {
       newPath = '/';
-      const params = new URLSearchParams();
+      // Preserve child form/detail parameters (view, id, tab, batchId, roleId) when staying on the same menu
+      const params = didChangeSection
+        ? new URLSearchParams()
+        : new URLSearchParams(window.location.search);
+
+      params.delete('launcher');
+      if (params.get('view') === 'launcher') {
+        params.delete('view');
+      }
       params.set('app', activeModuleId);
       params.set('menu', activeMenuId);
-      if (activeModuleId === 'iam' && activeMenuId === 'users' && userViewMode === 'form') {
-        params.set('view', 'form');
-        if (selectedUserForForm?.id) {
-          params.set('userId', selectedUserForForm.id);
+
+      if (activeModuleId === 'iam' && activeMenuId === 'users') {
+        if (userViewMode === 'form') {
+          params.set('view', 'form');
+          const uid = selectedUserForForm?.id || pendingUrlUserId || 'new';
+          params.set('userId', uid);
+        } else {
+          params.delete('view');
+          params.delete('userId');
         }
       }
       newQuery = `?${params.toString()}`;
@@ -454,7 +496,7 @@ function MainAppShell() {
     if (currentFullUrl !== newUrl) {
       window.history.pushState(null, '', newUrl);
     }
-  }, [isLauncherOpen, activeModuleId, activeMenuId, userViewMode, selectedUserForForm]);
+  }, [isLauncherOpen, activeModuleId, activeMenuId, userViewMode, selectedUserForForm, pendingUrlUserId]);
 
   // 3. Listen to browser Back/Forward (popstate)
   React.useEffect(() => {
@@ -503,8 +545,21 @@ function MainAppShell() {
     const handleFormEvent = (e) => {
       setIsOperationalFormActive(Boolean(e.detail?.active));
     };
+    const handlePolicyEvent = (e) => {
+      setSelectedPolicyKey(e.detail?.policyKey || 'privacy');
+      setPolicyModalOpen(true);
+    };
+    const handleBizEvent = () => {
+      setBizModalOpen(true);
+    };
     window.addEventListener('larea-operational-form', handleFormEvent);
-    return () => window.removeEventListener('larea-operational-form', handleFormEvent);
+    window.addEventListener('larea-open-legal-policy', handlePolicyEvent);
+    window.addEventListener('larea-open-business-verification', handleBizEvent);
+    return () => {
+      window.removeEventListener('larea-operational-form', handleFormEvent);
+      window.removeEventListener('larea-open-legal-policy', handlePolicyEvent);
+      window.removeEventListener('larea-open-business-verification', handleBizEvent);
+    };
   }, []);
 
   React.useEffect(() => {
@@ -542,7 +597,17 @@ function MainAppShell() {
     });
   };
 
+  const resetCurrentUrlViewParams = () => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      clearChildViewUrlParams(p);
+      const qs = p.toString();
+      window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+    } catch (e) {}
+  };
+
   const handleSelectModule = (modId) => {
+    resetCurrentUrlViewParams();
     setActiveModuleId(modId);
     const targetModule = getModuleById(modId);
     const permitted = targetModule.menus.filter((m) => hasMenuAccess(m.id));
@@ -555,31 +620,36 @@ function MainAppShell() {
     if (modId === 'iam') {
       setUserViewMode('list');
       setSelectedUserForForm(null);
+      setPendingUrlUserId(null);
     }
+    setMenuResetKey((prev) => prev + 1);
     setIsLauncherOpen(false);
   };
 
   const handleSelectMenu = (menuId) => {
+    resetCurrentUrlViewParams();
     setActiveMenuId(menuId);
     if (menuId === 'users') {
       setUserViewMode('list');
       setSelectedUserForForm(null);
+      setPendingUrlUserId(null);
     }
     if (menuId === 'employees') {
       setEmployeeResetKey((prev) => prev + 1);
     }
+    setMenuResetKey((prev) => prev + 1);
     setIsLauncherOpen(false);
   };
 
   // Fallback to first accessible module if active selection is unpermitted
   React.useEffect(() => {
-    if (!hasAppAccess(activeModuleId)) {
+    if (activeUser && !hasAppAccess(activeModuleId)) {
       const firstAccessible = APP_MODULES.find((m) => hasAppAccess(m.id));
-      if (firstAccessible) {
+      if (firstAccessible && firstAccessible.id !== activeModuleId) {
         handleSelectModule(firstAccessible.id);
       }
     }
-  }, [activeModuleId, hasAppAccess]);
+  }, [activeUser, activeModuleId, hasAppAccess]);
 
   const handleSignOut = () => {
     setShowUserMenu(false);
@@ -681,84 +751,51 @@ function MainAppShell() {
         />
       </ErrorBoundary>
 
-      {/* 4. TIER 1: GLOBAL CONSOLIDATED TOP BAR (56px) - Always Mounted Across All Views */}
-      <header className="h-14 bg-[#0f172a] text-white flex items-center justify-between px-3 sm:px-4 sticky top-0 z-30 border-b border-slate-800/80 shadow-xs select-none gap-2">
-        {/* LEFT SIDE: 9-Dots Launcher Icon + Brand + Static Breadcrumb */}
-        <div className="flex items-center gap-3">
-          {/* Static 9-Dots App Launcher Icon (Single Entry Point to Switch Apps) */}
+      {/* 4. GLOBAL TOP BAR (56px) - Minimal, Clean, Uncluttered */}
+      <header className="h-14 bg-[#0f172a] text-white flex items-center justify-between px-4 sm:px-6 sticky top-0 z-30 border-b border-slate-800/80 select-none gap-3">
+        {/* LEFT SIDE: App Switcher + Current Workspace Name (No brand clutter or misleading breadcrumb) */}
+        <div className="flex items-center gap-3 min-w-0">
           <button
             type="button"
             onClick={() => handleToggleLauncher()}
-            aria-label={isLauncherOpen ? "Close Workspace Launcher (Esc)" : "Open Application Launcher (9-dots)"}
-            className={`p-2 rounded-lg transition cursor-pointer shadow-2xs group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+            aria-label={isLauncherOpen ? 'Close Applications (Esc)' : 'Open Applications'}
+            className={`p-2 rounded-lg transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
               isLauncherOpen
-                ? 'bg-blue-600 text-white border border-blue-500 shadow-blue-500/30'
-                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/60'
+                ? 'bg-blue-600 text-white'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
             }`}
-            title={isLauncherOpen ? "Close Workspace Launcher (Esc)" : "Open Application Launcher (9-dots)"}
+            title={isLauncherOpen ? 'Close Applications (Esc)' : 'Applications'}
           >
-            <LayoutGrid className="w-4 h-4 group-hover:scale-105 transition-transform"/>
+            <LayoutGrid className="w-4 h-4" />
           </button>
 
-          {/* Logo / Brand */}
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-xs text-white shadow-xs">
-              L
-            </div>
-            <span className="font-bold text-sm text-white tracking-tight">
-              Larea ERP
+          {!isLauncherOpen && activeModule && (
+            <span className="text-[15px] font-semibold text-slate-100 truncate">
+              {activeModule.name}
             </span>
-          </div>
-
-          <div className="h-4 w-[1px] bg-slate-800 hidden sm:block" />
-
-          {/* Static Location Breadcrumb (No dropdown, no menu switching) */}
-          {!isLauncherOpen && (
-            <div className="hidden sm:flex items-center gap-2">
-              <div
-                className="w-2 h-2 rounded-full"
-                style={{ backgroundColor: activeModule?.color }}
-              />
-              <div className="flex items-center gap-1.5 text-xs">
-                <span className="font-semibold text-slate-200">
-                  {activeModule?.name}
-                </span>
-                <span className="text-slate-500 font-light">/</span>
-                <span className="text-slate-400">
-                  {activeMenu?.label}
-                </span>
-              </div>
-            </div>
           )}
         </div>
 
-        {/* ========================================================================= */}
-        {/* RIGHT SIDE: Strict Order (Search -> Org Switcher -> Setup Wizard -> Theme -> Bell -> User) */}
-        {/* ========================================================================= */}
-        <div className="flex items-center gap-2 sm:gap-2.5">
-          {/* 1. Global Command Palette Search (Ctrl+K) */}
-          <button
-            type="button"
-            onClick={() => setIsCommandPaletteOpen(true)}
-            aria-label="Search & Commands (Ctrl+K)"
-            className="p-2 rounded-lg bg-slate-800/70 hover:bg-slate-800 border border-slate-700/60 text-slate-300 hover:text-white transition cursor-pointer shadow-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-            title="Search records, apps, or commands (Ctrl+K)"
-          >
-            <Search className="w-4 h-4" />
-          </button>
+        {/* RIGHT SIDE: Search (hidden on Main Menu to avoid duplicate search box), Company Selector, Alerts, Profile */}
+        <div className="flex items-center gap-2">
+          {/* 1. Search (Ctrl+K) - Only shown inside workspaces; Main Menu has its own centered search bar */}
+          {!isLauncherOpen && (
+            <button
+              type="button"
+              onClick={() => setIsCommandPaletteOpen(true)}
+              aria-label="Search (Ctrl+K)"
+              className="flex items-center gap-2 h-9 px-2.5 sm:px-3 rounded-lg bg-slate-800/70 hover:bg-slate-800 border border-slate-700/60 text-slate-300 hover:text-white text-sm transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              title="Search (Ctrl+K)"
+            >
+              <Search className="w-4 h-4 text-slate-400 shrink-0" />
+              <span className="hidden md:inline text-slate-400 text-xs">Search...</span>
+              <kbd className="hidden lg:inline px-1.5 py-0.5 text-[11px] rounded bg-slate-900/80 text-slate-400 border border-slate-700/80">
+                Ctrl K
+              </kbd>
+            </button>
+          )}
 
-          {/* 1b. Permission-Scoped AI Assistant */}
-          <button
-            type="button"
-            onClick={() => setIsAIAssistantOpen(true)}
-            aria-label="Ask AI Assistant"
-            className="p-2 rounded-lg bg-gradient-to-r from-purple-500/15 to-blue-500/15 hover:from-purple-500/25 hover:to-blue-500/25 border border-purple-500/30 text-purple-400 hover:text-purple-300 transition cursor-pointer shadow-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
-            title="Ask AI Assistant (Permission Scoped)"
-          >
-            <Sparkles className="w-4 h-4" />
-          </button>
-
-          {/* 2. Organization & Branch Switcher (Moved to Top-Right with Click-Outside) */}
+          {/* 2. Clean Single-Line Company & Branch Selector */}
           <div className="relative" ref={branchMenuRef}>
             <button
               type="button"
@@ -766,47 +803,30 @@ function MainAppShell() {
                 setShowBranchMenu(!showBranchMenu);
                 setShowUserMenu(false);
               }}
-              aria-label={`Current organization: ${currentOrganization?.legal_name || 'Organization'}, operating branch: ${isAllBranchesSelected ? 'All Branches (Consolidated)' : selectedBranchIds.length > 1 ? `${selectedBranchIds.length} Branches Selected` : (currentBranch?.name || 'Branch')}`}
+              aria-label={`Current company: ${currentOrganization?.legal_name || 'Company'}`}
               aria-haspopup="true"
               aria-expanded={showBranchMenu}
-              className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-800/70 hover:bg-slate-800 border border-slate-700/60 text-xs transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+              className="flex items-center gap-2 h-9 px-3 rounded-lg hover:bg-slate-800 text-sm text-slate-200 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             >
-              <div
-                className="w-5 h-5 rounded flex items-center justify-center text-white font-bold text-[10px]"
-                style={{ backgroundColor: currentAccent.primary }}
-                role="img"
-                aria-label={`Logo badge for ${currentOrganization?.legal_name || 'Organization'}`}
-              >
-                {currentOrganization?.legal_name ? currentOrganization.legal_name.slice(0, 1) : 'A'}
-              </div>
-              <div className="text-left rtl:text-right hidden sm:block">
-                <div className="font-semibold text-slate-200 tracking-tight leading-none text-xs truncate max-w-[140px]">
-                  {currentOrganization?.legal_name || 'Organization'}
-                </div>
-                <div className="text-[10px] text-slate-400 font-mono leading-none mt-0.5 truncate max-w-[140px] flex items-center gap-1">
-                  {isAllBranchesSelected ? (
-                    <>
-                      <Layers className="w-3 h-3 text-blue-400 shrink-0" />
-                      <span>All Branches (Consolidated)</span>
-                    </>
-                  ) : selectedBranchIds.length > 1 ? (
-                    <>
-                      <Layers className="w-3 h-3 text-blue-400 shrink-0" />
-                      <span>{selectedBranchIds.length} Branches Selected</span>
-                    </>
-                  ) : (
-                    <span>{userBranchesInCurrentOrg.find((b) => b.id === selectedBranchIds[0])?.name || currentBranch?.name || 'Branch'}</span>
-                  )}
-                </div>
-              </div>
-              <ChevronDown className="w-3.5 h-3.5 text-slate-400 ml-0.5 shrink-0" aria-hidden="true" />
+              <Building2 className="w-4 h-4 text-slate-400 shrink-0" />
+              <span className="font-medium truncate max-w-[150px] lg:max-w-[200px] hidden sm:inline">
+                {currentOrganization?.legal_name || 'Company'}
+              </span>
+              {!isAllBranchesSelected && (
+                <span className="hidden xl:inline px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 text-xs font-medium truncate max-w-[110px]">
+                  {selectedBranchIds.length > 1
+                    ? `${selectedBranchIds.length} branches`
+                    : userBranchesInCurrentOrg.find((b) => b.id === selectedBranchIds[0])?.name || currentBranch?.name}
+                </span>
+              )}
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" aria-hidden="true" />
             </button>
 
-            {/* Dropdown Menu */}
+            {/* Company & Branch Dropdown */}
             {showBranchMenu && (
-              <div className="absolute right-0 rtl:left-0 rtl:right-auto mt-1.5 w-72 bg-slate-900 border border-slate-700 rounded-xl shadow-xl py-2 z-40 text-xs animate-fadeIn">
-                <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  {t('company')}
+              <div className="absolute right-0 rtl:left-0 rtl:right-auto mt-1.5 w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl py-2 z-40 text-sm animate-fadeIn text-slate-800 dark:text-slate-200">
+                <div className="px-3.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  {t('company') || 'Company'}
                 </div>
                 {userOrganizations.map((org) => {
                   const isOrgActive = org.id === currentOrganization?.id;
@@ -818,73 +838,66 @@ function MainAppShell() {
                         switchOrganization(org.id);
                         setShowBranchMenu(false);
                       }}
-                      className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between hover:bg-slate-800 transition cursor-pointer ${isOrgActive ? 'text-blue-400 font-semibold bg-slate-800/60' : 'text-slate-300'
-                        }`}
+                      className={`w-full px-3.5 py-2 text-left rtl:text-right flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer ${
+                        isOrgActive
+                          ? 'text-blue-600 dark:text-blue-400 font-semibold bg-blue-50/50 dark:bg-slate-800/60'
+                          : 'text-slate-700 dark:text-slate-300'
+                      }`}
                     >
                       <span className="truncate">{org.legal_name}</span>
-                      <span className="font-mono text-[10px] text-slate-500 shrink-0 ml-2">
-                        {org.base_currency}
-                      </span>
+                      {isOrgActive && <Check className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 ml-2" />}
                     </button>
                   );
                 })}
 
-                <div className="h-[1px] bg-slate-800 my-2" />
+                <div className="h-px bg-slate-100 dark:bg-slate-800 my-1.5" />
 
-                <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  {t('operating_branch')}
+                <div className="px-3.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  Branches
                 </div>
 
-                {/* All Branches (Consolidated View) Button */}
                 <button
                   type="button"
                   onClick={() => {
                     selectAllBranches();
                     setShowBranchMenu(false);
                   }}
-                  className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between rounded-lg transition cursor-pointer ${
+                  className={`w-full px-3.5 py-2 text-left rtl:text-right flex items-center justify-between transition cursor-pointer ${
                     isAllBranchesSelected
-                      ? 'text-blue-400 font-bold bg-slate-800/80'
-                      : 'text-slate-300 hover:bg-slate-800/50'
+                      ? 'text-blue-600 dark:text-blue-400 font-semibold bg-blue-50/50 dark:bg-slate-800/60'
+                      : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50'
                   }`}
                 >
-                  <div className="flex items-center gap-2">
-                    <Layers className="w-3.5 h-3.5 text-blue-400" />
-                    <span>All Branches (Consolidated)</span>
-                  </div>
-                  {isAllBranchesSelected && <Check className="w-3.5 h-3.5 text-blue-400" />}
+                  <span>All Branches</span>
+                  {isAllBranchesSelected && <Check className="w-4 h-4 text-blue-600 dark:text-blue-400" />}
                 </button>
 
-                {/* Individual Branches with Checkboxes */}
                 {userBranchesInCurrentOrg.map((br) => {
                   const isSelected = selectedBranchIds.includes(br.id);
                   return (
                     <button
                       key={br.id}
                       type="button"
-                      onClick={() => {
-                        toggleBranchSelection(br.id);
-                      }}
-                      className={`w-full px-3 py-2 text-left rtl:text-right flex items-center justify-between rounded-lg hover:bg-slate-800/60 transition cursor-pointer ${
-                        isSelected ? 'text-blue-400 font-semibold bg-slate-800/40' : 'text-slate-300'
+                      onClick={() => toggleBranchSelection(br.id)}
+                      className={`w-full px-3.5 py-2 text-left rtl:text-right flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/60 transition cursor-pointer ${
+                        isSelected
+                          ? 'text-blue-600 dark:text-blue-400 font-semibold'
+                          : 'text-slate-700 dark:text-slate-300'
                       }`}
                     >
-                      <div className="flex items-center gap-2 truncate">
+                      <div className="flex items-center gap-2.5 truncate">
                         <div
                           className={`w-4 h-4 rounded border flex items-center justify-center transition shrink-0 ${
-                            isSelected ? 'bg-blue-600 border-blue-500 text-white' : 'border-slate-600 bg-slate-800/80'
+                            isSelected
+                              ? 'bg-blue-600 border-blue-600 text-white'
+                              : 'border-slate-300 dark:border-slate-600'
                           }`}
                         >
                           {isSelected && <Check className="w-3 h-3 text-white" />}
                         </div>
-                        <div className="truncate">
-                          <div>{br.name}</div>
-                          <div className="text-[10px] text-slate-500">{br.city}</div>
-                        </div>
+                        <span className="truncate">{br.name}</span>
                       </div>
-                      <span className="font-mono text-[10px] text-slate-500 shrink-0 ml-2">
-                        {br.code}
-                      </span>
+                      <span className="text-xs text-slate-400 shrink-0 ml-2">{br.city}</span>
                     </button>
                   );
                 })}
@@ -892,32 +905,11 @@ function MainAppShell() {
             )}
           </div>
 
-
-
-          {/* 4. Dark/Light Theme Toggle */}
-          <button
-            type="button"
-            onClick={toggleThemeQuick}
-            aria-label={`Cycle theme. Current theme mode is ${themeMode}`}
-            className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
-            title={`Mode: ${themeMode} (${effectiveTheme}). Click to cycle.`}
-          >
-            {themeMode === 'system' ? (
-              <Laptop className="w-4 h-4 text-slate-300" aria-hidden="true" />
-            ) : effectiveTheme === 'dark' ? (
-              <Moon className="w-4 h-4 text-violet-300" aria-hidden="true" />
-            ) : (
-              <Sun className="w-4 h-4 text-amber-300" aria-hidden="true" />
-            )}
-          </button>
-
-          {/* 5. Dynamic Enterprise Notifications Bell */}
+          {/* 3. Notifications & Internal Messages */}
           <NotificationBell onNavigate={handleSelectMenu} />
-
-          {/* Real-time Internal Chat & Discuss Popover */}
           <ChatPopover />
 
-          {/* 6. User Profile Avatar & Dropdown (with Click-Outside) */}
+          {/* 4. Minimal User Profile Menu */}
           <div className="relative" ref={userMenuRef}>
             <button
               type="button"
@@ -925,42 +917,77 @@ function MainAppShell() {
                 setShowUserMenu(!showUserMenu);
                 setShowBranchMenu(false);
               }}
-              aria-label={`User account menu for ${activeUser?.full_name || 'User'}`}
+              aria-label={`Account menu for ${activeUser?.full_name || 'User'}`}
               aria-haspopup="menu"
               aria-expanded={showUserMenu}
-              className="flex items-center gap-2 p-1 rounded-lg hover:bg-slate-800/70 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+              className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-slate-800 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             >
               <div
-                className="w-7 h-7 rounded-full text-white flex items-center justify-center font-bold text-xs ring-2 ring-slate-800"
+                className="w-7 h-7 rounded-full text-white flex items-center justify-center font-semibold text-xs"
                 style={{ backgroundColor: currentAccent.primary }}
-                role="img"
-                aria-label={`Avatar for ${activeUser?.full_name || 'User'}`}
               >
                 {activeUser?.full_name
                   ? activeUser.full_name.split(' ').filter(Boolean).map((n) => n[0]).join('').slice(0, 2).toUpperCase()
-                  : (activeUser?.email?.slice(0, 2).toUpperCase() || activeUser?.username?.slice(0, 2).toUpperCase() || 'AU')}
+                  : (activeUser?.email?.slice(0, 2).toUpperCase() || 'U')}
               </div>
-              <div className="text-left rtl:text-right hidden sm:block">
-                <div className="text-xs font-semibold text-slate-200 leading-none">
-                  {activeUser?.full_name || activeUser?.email || 'Authenticated User'}
-                </div>
-                <div className="text-[10px] text-slate-400 leading-none mt-0.5 truncate max-w-[120px]">
-                  {activeUser?.is_superadmin ? 'Root Superadmin' : (activeUser?.role || userMemberships[0]?.role || 'Standard User')}
-                </div>
-              </div>
+              <span className="text-sm font-medium text-slate-200 hidden lg:inline truncate max-w-[110px]">
+                {activeUser?.full_name ? activeUser.full_name.split(' ')[0] : 'Account'}
+              </span>
               <ChevronDown className="w-3.5 h-3.5 text-slate-400 hidden sm:block shrink-0" aria-hidden="true" />
             </button>
 
-            {/* Profile Dropdown */}
             {showUserMenu && (
-              <div className="absolute right-0 rtl:left-0 rtl:right-auto mt-1.5 w-64 bg-slate-900 border border-slate-700 rounded-xl shadow-xl py-1.5 z-40 text-xs animate-fadeIn text-slate-300">
-                <div className="px-3 py-2 border-b border-slate-800">
-                  <div className="font-semibold text-white">{activeUser?.full_name || 'Authenticated User'}</div>
-                  <div className="text-[11px] text-slate-400 font-mono truncate">{activeUser?.email}</div>
-                  <div className="mt-1 inline-block px-1.5 py-0.5 bg-blue-900/60 text-blue-300 border border-blue-700 rounded text-[10px] font-medium">
-                    {activeUser?.is_superadmin ? 'Root Superadmin' : (activeUser?.role || userMemberships[0]?.role || 'Member')}
+              <div className="absolute right-0 rtl:left-0 rtl:right-auto mt-1.5 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl py-2 z-40 text-sm animate-fadeIn text-slate-700 dark:text-slate-200">
+                <div className="px-3.5 py-2 border-b border-slate-100 dark:border-slate-800">
+                  <div className="font-semibold text-slate-900 dark:text-white truncate">
+                    {activeUser?.full_name || 'User'}
+                  </div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                    {activeUser?.email}
                   </div>
                 </div>
+
+                {/* Quick Theme Switcher */}
+                <div className="px-3.5 py-2.5 border-b border-slate-100 dark:border-slate-800">
+                  <div className="text-xs font-medium text-slate-400 mb-1.5">Theme</div>
+                  <div className="grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800">
+                    {[
+                      { id: 'light', label: 'Light', icon: Sun },
+                      { id: 'dark', label: 'Dark', icon: Moon },
+                      { id: 'system', label: 'Auto', icon: Laptop },
+                    ].map((opt) => {
+                      const Icon = opt.icon;
+                      const active = themeMode === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setThemeMode(opt.id)}
+                          className={`flex items-center justify-center gap-1 py-1 rounded-md text-xs font-medium transition cursor-pointer ${
+                            active
+                              ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-2xs font-semibold'
+                              : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                          }`}
+                        >
+                          <Icon className="w-3.5 h-3.5" />
+                          <span>{opt.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAIAssistantOpen(true);
+                    setShowUserMenu(false);
+                  }}
+                  className="w-full px-3.5 py-2 text-left rtl:text-right hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center gap-2.5 cursor-pointer"
+                >
+                  <Sparkles className="w-4 h-4 text-purple-500" />
+                  <span>AI Assistant</span>
+                </button>
 
                 <button
                   type="button"
@@ -968,46 +995,20 @@ function MainAppShell() {
                     setIsProfileModalOpen(true);
                     setShowUserMenu(false);
                   }}
-                  className="w-full px-3 py-2 text-left rtl:text-right hover:bg-slate-800 flex items-center gap-2 text-slate-300 cursor-pointer"
+                  className="w-full px-3.5 py-2 text-left rtl:text-right hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center gap-2.5 cursor-pointer"
                 >
-                  <SlidersHorizontal className="w-3.5 h-3.5 text-blue-400" />
-                  <span>{t('profile_settings')}</span>
+                  <SlidersHorizontal className="w-4 h-4 text-blue-500" />
+                  <span>{t('profile_settings') || 'Preferences'}</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleSelectModule('iam');
-                    handleSelectMenu('users');
-                    setShowUserMenu(false);
-                  }}
-                  className="w-full px-3 py-2 text-left rtl:text-right hover:bg-slate-800 flex items-center gap-2 text-slate-300 cursor-pointer"
-                >
-                  <Users className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Users & Identities</span>
-                </button>
+                <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleSelectModule('iam');
-                    handleSelectMenu('roles');
-                    setShowUserMenu(false);
-                  }}
-                  className="w-full px-3 py-2 text-left rtl:text-right hover:bg-slate-800 flex items-center gap-2 text-slate-300 cursor-pointer"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-violet-400" />
-                  <span>Roles & Permissions Matrix</span>
-                </button>
-
-                {/* Red Sign Out Action */}
-                <div className="h-[1px] bg-slate-800 my-1" />
                 <button
                   type="button"
                   onClick={handleSignOut}
-                  className="w-full px-3 py-2 text-left rtl:text-right hover:bg-rose-500/10 flex items-center gap-2 text-rose-400 hover:text-rose-300 cursor-pointer transition font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+                  className="w-full px-3.5 py-2 text-left rtl:text-right hover:bg-rose-50 dark:hover:bg-rose-500/10 flex items-center gap-2.5 text-rose-600 dark:text-rose-400 cursor-pointer transition font-medium"
                 >
-                  <LogOut className="w-3.5 h-3.5 text-rose-400" />
+                  <LogOut className="w-4 h-4" />
                   <span>{t('sign_out') || 'Sign Out'}</span>
                 </button>
               </div>
@@ -1045,34 +1046,34 @@ function MainAppShell() {
                 <ShieldAlert className="w-8 h-8" />
               </div>
               <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-                403 Forbidden • Access Denied
+                Access Restricted
               </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">
-                Access Denied: You do not have the required permissions for this menu.
+              <p className="text-sm text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">
+                You do not have permission to view this section.
               </p>
               <div className="mt-6 flex items-center gap-3">
                 <button
                   type="button"
                   onClick={() => handleToggleLauncher(true)}
-                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
+                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow-xs transition cursor-pointer"
                 >
-                  Open Workspace Launcher
+                  Back to Applications
                 </button>
               </div>
             </div>
           ) : (
             <>
               {/* Unified Configuration & Settings Screens */}
-              {['hr_config', 'salary_rules', 'wps_config', 'api_keys', 'orgs', 'windows_sso', 'compliance_alerts', 'mail_servers', 'mail_templates', 'mail_logs', 'sms_gateways', 'whatsapp_configs', 'whatsapp_accounts', 'whatsapp_templates', 'communication_logs', 'sms_whatsapp_logs', 'automation_triggers'].includes(activeMenuId) && (
+              {['hr_config', 'salary_rules', 'wps_config', 'api_keys', 'orgs', 'general_settings', 'about', 'paper_format', 'windows_sso', 'compliance_alerts', 'mail_servers', 'mail_templates', 'mail_logs', 'sms_gateways', 'whatsapp_configs', 'whatsapp_accounts', 'whatsapp_templates', 'communication_logs', 'sms_whatsapp_logs', 'automation_triggers'].includes(activeMenuId) && (
                 <div className="p-4 sm:p-6">
-                  <ConfigurationView activeMenuId={activeMenuId} />
+                  <ConfigurationView key={`cfg-${activeMenuId}-${menuResetKey}`} activeMenuId={activeMenuId} />
                 </div>
               )}
 
               {/* Module HR: Attendance Logs */}
               {activeModuleId === 'hr' && activeMenuId === 'attendances' && (
                 <ViewEngine
-                  key={`hr-attendances-${currentOrganization?.id || ''}-${currentBranch?.id || ''}`}
+                  key={`hr-attendances-${menuResetKey}-${currentOrganization?.id || ''}-${currentBranch?.id || ''}`}
                   initialView="list"
                   schema={VIEW_SCHEMA}
                   initialData={attendanceRecords || []}
@@ -1083,7 +1084,7 @@ function MainAppShell() {
               {activeModuleId === 'hr' && activeMenuId === 'rosters' && (
                 <div className="p-4 sm:p-6 space-y-4">
                   <ViewEngine
-                    key="hr-rosters"
+                    key={`hr-rosters-${menuResetKey}`}
                     initialView="gantt"
                     schema={SHIFT_ROSTER_VIEW_SCHEMA}
                     initialData={rosterRecords || []}
@@ -1098,6 +1099,7 @@ function MainAppShell() {
               {activeModuleId === 'hr' && activeMenuId === 'contracts' && (
                 <div className="p-4 sm:p-6">
                   <ContractListView
+                    key={`contracts-${menuResetKey}-${currentOrganization?.id || ''}-${currentBranch?.id || ''}`}
                     onSelectEmployee={(empId) => {
                       setTargetContractEmployeeId(empId);
                       handleSelectMenu('employees');
@@ -1109,7 +1111,7 @@ function MainAppShell() {
               {/* Module HR: Leave & Time Off */}
               {activeModuleId === 'hr' && activeMenuId === 'leaves' && (
                 <div className="p-4 sm:p-6">
-                  <LeaveManagementView />
+                  <LeaveManagementView key={`leaves-${menuResetKey}-${currentOrganization?.id || ''}`} />
                 </div>
               )}
 
@@ -1132,21 +1134,32 @@ function MainAppShell() {
                   {userViewMode === 'list' ? (
                     <UserListView
                       onSelectUser={(u) => {
+                        setPendingUrlUserId(null);
                         setSelectedUserForForm(u);
                         setUserViewMode('form');
                       }}
                       onCreateNewUser={() => {
+                        setPendingUrlUserId(null);
                         setSelectedUserForForm(null);
                         setUserViewMode('form');
                       }}
                     />
+                  ) : pendingUrlUserId && (!users || users.length === 0) ? (
+                    <div className="py-16 flex flex-col items-center justify-center gap-3 text-slate-400">
+                      <div className="w-7 h-7 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                      <span className="text-sm">Loading user profile...</span>
+                    </div>
                   ) : (
                     <UserFormView
                       key={selectedUserForForm?.id || 'new'}
                       user={selectedUserForForm}
                       usersList={users || []}
-                      onSelectUser={(u) => setSelectedUserForForm(u)}
+                      onSelectUser={(u) => {
+                        setPendingUrlUserId(null);
+                        setSelectedUserForForm(u);
+                      }}
                       onBackToList={() => {
+                        setPendingUrlUserId(null);
                         setUserViewMode('list');
                         setSelectedUserForForm(null);
                       }}
@@ -1158,7 +1171,7 @@ function MainAppShell() {
               {/* Module IAM: Roles & Permissions Matrix */}
               {activeModuleId === 'iam' && activeMenuId === 'roles' && (
                 <div className="p-4 sm:p-6">
-                  <PermissionMatrix />
+                  <PermissionMatrix key={`roles-${menuResetKey}`} />
                 </div>
               )}
 
@@ -1171,7 +1184,7 @@ function MainAppShell() {
 
               {/* Module Payroll: Batches */}
               {activeModuleId === 'payroll' && activeMenuId === 'batches' && (
-                <div className="p-4 sm:p-6" key={`payroll-batches-${currentOrganization?.id || ''}-${currentBranch?.id || ''}`}>
+                <div className="p-4 sm:p-6" key={`payroll-batches-${menuResetKey}-${currentOrganization?.id || ''}-${currentBranch?.id || ''}`}>
                   <PayrollBatchesView />
                 </div>
               )}
@@ -1230,8 +1243,8 @@ function AppContent() {
       <div className="min-h-screen bg-[#0f172a] flex flex-col items-center justify-center font-sans text-slate-100 select-none">
         <div className="flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-          <span className="text-xs font-semibold text-slate-400 font-mono tracking-wide">
-            Connecting to PostgreSQL Core Platform...
+          <span className="text-sm font-medium text-slate-300">
+            Loading workspace...
           </span>
         </div>
       </div>

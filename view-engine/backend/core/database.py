@@ -166,6 +166,96 @@ async def init_schema():
             ON CONFLICT (key) DO NOTHING;
         """, default_sso_cfg)
 
+        # 1b. Standard System Lookup Tables (Countries and Currencies)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS system_countries (
+                code VARCHAR(2) PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                phone_code VARCHAR(10)
+            );
+
+            CREATE TABLE IF NOT EXISTS system_currencies (
+                code VARCHAR(3) PRIMARY KEY,
+                name VARCHAR(50) NOT NULL,
+                symbol VARCHAR(10)
+            );
+
+            INSERT INTO system_countries (code, name, phone_code) VALUES
+                ('QA', 'Qatar', '+974'),
+                ('SA', 'Saudi Arabia', '+966'),
+                ('AE', 'United Arab Emirates', '+971'),
+                ('KW', 'Kuwait', '+965'),
+                ('OM', 'Oman', '+968'),
+                ('BH', 'Bahrain', '+973'),
+                ('GB', 'United Kingdom', '+44'),
+                ('US', 'United States', '+1'),
+                ('IN', 'India', '+91'),
+                ('PH', 'Philippines', '+63'),
+                ('EG', 'Egypt', '+20'),
+                ('BD', 'Bangladesh', '+880'),
+                ('PK', 'Pakistan', '+92'),
+                ('NP', 'Nepal', '+977'),
+                ('LK', 'Sri Lanka', '+94'),
+                ('JO', 'Jordan', '+962'),
+                ('LB', 'Lebanon', '+961'),
+                ('SY', 'Syria', '+963'),
+                ('IQ', 'Iraq', '+964'),
+                ('YE', 'Yemen', '+967'),
+                ('SD', 'Sudan', '+249'),
+                ('TN', 'Tunisia', '+216'),
+                ('MA', 'Morocco', '+212'),
+                ('DZ', 'Algeria', '+213'),
+                ('TR', 'Turkey', '+90'),
+                ('DE', 'Germany', '+49'),
+                ('FR', 'France', '+33'),
+                ('IT', 'Italy', '+39'),
+                ('ES', 'Spain', '+34'),
+                ('CA', 'Canada', '+1'),
+                ('AU', 'Australia', '+61'),
+                ('SG', 'Singapore', '+65'),
+                ('MY', 'Malaysia', '+60'),
+                ('ID', 'Indonesia', '+62'),
+                ('CN', 'China', '+86'),
+                ('JP', 'Japan', '+81'),
+                ('KR', 'South Korea', '+82'),
+                ('ZA', 'South Africa', '+27'),
+                ('KE', 'Kenya', '+254'),
+                ('NG', 'Nigeria', '+234'),
+                ('GH', 'Ghana', '+233'),
+                ('CH', 'Switzerland', '+41'),
+                ('NL', 'Netherlands', '+31'),
+                ('SE', 'Sweden', '+46'),
+                ('NO', 'Norway', '+47'),
+                ('BR', 'Brazil', '+55'),
+                ('MX', 'Mexico', '+52')
+            ON CONFLICT (code) DO UPDATE 
+            SET name = EXCLUDED.name, phone_code = EXCLUDED.phone_code;
+
+            INSERT INTO system_currencies (code, name, symbol) VALUES
+                ('QAR', 'Qatari Riyal', 'QR'),
+                ('USD', 'US Dollar', '$'),
+                ('EUR', 'Euro', '€'),
+                ('GBP', 'British Pound', '£'),
+                ('SAR', 'Saudi Riyal', 'SR'),
+                ('AED', 'UAE Dirham', 'AED'),
+                ('KWD', 'Kuwaiti Dinar', 'KD'),
+                ('BHD', 'Bahraini Dinar', 'BD'),
+                ('OMR', 'Omani Rial', 'OMR'),
+                ('INR', 'Indian Rupee', '₹'),
+                ('PHP', 'Philippine Peso', '₱'),
+                ('EGP', 'Egyptian Pound', 'E£'),
+                ('CAD', 'Canadian Dollar', 'CA$'),
+                ('AUD', 'Australian Dollar', 'A$'),
+                ('SGD', 'Singapore Dollar', 'S$'),
+                ('JPY', 'Japanese Yen', '¥'),
+                ('CHF', 'Swiss Franc', 'CHF'),
+                ('CNY', 'Chinese Yuan', '¥'),
+                ('TRY', 'Turkish Lira', '₺'),
+                ('ZAR', 'South African Rand', 'R')
+            ON CONFLICT (code) DO UPDATE 
+            SET name = EXCLUDED.name, symbol = EXCLUDED.symbol;
+        """)
+
         # 2. Roles & Permissions table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS roles (
@@ -638,6 +728,8 @@ async def init_schema():
             ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS amendment_of_id UUID REFERENCES employee_contracts(id) ON DELETE SET NULL;
             ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS amendment_reason TEXT;
             ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS revision_number INT DEFAULT 1;
+            ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS grade_id VARCHAR(50) REFERENCES employee_grades(id) ON DELETE SET NULL;
+            CREATE INDEX IF NOT EXISTS idx_employee_contracts_grade_id ON employee_contracts(grade_id);
 
             -- SOX 404 Maker-Checker Dual Control columns & constraint for employee_contracts
             ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
@@ -781,7 +873,7 @@ async def init_schema():
             # Overtime presets
             ("OT_BASIC_120", "Overtime 120% (Basic Only)", "overtime", "Hours", 0.00, "basic_only", 120.00, "hourly_multiplier", "[]", "overtime_basic", True),
             ("OT_BASIC_HOUSING_120", "Overtime 120% (Basic + Housing)", "overtime", "Hours", 0.00, "basic_plus_housing", 120.00, "hourly_multiplier", '["ALW_HOUSING"]', "overtime_basic_housing", True),
-            ("OT_QATAR_DAY_125", "Statutory Daytime Overtime 125% (Basic)", "overtime", "Hours", 0.00, "basic_only", 125.00, "hourly_multiplier", "[]", "overtime_basic", True),
+            ("OT_QATAR_DAY_125", "Daytime Overtime 125% (Basic)", "overtime", "Hours", 0.00, "basic_only", 125.00, "hourly_multiplier", "[]", "overtime_basic", True),
             ("OT_QATAR_HOLIDAY_150", "Night / Friday / Holiday Overtime 150% (Basic)", "overtime", "Hours", 0.00, "basic_only", 150.00, "hourly_multiplier", "[]", "overtime_basic", True),
             # Task / Trips presets
             ("TASK_TRIP_STD", "Standard Delivery / Transport Trip", "task_benefit", "Trips", 50.00, "basic_only", 100.00, "piece_rate", "[]", "trip_completion", True),
@@ -910,14 +1002,14 @@ async def init_schema():
             CREATE INDEX IF NOT EXISTS idx_leave_requests_branch_id ON leave_requests(branch_id);
         """)
 
-        # Seed default Qatar Labour Law leave_types
+        # Seed default leave_types
         seed_leave_types = [
-            ("LEAVE_ANNUAL", "Annual Paid Leave (Qatar Art. 79)", 21, 100.00, "[]", False, True),
-            ("LEAVE_SICK_FULL", "Sick Leave - Tier 1 Full Pay (1-14 Days, Art. 82)", 14, 100.00, "[]", True, True),
-            ("LEAVE_SICK_HALF", "Sick Leave - Tier 2 Half Pay (15-42 Days, Art. 82)", 28, 50.00, "[]", True, True),
-            ("LEAVE_UNPAID", "Authorized Unpaid Leave / Absence", 30, 0.00, '["ALW_HOUSING", "ALW_TRANSPORT"]', False, True),
-            ("LEAVE_MATERNITY", "Statutory Maternity Leave (50 Days, Art. 96)", 50, 100.00, "[]", True, True),
-            ("LEAVE_HAJJ", "Hajj Pilgrimage Special Leave (Art. 83)", 20, 0.00, "[]", False, True),
+            ("LEAVE_ANNUAL", "Annual Paid Leave", 21, 100.00, "[]", False, True),
+            ("LEAVE_SICK_FULL", "Sick Leave - Full Pay (1-14 Days)", 14, 100.00, "[]", True, True),
+            ("LEAVE_SICK_HALF", "Sick Leave - Half Pay (15-42 Days)", 28, 50.00, "[]", True, True),
+            ("LEAVE_UNPAID", "Unpaid Leave", 30, 0.00, '["ALW_HOUSING", "ALW_TRANSPORT"]', False, True),
+            ("LEAVE_MATERNITY", "Maternity Leave (50 Days)", 50, 100.00, "[]", True, True),
+            ("LEAVE_HAJJ", "Hajj Pilgrimage Leave", 20, 0.00, "[]", False, True),
         ]
         for lt_id, lt_name, lt_max, lt_pct, lt_ded, lt_att, lt_act in seed_leave_types:
             await conn.execute("""
@@ -932,7 +1024,7 @@ async def init_schema():
             ("ALW_TRANSPORT", "Transport Allowance", "allowance", "fixed_amount", 1000.00, 0.00, False, "TRANSPORT", True),
             ("ALW_PHONE", "Mobile & Telecom Utility", "allowance", "grade_based", 300.00, 0.00, False, "TELECOM", True),
             ("ALW_FOOD", "Food & Subsistence Allowance", "allowance", "fixed_amount", 500.00, 0.00, False, "FOOD", True),
-            ("DED_PENSION", "Statutory Pension / Social Insurance", "deduction", "percentage_of_base", 0.00, 5.00, False, "GOSI", True),
+            ("DED_PENSION", "Pension / Social Insurance", "deduction", "percentage_of_base", 0.00, 5.00, False, "GOSI", True),
         ]
         for r_id, r_name, r_cat, r_calc, r_def, r_pct, r_tax, r_wps, r_act in seed_rules:
             await conn.execute("""
@@ -1454,14 +1546,14 @@ async def init_schema():
                     "00000000-0000-0000-0000-000000000020",
                     "Monthly Payslip Notification",
                     "payroll.payslip",
-                    "Official Salary Statement for {{month}} — {{employee_name}}",
+                    "Salary Statement for {{month}} — {{employee_name}}",
                     """<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #1e293b; max-width: 600px; line-height: 1.6;">
   <div style="border-bottom: 2px solid #0284c7; padding-bottom: 12px; margin-bottom: 16px;">
-    <h2 style="margin: 0; color: #0f172a; font-size: 18px;">APEX GLOBAL ENTERPRISES Q.P.S.C.</h2>
-    <p style="margin: 4px 0 0; color: #64748b; font-size: 12px;">Electronic Wage Protection System (WPS) Payslip Notification</p>
+    <h2 style="margin: 0; color: #0f172a; font-size: 18px;">{{company_name}}</h2>
+    <p style="margin: 4px 0 0; color: #64748b; font-size: 12px;">Monthly Payslip Statement</p>
   </div>
   <p>Dear <strong>{{employee_name}}</strong>,</p>
-  <p>Your official salary statement for the period of <strong>{{month}}</strong> has been calculated and disbursed to your registered banking IBAN in compliance with State of Qatar Ministry of Labour Wage Protection System (WPS) guidelines.</p>
+  <p>Your salary statement for <strong>{{month}}</strong> has been processed for transfer to your registered bank account.</p>
   
   <table style="width: 100%; border-collapse: collapse; margin: 18px 0; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
     <tr>
@@ -1481,7 +1573,7 @@ async def init_schema():
       <td style="padding: 10px 14px; color: #dc2626; border-bottom: 1px solid #f1f5f9;">-{{deductions}} QAR</td>
     </tr>
     <tr style="background-color: #f0fdf4;">
-      <td style="padding: 12px 14px; font-weight: 700; color: #166534;">Net Disbursement</td>
+      <td style="padding: 12px 14px; font-weight: 700; color: #166534;">Net Amount</td>
       <td style="padding: 12px 14px; font-weight: 700; color: #15803d; font-size: 16px;">{{net_salary}} QAR</td>
     </tr>
     <tr>
@@ -1490,9 +1582,9 @@ async def init_schema():
     </tr>
   </table>
 
-  <p>Your official Qatar WPS-compliant payslip report has been attached to this email as a PDF document for your records.</p>
+  <p>Your payslip has been attached to this email as a PDF document for your records.</p>
   <p style="margin-top: 24px; color: #94a3b8; font-size: 11px; border-top: 1px solid #e2e8f0; padding-top: 12px;">
-    Confidentiality Notice: This electronic salary communication is intended solely for the designated recipient. If you have questions regarding your compensation or banking transfer, please contact payroll@company.local.
+    Confidential: This salary statement is intended solely for the recipient.
   </p>
 </div>""",
                     True,
@@ -1548,13 +1640,13 @@ async def init_schema():
                     "00000000-0000-0000-0000-000000000023",
                     "Employment Contract Notice",
                     "hr.contract",
-                    "Corporate Contract Notification — {{employee_name}}",
+                    "Employment Contract Update — {{employee_name}}",
                     """<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #1e293b; max-width: 600px; line-height: 1.6;">
-  <h3 style="color: #0f172a; margin-top: 0;">Employment Contract Record Notice</h3>
+  <h3 style="color: #0f172a; margin-top: 0;">Employment Contract Update</h3>
   <p>Dear <strong>{{employee_name}}</strong>,</p>
-  <p>This is an automated confirmation that your employment contract record has been updated and archived in the enterprise HR directory.</p>
-  <p>Please review your contract terms and retain this notice for your statutory employment records.</p>
-  <p>Legal & Compliance Directorate<br>{{company_name}}</p>
+  <p>Your employment contract record has been updated in our HR directory.</p>
+  <p>Please review your contract terms and keep a copy for your personal records.</p>
+  <p>Human Resources<br>{{company_name}}</p>
 </div>""",
                     False,
                     None,
@@ -1791,8 +1883,8 @@ async def init_schema():
                     ) VALUES (
                         $1, $2, 'payslip_notice_v1', 'UTILITY', 'en_US', 'DOCUMENT',
                         NULL,
-                        'Dear {{1}},\n\nYour official salary statement for the month of {{2}} has been confirmed and disbursed via WPS. Your net payment is {{3}} QAR.\n\nPlease find your official payslip attached.',
-                        'Apex Global Enterprises • WPS Payroll',
+                        'Dear {{1}},\n\nYour salary statement for {{2}} has been processed. Your net payment is {{3}} QAR.\n\nPlease find your payslip attached.',
+                        'HR & Payroll',
                         '[{"type": "QUICK_REPLY", "text": "Acknowledge Receipt"}, {"type": "URL", "text": "View Portal", "url": "https://erp.company.local/portal"}]',
                         'meta_tmpl_98234710293847', 'APPROVED', 'payroll.payslip',
                         '{"1": "employee_name", "2": "month", "3": "net_salary"}'
@@ -1823,8 +1915,8 @@ async def init_schema():
                     ) VALUES (
                         $1, $2, 'contract_renewal_notice_v1', 'UTILITY', 'en_US', 'NONE',
                         NULL,
-                        'Dear {{1}},\n\nThis is a notification regarding your employment contract (Ref: {{2}}). Please review your renewed terms with the HR Compliance Office before {{3}}.',
-                        'HR Compliance Office • Apex Global',
+                        'Dear {{1}},\n\nThis is a notification regarding your employment contract (Ref: {{2}}). Please review your renewed terms with HR before {{3}}.',
+                        'Human Resources',
                         NULL,
                         'meta_tmpl_56473829104829', 'APPROVED', 'hr.contract',
                         '{"1": "employee_name", "2": "contract_reference", "3": "expiry_date"}'
@@ -1874,7 +1966,7 @@ async def init_schema():
 
         standard_depts = [
             ("Operations", "OPS", "Core enterprise operations and logistics"),
-            ("Human Resources", "HR", "Personnel management, recruitment, and compliance"),
+            ("Human Resources", "HR", "Personnel management, recruitment, and employee relations"),
             ("Finance", "FIN", "Corporate finance, payroll, and accounting"),
             ("Engineering", "ENG", "Software engineering and infrastructure"),
             ("Executive Office", "EXEC", "Executive management and strategy"),
@@ -2065,7 +2157,7 @@ async def init_schema():
             CREATE OR REPLACE FUNCTION prevent_audit_log_tampering()
             RETURNS TRIGGER AS $$
             BEGIN
-                RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: audit_logs is an append-only cryptographic ledger. UPDATE, DELETE, and TRUNCATE operations are strictly prohibited.'
+                RAISE EXCEPTION 'Audit log entries are append-only. UPDATE, DELETE, and TRUNCATE operations are not permitted.'
                     USING ERRCODE = '55000';
             END;
             $$ LANGUAGE plpgsql;
@@ -2136,7 +2228,7 @@ async def init_schema():
             BEGIN
                 IF TG_OP = 'DELETE' THEN
                     IF OLD.status IN ('active', 'approved', 'posted') THEN
-                        RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot delete contract % with status %. Active/approved contracts are immutable records.', OLD.contract_reference, OLD.status
+                        RAISE EXCEPTION 'Cannot delete contract % with status %. Active/approved contracts are locked.', OLD.contract_reference, OLD.status
                             USING ERRCODE = '55000';
                     END IF;
                     RETURN OLD;
@@ -2160,7 +2252,7 @@ async def init_schema():
                            NEW.start_date != OLD.start_date OR
                            NEW.employee_id != OLD.employee_id OR
                            NEW.contract_reference != OLD.contract_reference THEN
-                            RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Core terms of % contract % cannot be modified directly. Please create an amendment revision.', OLD.status, OLD.contract_reference
+                            RAISE EXCEPTION 'Core terms of % contract % cannot be modified directly. Please create an amendment revision.', OLD.status, OLD.contract_reference
                                 USING ERRCODE = '55000';
                         END IF;
                     END IF;
@@ -2184,7 +2276,7 @@ async def init_schema():
             BEGIN
                 SELECT status INTO c_status FROM employee_contracts WHERE id = OLD.contract_id;
                 IF c_status IN ('active', 'approved', 'posted') THEN
-                    RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot modify or delete benefit lines of an active/approved contract (status: %). Use the contract amendment workflow.', c_status
+                    RAISE EXCEPTION 'Cannot modify or delete benefit lines of an active/approved contract (status: %). Use the contract amendment workflow.', c_status
                         USING ERRCODE = '55000';
                 END IF;
                 IF TG_OP = 'DELETE' THEN
@@ -2207,7 +2299,7 @@ async def init_schema():
             BEGIN
                 IF TG_OP = 'DELETE' THEN
                     IF OLD.status IN ('locked', 'exported', 'posted', 'approved') THEN
-                        RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot delete % payroll batch %. Sealed financial records are immutable.', OLD.status, OLD.batch_code
+                        RAISE EXCEPTION 'Cannot delete % payroll batch %. Approved/locked payroll batches cannot be deleted.', OLD.status, OLD.batch_code
                             USING ERRCODE = '55000';
                     END IF;
                     RETURN OLD;
@@ -2220,7 +2312,7 @@ async def init_schema():
                            NEW.total_deductions != OLD.total_deductions OR
                            NEW.total_net_salary != OLD.total_net_salary OR
                            NEW.salary_year_month != OLD.salary_year_month THEN
-                            RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Financial figures of % payroll batch % are immutable.', OLD.status, OLD.batch_code
+                            RAISE EXCEPTION 'Financial figures of % payroll batch % are locked and cannot be edited.', OLD.status, OLD.batch_code
                                 USING ERRCODE = '55000';
                         END IF;
                     END IF;
@@ -2245,7 +2337,7 @@ async def init_schema():
             BEGIN
                 SELECT status, batch_code INTO b_status, b_code FROM payroll_batches WHERE id = OLD.batch_id;
                 IF b_status IN ('locked', 'exported', 'posted', 'approved') THEN
-                    RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot modify or delete payslips in % payroll batch %.', b_status, b_code
+                    RAISE EXCEPTION 'Cannot modify or delete payslips in % payroll batch %.', b_status, b_code
                         USING ERRCODE = '55000';
                 END IF;
                 IF TG_OP = 'DELETE' THEN
@@ -2268,7 +2360,7 @@ async def init_schema():
             BEGIN
                 IF TG_OP = 'DELETE' THEN
                     IF OLD.approval_status = 'approved' THEN
-                        RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Cannot delete approved payroll adjustment %.', OLD.code
+                        RAISE EXCEPTION 'Cannot delete approved payroll adjustment %.', OLD.code
                             USING ERRCODE = '55000';
                     END IF;
                     RETURN OLD;
@@ -2280,7 +2372,7 @@ async def init_schema():
                            NEW.computed_amount != OLD.computed_amount OR
                            NEW.employee_id != OLD.employee_id OR
                            NEW.salary_year_month != OLD.salary_year_month THEN
-                            RAISE EXCEPTION 'SOX 404 / ISO 27001 VIOLATION: Financial figures of approved adjustment % are immutable.', OLD.code
+                            RAISE EXCEPTION 'Financial figures of approved adjustment % cannot be edited.', OLD.code
                                 USING ERRCODE = '55000';
                         END IF;
                     END IF;
@@ -2357,15 +2449,27 @@ async def init_schema():
 
 async def consolidate_organizations_migration(conn):
     """
-    Consolidation and Deduplication Migration:
-    1. Identify or create 2 primary companies:
-       - Primary Holding: 'Apex Holdings Q.P.S.C.'
-       - Subsidiary: 'Larea Industrial & Contracting W.L.L.'
-    2. Re-link existing users, branches, employees, and payroll batches pointing to redundant organization IDs.
-    3. Delete all orphan/redundant organization rows so ONLY the 2 official companies remain.
-    4. Populate allowed_company_ids and allowed_branch_ids for superadmins.
+    One-time Consolidation and Deduplication Migration:
+    Runs only once (recorded in system_metadata key 'migration:consolidated_orgs_v1')
+    so user-created or archived companies are never overwritten or deleted on restart.
     """
-    logger.info("Starting multi-company deduplication and consolidation migration...")
+    already_ran = await conn.fetchval(
+        "SELECT value FROM system_metadata WHERE key = 'migration:consolidated_orgs_v1';"
+    )
+    if already_ran:
+        return
+
+    existing_org_count = await conn.fetchval("SELECT COUNT(*) FROM organizations;")
+    if existing_org_count == 2:
+        # Already consolidated; record marker without touching user edits or archive flags
+        await conn.execute("""
+            INSERT INTO system_metadata (key, value)
+            VALUES ('migration:consolidated_orgs_v1', '"done"')
+            ON CONFLICT (key) DO UPDATE SET value = '"done"';
+        """)
+        return
+
+    logger.info("Starting one-time multi-company deduplication and consolidation migration...")
 
     # 1. Identify or create primary holding company (Apex Holdings Q.P.S.C.)
     primary_apex = await conn.fetchrow("""
@@ -2526,6 +2630,14 @@ async def consolidate_organizations_migration(conn):
         WHERE organization_id IS NULL OR organization_id NOT IN ($1, $2);
     """, primary_org_id, subsidiary_org_id)
 
+    # Backfill contract grade_id from employees
+    await conn.execute("""
+        UPDATE employee_contracts c
+        SET grade_id = e.grade_id
+        FROM employees e
+        WHERE c.employee_id = e.id AND c.grade_id IS NULL AND e.grade_id IS NOT NULL;
+    """)
+
     # Re-link zkteco terminals
     await conn.execute("""
         UPDATE zkteco_terminals
@@ -2567,6 +2679,12 @@ async def consolidate_organizations_migration(conn):
             allowed_branch_ids = $2::jsonb
         WHERE is_superadmin = true;
     """, all_comp_ids, all_br_ids)
+
+    await conn.execute("""
+        INSERT INTO system_metadata (key, value)
+        VALUES ('migration:consolidated_orgs_v1', '"done"')
+        ON CONFLICT (key) DO UPDATE SET value = '"done"';
+    """)
 
     logger.info("Multi-company deduplication migration completed: 2 official companies active.")
 

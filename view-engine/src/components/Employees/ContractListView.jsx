@@ -27,13 +27,18 @@ import {
   Save,
   RotateCcw,
   Loader2,
+  Sparkles,
 } from 'lucide-react';
 import { useAccessControl } from '../../context/AccessControlContext';
 import { useAuth } from '../../context/AuthContext';
 import { useDebounce } from '../../hooks/useDebounce';
+import { useSystemLookups } from '../../services/lookupService';
+import { RecordChatter } from '../common/RecordChatter';
+import { getUrlParam, syncViewUrlParams, notifyRecordChatterUpdated } from '../../utils/urlState';
 
 export function ContractListView({ onSelectEmployee }) {
   const { hasPermission } = useAccessControl();
+  const { currencies } = useSystemLookups();
   const auth = useAuth();
   const sessionToken =
     auth?.sessionToken ||
@@ -59,13 +64,29 @@ export function ContractListView({ onSelectEmployee }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
 
   // Form View State
-  const [viewMode, setViewMode] = useState('list'); // 'list' | 'form'
+  const [viewMode, setViewMode] = useState(() => (getUrlParam('view') === 'form' ? 'form' : 'list')); // 'list' | 'form'
+  const [pendingContractId, setPendingContractId] = useState(() =>
+    getUrlParam('view') === 'form' ? (getUrlParam('id') || null) : null
+  );
   const [formContract, setFormContract] = useState(null);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [contractError, setContractError] = useState('');
   const [contractSuccess, setContractSuccess] = useState('');
   const [employeesList, setEmployeesList] = useState([]);
+
+  // Contract Amendment Modal State
+  const [isAmendModalOpen, setIsAmendModalOpen] = useState(false);
+  const [isAmending, setIsAmending] = useState(false);
+  const [amendError, setAmendError] = useState('');
+  const [amendFormData, setAmendFormData] = useState({
+    wage_base: 15000,
+    currency: 'QAR',
+    start_date: new Date().toISOString().split('T')[0],
+    end_date: '',
+    isOpenEnded: false,
+    amendment_reason: '',
+  });
 
   const [contractFormData, setContractFormData] = useState({
     employee_id: '',
@@ -84,7 +105,7 @@ export function ContractListView({ onSelectEmployee }) {
     notice_period_days: 30,
     trial_period_days: 90,
     working_hours_per_week: 40,
-    terms_notes: 'Standard bilateral employment contract compliant with Qatar Labour Law.',
+    terms_notes: 'Standard employment agreement.',
   });
 
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
@@ -108,11 +129,12 @@ export function ContractListView({ onSelectEmployee }) {
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
         if (isPrintModalOpen) setIsPrintModalOpen(false);
+        if (isAmendModalOpen) setIsAmendModalOpen(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPrintModalOpen]);
+  }, [isPrintModalOpen, isAmendModalOpen]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -183,7 +205,68 @@ export function ContractListView({ onSelectEmployee }) {
     fetchEmployees();
   }, []);
 
+  // Notify operational form state & sync URL params (view, id) for browser reload persistence
+  useEffect(() => {
+    const isForm = viewMode === 'form';
+    window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: isForm } }));
+    const effectiveId = isForm
+      ? (pendingContractId || formContract?.id || 'new')
+      : null;
+    syncViewUrlParams({
+      view: isForm ? 'form' : null,
+      id: effectiveId ? String(effectiveId) : null,
+    });
+    return () => {
+      if (isForm) {
+        window.dispatchEvent(new CustomEvent('larea-operational-form', { detail: { active: false } }));
+      }
+    };
+  }, [viewMode, formContract, pendingContractId]);
+
+  // Hydrate pendingContractId from URL on browser reload
+  useEffect(() => {
+    if (!pendingContractId) return;
+    if (pendingContractId === 'new') {
+      if (employeesList.length > 0) {
+        setPendingContractId(null);
+        handleOpenCreateContract();
+      }
+      return;
+    }
+
+    const inList = contracts.find((c) => String(c.id) === String(pendingContractId));
+    if (inList) {
+      setPendingContractId(null);
+      handleOpenDetailContract(inList);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const headers = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+        const res = await fetch(`/api/v1/contracts/${pendingContractId}`, { headers });
+        if (res.ok) {
+          const data = await res.json();
+          if (!cancelled) {
+            setPendingContractId(null);
+            handleOpenDetailContract(data);
+          }
+        } else if (!cancelled && res.status === 404) {
+          setPendingContractId(null);
+          setViewMode('list');
+        }
+      } catch (e) {
+        console.warn('Failed to hydrate contract on reload:', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingContractId, contracts, employeesList, sessionToken]);
+
   const handleOpenCreateContract = () => {
+    setPendingContractId(null);
     setSelectedIds(new Set());
     setFormContract(null);
     const currentYear = new Date().getFullYear();
@@ -205,7 +288,7 @@ export function ContractListView({ onSelectEmployee }) {
       notice_period_days: 30,
       trial_period_days: 90,
       working_hours_per_week: 40,
-      terms_notes: 'Standard bilateral employment contract compliant with Qatar Labour Law.',
+      terms_notes: 'Standard employment agreement.',
     });
     setIsDirty(false);
     setContractError('');
@@ -214,6 +297,7 @@ export function ContractListView({ onSelectEmployee }) {
   };
 
   const handleOpenDetailContract = (contract) => {
+    setPendingContractId(null);
     setFormContract(contract);
     setContractFormData({
       employee_id: contract.employee_id || '',
@@ -309,7 +393,8 @@ export function ContractListView({ onSelectEmployee }) {
         const created = await res.json();
         setFormContract(created);
         setIsDirty(false);
-        setContractSuccess('Contract successfully created and activated.');
+        notifyRecordChatterUpdated(created.id, 'contracts');
+        setContractSuccess('Contract created.');
         await fetchContracts();
       } else {
         // Edit Mode
@@ -341,7 +426,8 @@ export function ContractListView({ onSelectEmployee }) {
         const updated = await res.json();
         setFormContract(updated);
         setIsDirty(false);
-        setContractSuccess('Contract changes successfully saved.');
+        notifyRecordChatterUpdated(updated.id || formContract.id, 'contracts');
+        setContractSuccess('Contract changes saved.');
         await fetchContracts();
       }
     } catch (err) {
@@ -361,8 +447,76 @@ export function ContractListView({ onSelectEmployee }) {
     setIsDirty(false);
   };
 
+  const handleOpenAmendModal = () => {
+    if (!formContract) return;
+    setAmendError('');
+    setAmendFormData({
+      wage_base: formContract.wage_base ?? contractFormData.wage_base ?? 15000,
+      currency: formContract.currency || contractFormData.currency || 'QAR',
+      start_date: new Date().toISOString().split('T')[0],
+      end_date: formContract.end_date || '',
+      isOpenEnded: !formContract.end_date,
+      amendment_reason: '',
+    });
+    setIsAmendModalOpen(true);
+  };
+
+  const handleAmendSubmit = async (e) => {
+    e?.preventDefault();
+    if (!formContract) return;
+
+    const cleanReason = (amendFormData.amendment_reason || '').trim();
+    if (!cleanReason) {
+      setAmendError('Please enter a reason for this contract amendment.');
+      return;
+    }
+
+    setIsAmending(true);
+    setAmendError('');
+
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (sessionToken) headers['Authorization'] = `Bearer ${sessionToken}`;
+
+      const payload = {
+        amendment_reason: cleanReason,
+        wage_base: canManageSalary ? Number(amendFormData.wage_base) : undefined,
+        currency: amendFormData.currency,
+        start_date: amendFormData.start_date,
+        end_date: amendFormData.isOpenEnded ? null : (amendFormData.end_date || null),
+      };
+
+      const res = await fetch(`/api/v1/contracts/${formContract.id}/amend`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to amend contract');
+      }
+
+      const created = await res.json();
+      setIsAmendModalOpen(false);
+      notifyRecordChatterUpdated(created.id, 'contracts');
+      setContractSuccess(
+        `Contract amended as Revision ${created.revision_number || '2'} (${created.contract_reference}).`
+      );
+      setContractError('');
+      handleOpenDetailContract(created);
+      await fetchContracts();
+    } catch (err) {
+      console.error('Failed to amend contract:', err);
+      setAmendError(err.message || 'Failed to amend contract');
+    } finally {
+      setIsAmending(false);
+    }
+  };
+
   const handleBackToList = () => {
     if (isDirty && !window.confirm("You have unsaved changes. Discard and return to list?")) return;
+    setPendingContractId(null);
     setViewMode('list');
     setFormContract(null);
     setIsDirty(false);
@@ -529,8 +683,17 @@ export function ContractListView({ onSelectEmployee }) {
     : filteredContracts;
 
   if (viewMode === 'form') {
+    if (pendingContractId && pendingContractId !== 'new' && !formContract) {
+      return (
+        <div className="py-16 flex flex-col items-center justify-center gap-3 text-slate-400">
+          <div className="w-7 h-7 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+          <span className="text-sm">Loading contract...</span>
+        </div>
+      );
+    }
     const daysRemaining = contractFormData.end_date ? getDaysRemaining(contractFormData.end_date) : null;
     const isCreateMode = !formContract;
+    const isActiveOrApproved = Boolean(formContract && (formContract.status === 'active' || formContract.status === 'approved'));
 
     return (
       <div className="max-w-7xl mx-auto space-y-6 pb-16 animate-fadeIn">
@@ -548,16 +711,11 @@ export function ContractListView({ onSelectEmployee }) {
             </button>
 
             <span className="text-slate-400">/</span>
-            <span className="font-bold text-slate-900 dark:text-white">
+            <span className="font-semibold text-sm text-slate-900 dark:text-white">
               {contractFormData.contract_reference || contractFormData.title || (isCreateMode ? 'New Contract' : 'Contract Details')}
             </span>
-            {formContract?.id && (
-              <span className="font-mono text-[10px] text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md">
-                {String(formContract.id).slice(0, 8)}...
-              </span>
-            )}
             <span
-              className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+              className={`px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${
                 isCreateMode
                   ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300 border border-blue-200'
                   : contractFormData.status === 'active'
@@ -572,39 +730,54 @@ export function ContractListView({ onSelectEmployee }) {
             )}
           </div>
 
-          {/* Right: Save, Discard, and Back */}
+          {/* Right: Save, Amend, Discard, and Back */}
           <div className="flex items-center gap-2 self-end sm:self-auto">
-            <button
-              type="button"
-              onClick={handleSaveContract}
-              disabled={!isDirty || isSaving || !contractFormData.employee_id}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer ${
-                isDirty && !isSaving && contractFormData.employee_id
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-not-allowed'
-              }`}
-            >
-              {isSaving ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Save className="w-3.5 h-3.5" />
-              )}
-              <span>{isSaving ? 'Saving...' : 'Save Changes'}</span>
-            </button>
+            {isActiveOrApproved ? (
+              canManageContracts && (
+                <button
+                  type="button"
+                  onClick={handleOpenAmendModal}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>+ Amend Contract</span>
+                </button>
+              )
+            ) : (
+              <button
+                type="button"
+                onClick={handleSaveContract}
+                disabled={!isDirty || isSaving || !contractFormData.employee_id}
+                className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer ${
+                  isDirty && !isSaving && contractFormData.employee_id
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-not-allowed'
+                }`}
+              >
+                {isSaving ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Save className="w-3.5 h-3.5" />
+                )}
+                <span>{isSaving ? 'Saving...' : 'Save Changes'}</span>
+              </button>
+            )}
 
-            <button
-              type="button"
-              onClick={handleDiscardContract}
-              disabled={!isDirty}
-              className={`flex items-center gap-1 px-3 py-2 rounded-xl border text-xs transition cursor-pointer ${
-                isDirty
-                  ? 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
-                  : 'border-slate-200 dark:border-slate-800 text-slate-300 dark:text-slate-600 cursor-not-allowed'
-              }`}
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Discard</span>
-            </button>
+            {!isActiveOrApproved && (
+              <button
+                type="button"
+                onClick={handleDiscardContract}
+                disabled={!isDirty}
+                className={`flex items-center gap-1 px-3 py-2 rounded-xl border text-xs transition cursor-pointer ${
+                  isDirty
+                    ? 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
+                    : 'border-slate-200 dark:border-slate-800 text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                }`}
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Discard</span>
+              </button>
+            )}
 
             <button
               type="button"
@@ -615,6 +788,35 @@ export function ContractListView({ onSelectEmployee }) {
             </button>
           </div>
         </div>
+
+        {/* Active Contract Status Banner */}
+        {isActiveOrApproved && (
+          <div className="p-4 rounded-2xl bg-emerald-50/80 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs animate-fadeIn">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="font-semibold text-sm text-emerald-950 dark:text-emerald-100">
+                  Active Contract — Terms Locked
+                </h4>
+                <p className="text-xs text-emerald-800/80 dark:text-emerald-300/80 mt-0.5">
+                  Salary, dates, and reference are locked while active. Use Amend Contract to create a new revision.
+                </p>
+              </div>
+            </div>
+            {canManageContracts && (
+              <button
+                type="button"
+                onClick={handleOpenAmendModal}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium shadow-xs transition cursor-pointer shrink-0 self-start sm:self-auto"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>Amend Contract</span>
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Alerts */}
         {contractError && (
@@ -739,9 +941,17 @@ export function ContractListView({ onSelectEmployee }) {
                     type="text"
                     value={contractFormData.contract_reference}
                     onChange={(e) => handleContractFieldChange('contract_reference', e.target.value)}
+                    disabled={isActiveOrApproved}
                     placeholder="e.g. CNT-2026-004-1"
-                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                    className={`w-full px-3 py-2 rounded-xl border font-mono text-xs transition-colors ${
+                      isActiveOrApproved
+                        ? 'border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800/40 text-slate-500 cursor-not-allowed'
+                        : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    }`}
                   />
+                  {isActiveOrApproved && (
+                    <span className="text-[10px] text-slate-400 block">Immutable sealed reference</span>
+                  )}
                 </div>
               </div>
 
@@ -754,10 +964,18 @@ export function ContractListView({ onSelectEmployee }) {
                   <input
                     type="date"
                     value={contractFormData.start_date}
+                    disabled={isActiveOrApproved}
                     onChange={(e) => handleContractFieldChange('start_date', e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors text-xs"
+                    className={`w-full px-3 py-2 rounded-xl border text-xs transition-colors ${
+                      isActiveOrApproved
+                        ? 'border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800/40 text-slate-500 cursor-not-allowed'
+                        : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    }`}
                     required
                   />
+                  {isActiveOrApproved && (
+                    <span className="text-[10px] text-slate-400 block">Locked (Amend to change)</span>
+                  )}
                 </div>
 
                 <div className="space-y-1.5">
@@ -767,24 +985,27 @@ export function ContractListView({ onSelectEmployee }) {
                   <input
                     type="date"
                     value={contractFormData.end_date}
-                    disabled={contractFormData.isOpenEnded}
+                    disabled={isActiveOrApproved || contractFormData.isOpenEnded}
                     onChange={(e) => handleContractFieldChange('end_date', e.target.value)}
                     className={`w-full px-3 py-2 rounded-xl border text-xs transition-colors ${
-                      contractFormData.isOpenEnded
+                      isActiveOrApproved || contractFormData.isOpenEnded
                         ? 'border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800/40 text-slate-400 cursor-not-allowed'
                         : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500'
                     }`}
                   />
-                  <label className="inline-flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400 cursor-pointer mt-1">
+                  <label className={`inline-flex items-center gap-1.5 text-[11px] mt-1 ${
+                    isActiveOrApproved ? 'text-slate-400 cursor-not-allowed' : 'text-slate-600 dark:text-slate-400 cursor-pointer'
+                  }`}>
                     <input
                       type="checkbox"
                       checked={contractFormData.isOpenEnded}
+                      disabled={isActiveOrApproved}
                       onChange={(e) => {
                         const checked = e.target.checked;
                         handleContractFieldChange('isOpenEnded', checked);
                         if (checked) handleContractFieldChange('end_date', '');
                       }}
-                      className="rounded text-blue-600 focus:ring-blue-500"
+                      className="rounded text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                     />
                     <span>Open-ended (indefinite term)</span>
                   </label>
@@ -796,14 +1017,22 @@ export function ContractListView({ onSelectEmployee }) {
                   </label>
                   <select
                     value={contractFormData.status}
+                    disabled={isActiveOrApproved}
                     onChange={(e) => handleContractFieldChange('status', e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors cursor-pointer text-xs"
+                    className={`w-full px-3 py-2 rounded-xl border text-xs transition-colors ${
+                      isActiveOrApproved
+                        ? 'border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800/40 text-slate-500 cursor-not-allowed'
+                        : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer'
+                    }`}
                   >
                     <option value="active">Active</option>
                     <option value="draft">Draft</option>
                     <option value="expired">Expired</option>
                     <option value="terminated">Terminated</option>
                   </select>
+                  {isActiveOrApproved && (
+                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 block font-medium">Sealed Active State</span>
+                  )}
                 </div>
               </div>
 
@@ -821,7 +1050,7 @@ export function ContractListView({ onSelectEmployee }) {
                     onChange={(e) => handleContractFieldChange('working_hours_per_week', e.target.value)}
                     className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors text-xs"
                   />
-                  <span className="text-[10px] text-slate-400 block">Labour Law max: 48h/wk</span>
+                  <span className="text-[10px] text-slate-400 block">Standard: 40–48h / week</span>
                 </div>
 
                 <div className="space-y-1.5">
@@ -836,7 +1065,7 @@ export function ContractListView({ onSelectEmployee }) {
                     onChange={(e) => handleContractFieldChange('notice_period_days', e.target.value)}
                     className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors text-xs"
                   />
-                  <span className="text-[10px] text-slate-400 block">Statutory standard: 30 days</span>
+                  <span className="text-[10px] text-slate-400 block">Standard: 30 days</span>
                 </div>
 
                 <div className="space-y-1.5">
@@ -879,14 +1108,19 @@ export function ContractListView({ onSelectEmployee }) {
                       step="100"
                       value={contractFormData.wage_base}
                       onChange={(e) => handleContractFieldChange('wage_base', e.target.value)}
-                      disabled={!canManageSalary}
+                      disabled={isActiveOrApproved || !canManageSalary}
                       className={`w-full px-3 py-2 rounded-xl border text-xs transition-colors font-mono font-bold ${
-                        !canManageSalary
+                        isActiveOrApproved || !canManageSalary
                           ? 'border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800/40 text-slate-400 cursor-not-allowed'
                           : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500'
                       }`}
                     />
-                    {!canManageSalary && (
+                    {isActiveOrApproved ? (
+                      <p className="text-[11px] text-blue-600 dark:text-blue-400 mt-1 flex items-center gap-1">
+                        <Lock className="w-3 h-3" />
+                        <span>Sealed: To modify compensation, use <strong>+ Amend Contract</strong>.</span>
+                      </p>
+                    ) : !canManageSalary && (
                       <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">
                         Read-only: Modifying base wage requires <code>hr.salary_manage</code> permission.
                       </p>
@@ -900,14 +1134,18 @@ export function ContractListView({ onSelectEmployee }) {
                     <select
                       value={contractFormData.currency}
                       onChange={(e) => handleContractFieldChange('currency', e.target.value)}
-                      disabled={!canManageSalary}
-                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors cursor-pointer text-xs"
+                      disabled={isActiveOrApproved || !canManageSalary}
+                      className={`w-full px-3 py-2 rounded-xl border text-xs transition-colors ${
+                        isActiveOrApproved || !canManageSalary
+                          ? 'border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800/40 text-slate-400 cursor-not-allowed'
+                          : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer'
+                      }`}
                     >
-                      <option value="QAR">QAR (Qatari Riyal)</option>
-                      <option value="USD">USD (US Dollar)</option>
-                      <option value="EUR">EUR (Euro)</option>
-                      <option value="SAR">SAR (Saudi Riyal)</option>
-                      <option value="AED">AED (UAE Dirham)</option>
+                      {currencies.map((curr) => (
+                        <option key={curr.code} value={curr.code}>
+                          {curr.code} — {curr.name} ({curr.symbol})
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -920,16 +1158,16 @@ export function ContractListView({ onSelectEmployee }) {
                 </div>
               )}
 
-              {/* Special Terms & Legal Clauses */}
+              {/* Special Terms & Notes */}
               <div className="space-y-1.5">
                 <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block">
-                  Bilateral Covenants, Special Terms & Notes
+                  Special Terms &amp; Notes
                 </label>
                 <textarea
                   rows={4}
                   value={contractFormData.terms_notes}
                   onChange={(e) => handleContractFieldChange('terms_notes', e.target.value)}
-                  placeholder="Specify bilateral clauses, confidentiality requirements, non-compete provisions, or local labour ministry filing references..."
+                  placeholder="Enter contract notes, probation terms, or additional agreements..."
                   className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors text-xs font-mono"
                 />
               </div>
@@ -938,53 +1176,7 @@ export function ContractListView({ onSelectEmployee }) {
 
           {/* Right Rail (4 Cols) */}
           <div className="lg:col-span-4 space-y-6">
-            {/* Card 1: Statutory Compliance */}
-            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs space-y-4">
-              <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
-                <div className="p-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400">
-                  <ShieldCheck className="w-4 h-4" />
-                </div>
-                <h4 className="text-[14px] font-semibold text-slate-900 dark:text-white">
-                  Qatar Labour Law Compliance
-                </h4>
-              </div>
-
-              <div className="space-y-3 text-xs">
-                <div className="flex items-start gap-2 text-slate-600 dark:text-slate-300">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="text-slate-900 dark:text-white block">Maximum Working Hours</strong>
-                    <span>Standard maximum 48 hours/week (8 hours/day). Reduced to 36 hours/week during Ramadan.</span>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-2 text-slate-600 dark:text-slate-300">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="text-slate-900 dark:text-white block">Probationary Period</strong>
-                    <span>Maximum 6 months with the same employer. Notice during probation must follow Law No. 14.</span>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-2 text-slate-600 dark:text-slate-300">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="text-slate-900 dark:text-white block">Notice Period Safeguards</strong>
-                    <span>1 month notice for tenure under 2 years; 2 months notice for tenure exceeding 2 years.</span>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-2 text-slate-600 dark:text-slate-300">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="text-slate-900 dark:text-white block">Wage Protection System (WPS)</strong>
-                    <span>All basic wages and statutory allowances must be disbursed via local bank transfers.</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Card 2: Timeline & Milestones */}
+            {/* Timeline & Milestones */}
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs space-y-4">
               <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
                 <div className="p-1.5 rounded-lg bg-amber-50 dark:bg-amber-950 text-amber-600 dark:text-amber-400">
@@ -1039,6 +1231,226 @@ export function ContractListView({ onSelectEmployee }) {
             </div>
           </div>
         </div>
+
+        {/* Instant Activity & Audit Log */}
+        {formContract?.id && (
+          <RecordChatter
+            entityType="contracts"
+            entityId={formContract.id}
+            entityName={formContract.contract_reference}
+          />
+        )}
+
+        {/* Contract Amendment Modal */}
+        {isAmendModalOpen && formContract && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-fadeIn">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 w-full max-w-xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+              {/* Modal Header */}
+              <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400">
+                    <Sparkles className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                      Issue Contract Amendment Revision
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Creates a new contract revision while preserving the prior contract history
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAmendModalOpen(false)}
+                  disabled={isAmending}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <form onSubmit={handleAmendSubmit} className="p-6 overflow-y-auto space-y-5">
+                {amendError && (
+                  <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs font-semibold flex items-center gap-2 animate-fadeIn">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>{amendError}</span>
+                  </div>
+                )}
+
+                {/* Section a: Original Contract Info (Read-only reference and previous wage) */}
+                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/60 space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 dark:text-slate-400 font-medium">Original Contract Reference</span>
+                    <span className="font-mono font-bold text-slate-900 dark:text-white bg-slate-200/60 dark:bg-slate-700/60 px-2 py-0.5 rounded">
+                      {formContract.contract_reference}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 dark:text-slate-400 font-medium">Employee Party</span>
+                    <span className="font-semibold text-slate-900 dark:text-white">
+                      {formContract.employee_name || contractFormData.employee_name} ({formContract.employee_number || contractFormData.employee_number})
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 dark:text-slate-400 font-medium">Previous Base Wage</span>
+                    {canReadSalary ? (
+                      <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                        {formContract.wage_base !== null && formContract.wage_base !== undefined
+                          ? `${Number(formContract.wage_base).toLocaleString()} ${formContract.currency}`
+                          : '—'}
+                      </span>
+                    ) : (
+                      <span className="font-mono text-slate-400">•••••• (Restricted)</span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 dark:text-slate-400 font-medium">Previous Duration</span>
+                    <span className="font-mono text-slate-700 dark:text-slate-300">
+                      {formContract.start_date || 'N/A'} to {formContract.end_date || 'Open-Ended'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Section b: New Wage Base and Currency inputs */}
+                {canReadSalary && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block">
+                        New Wage Base <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        step="100"
+                        value={amendFormData.wage_base}
+                        onChange={(e) => setAmendFormData((prev) => ({ ...prev, wage_base: e.target.value }))}
+                        disabled={!canManageSalary}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono font-bold text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        required
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block">
+                        Currency <span className="text-rose-500">*</span>
+                      </label>
+                      <select
+                        value={amendFormData.currency}
+                        onChange={(e) => setAmendFormData((prev) => ({ ...prev, currency: e.target.value }))}
+                        disabled={!canManageSalary}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                      >
+                        {currencies.map((curr) => (
+                          <option key={curr.code} value={curr.code}>
+                            {curr.code} — {curr.name} ({curr.symbol})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {/* Section c: New Effective Start Date */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block">
+                      Effective Start Date <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={amendFormData.start_date}
+                      onChange={(e) => setAmendFormData((prev) => ({ ...prev, start_date: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 block">
+                      New End Date
+                    </label>
+                    <input
+                      type="date"
+                      value={amendFormData.end_date}
+                      disabled={amendFormData.isOpenEnded}
+                      onChange={(e) => setAmendFormData((prev) => ({ ...prev, end_date: e.target.value }))}
+                      className={`w-full px-3 py-2 rounded-xl border text-xs ${
+                        amendFormData.isOpenEnded
+                          ? 'border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800/40 text-slate-400 cursor-not-allowed'
+                          : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500'
+                      }`}
+                    />
+                    <label className="inline-flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400 cursor-pointer mt-1">
+                      <input
+                        type="checkbox"
+                        checked={amendFormData.isOpenEnded}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setAmendFormData((prev) => ({
+                            ...prev,
+                            isOpenEnded: checked,
+                            end_date: checked ? '' : prev.end_date,
+                          }));
+                        }}
+                        className="rounded text-blue-600 focus:ring-blue-500"
+                      />
+                      <span>Open-ended (indefinite term)</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Section d: Mandatory text area */}
+                <div className="space-y-1.5">
+                  <label className="text-[13px] font-medium text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                    <span>Amendment Reason <span className="text-rose-500">*</span></span>
+                    <span className="text-xs text-slate-400 font-normal">Required</span>
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={amendFormData.amendment_reason}
+                    onChange={(e) => setAmendFormData((prev) => ({ ...prev, amendment_reason: e.target.value }))}
+                    placeholder="e.g. Annual merit compensation increase following Q4 appraisal and board approval..."
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                    required
+                  />
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    This justification is permanently inscribed into the cryptographically chained audit log and links the new revision to the prior contract.
+                  </p>
+                </div>
+
+                {/* Modal Actions */}
+                <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsAmendModalOpen(false)}
+                    disabled={isAmending}
+                    className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isAmending || !amendFormData.amendment_reason.trim()}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs transition cursor-pointer"
+                  >
+                    {isAmending ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Issuing Amendment...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Issue Amendment Revision</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1258,9 +1670,9 @@ export function ContractListView({ onSelectEmployee }) {
       <div className="bg-white dark:bg-slate-900 rounded-lg border border-slate-200/80 dark:border-slate-800 shadow-2xs overflow-hidden">
         <div className="max-h-[calc(100vh-140px)] overflow-y-auto">
           <table className="w-full text-left border-collapse">
-            <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-[11.5px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-              <tr className="h-8">
-                <th className="py-1 px-2.5 w-8">
+            <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-[12px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
+              <tr className="min-h-[38px] h-[38px]">
+                <th className="py-2 px-2.5 w-8">
                   <input
                     type="checkbox"
                     checked={pagedContracts.length > 0 && pagedContracts.every((c) => selectedIds.has(c.id))}
@@ -1268,28 +1680,28 @@ export function ContractListView({ onSelectEmployee }) {
                     className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                   />
                 </th>
-                <th className="py-1 px-2.5">Reference</th>
-                <th className="py-1 px-2.5">Employee</th>
-                <th className="py-1 px-2.5">Job Title</th>
-                <th className="py-1 px-2.5">Department</th>
-                <th className="py-1 px-2.5">Start Date</th>
-                <th className="py-1 px-2.5">End Date</th>
-                <th className="py-1 px-2.5">Status</th>
-                <th className="py-1 px-2.5 text-right">Wage / Package</th>
-                <th className="py-1 px-2.5 text-right w-16">Actions</th>
+                <th className="py-2 px-2.5">Reference</th>
+                <th className="py-2 px-2.5">Employee</th>
+                <th className="py-2 px-2.5">Job Title</th>
+                <th className="py-2 px-2.5">Department</th>
+                <th className="py-2 px-2.5">Start Date</th>
+                <th className="py-2 px-2.5">End Date</th>
+                <th className="py-2 px-2.5">Status</th>
+                <th className="py-2 px-2.5 text-right">Wage / Package</th>
+                <th className="py-2 px-2.5 text-right w-16">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-[12.5px] text-slate-800 dark:text-slate-200">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-[13.5px] font-medium text-slate-800 dark:text-slate-200">
               {isLoading ? (
                 <tr>
-                  <td colSpan={10} className="py-8 text-center text-[12px] text-slate-400">
+                  <td colSpan={10} className="py-8 text-center text-xs text-slate-400">
                     <RefreshCw className="w-4 h-4 animate-spin mx-auto mb-1 text-blue-500" />
                     <span>Loading contracts...</span>
                   </td>
                 </tr>
               ) : pagedContracts.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-8 text-center text-[12px] text-slate-400">
+                  <td colSpan={10} className="py-8 text-center text-xs text-slate-400">
                     <FileText className="w-6 h-6 mx-auto mb-1 opacity-40" />
                     <p className="font-semibold text-slate-700 dark:text-slate-300">No contracts found</p>
                     <p className="text-[11px] text-slate-500 mt-0.5">Try adjusting your filters or search keywords.</p>
@@ -1305,13 +1717,13 @@ export function ContractListView({ onSelectEmployee }) {
                   return (
                     <tr
                       key={c.id}
-                      className={`h-8 odd:bg-white dark:odd:bg-slate-900 even:bg-slate-50/40 dark:even:bg-slate-800/40 hover:bg-blue-50/40 dark:hover:bg-slate-800/70 border-b border-slate-200/60 dark:border-slate-800/60 transition-colors cursor-pointer ${
+                      className={`min-h-[38px] h-[38px] odd:bg-white dark:odd:bg-slate-900 even:bg-slate-50/40 dark:even:bg-slate-800/40 hover:bg-blue-50/40 dark:hover:bg-slate-800/70 border-b border-slate-200/60 dark:border-slate-800/60 transition-colors cursor-pointer ${
                         isSelected ? 'bg-blue-50/50 dark:bg-blue-950/30' : ''
                       }`}
                       onClick={() => handleOpenDetailContract(c)}
                     >
                       <td
-                        className="py-1 px-2.5 align-middle"
+                        className="py-2 px-2.5 align-middle"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <input
@@ -1323,9 +1735,9 @@ export function ContractListView({ onSelectEmployee }) {
                       </td>
 
                       {/* Reference */}
-                      <td className="py-1 px-2.5 align-middle">
+                      <td className="py-2 px-2.5 align-middle">
                         <span
-                          className="font-mono font-semibold text-[12px] text-blue-600 dark:text-blue-400 truncate max-w-[140px] block"
+                          className="font-mono font-semibold text-[13px] text-blue-600 dark:text-blue-400 truncate max-w-[140px] block"
                           title={`${c.contract_reference} - ${c.title || ''}`}
                         >
                           {c.contract_reference}
@@ -1333,9 +1745,9 @@ export function ContractListView({ onSelectEmployee }) {
                       </td>
 
                       {/* Employee Name */}
-                      <td className="py-1 px-2.5 align-middle">
+                      <td className="py-2 px-2.5 align-middle">
                         <span
-                          className="font-medium text-slate-900 dark:text-white truncate max-w-[170px] block"
+                          className="font-medium text-[13.5px] text-slate-900 dark:text-white truncate max-w-[170px] block"
                           title={`${c.employee_name || 'Staff Member'} (${c.employee_number || 'EMP-XXXX'})`}
                         >
                           {c.employee_name || 'Staff Member'}
@@ -1343,9 +1755,9 @@ export function ContractListView({ onSelectEmployee }) {
                       </td>
 
                       {/* Job Title */}
-                      <td className="py-1 px-2.5 align-middle">
+                      <td className="py-2 px-2.5 align-middle">
                         <span
-                          className="text-slate-600 dark:text-slate-300 truncate max-w-[130px] block"
+                          className="text-slate-600 dark:text-slate-300 truncate max-w-[130px] block text-[13.5px]"
                           title={c.job_title || ''}
                         >
                           {c.job_title || '—'}
@@ -1353,9 +1765,9 @@ export function ContractListView({ onSelectEmployee }) {
                       </td>
 
                       {/* Department */}
-                      <td className="py-1 px-2.5 align-middle">
+                      <td className="py-2 px-2.5 align-middle">
                         <span
-                          className="text-slate-500 dark:text-slate-400 truncate max-w-[110px] block"
+                          className="text-slate-500 dark:text-slate-400 truncate max-w-[110px] block text-[13.5px]"
                           title={c.department || ''}
                         >
                           {c.department || '—'}
@@ -1363,13 +1775,13 @@ export function ContractListView({ onSelectEmployee }) {
                       </td>
 
                       {/* Start Date */}
-                      <td className="py-1 px-2.5 align-middle font-mono text-[12px] text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                      <td className="py-2 px-2.5 align-middle font-mono text-[13px] text-slate-600 dark:text-slate-400 whitespace-nowrap">
                         {c.start_date || '—'}
                       </td>
 
                       {/* End Date */}
-                      <td className="py-1 px-2.5 align-middle whitespace-nowrap">
-                        <div className="flex items-center gap-1.5 font-mono text-[12px]">
+                      <td className="py-2 px-2.5 align-middle whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 font-mono text-[13px]">
                           <span className="text-slate-900 dark:text-slate-200">
                             {c.end_date ? c.end_date : 'Open-Ended'}
                           </span>
@@ -1387,9 +1799,9 @@ export function ContractListView({ onSelectEmployee }) {
                       </td>
 
                       {/* Status */}
-                      <td className="py-1 px-2.5 align-middle whitespace-nowrap">
+                      <td className="py-2 px-2.5 align-middle whitespace-nowrap">
                         <span
-                          className={`inline-flex items-center justify-center h-5 text-[10.5px] font-semibold px-1.5 rounded uppercase ${
+                          className={`inline-flex items-center justify-center h-5 text-[11px] font-semibold px-1.5 rounded uppercase ${
                             c.status === 'active'
                               ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20'
                               : c.status === 'draft'
@@ -1402,7 +1814,7 @@ export function ContractListView({ onSelectEmployee }) {
                       </td>
 
                       {/* Wage / Net Package */}
-                      <td className="py-1 px-2.5 align-middle text-right font-mono text-[12px] whitespace-nowrap">
+                      <td className="py-2 px-2.5 align-middle text-right font-mono text-[13.5px] whitespace-nowrap">
                         {canReadSalary ? (
                           <span
                             className="font-semibold text-slate-900 dark:text-white"
@@ -1411,19 +1823,19 @@ export function ContractListView({ onSelectEmployee }) {
                             {Number(c.wage_base || 0).toLocaleString()} {c.currency}
                           </span>
                         ) : (
-                          <span className="text-slate-400 text-[11px]">••••••</span>
+                          <span className="text-slate-400 text-xs">••••••</span>
                         )}
                       </td>
 
                       {/* Action */}
                       <td
-                        className="py-1 px-2.5 align-middle text-right whitespace-nowrap"
+                        className="py-2 px-2.5 align-middle text-right whitespace-nowrap"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <button
                           type="button"
                           onClick={() => handleOpenDetailContract(c)}
-                          className="h-6 px-2 rounded text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/60 transition cursor-pointer"
+                          className="h-6 px-2.5 rounded text-[12px] font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/60 transition cursor-pointer"
                         >
                           View
                         </button>

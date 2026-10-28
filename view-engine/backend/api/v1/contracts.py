@@ -118,6 +118,7 @@ class ContractCreatePayload(BaseModel):
     trial_period_days: Optional[int] = 90
     working_hours_per_week: Optional[float] = 40.0
     terms_notes: Optional[str] = None
+    grade_id: Optional[str] = None
     benefit_lines: Optional[List[BenefitLinePayload]] = []
 
 
@@ -128,6 +129,7 @@ class ContractAmendPayload(BaseModel):
     end_date: Optional[str] = None
     wage_base: Optional[float] = None
     currency: Optional[str] = None
+    grade_id: Optional[str] = None
     notice_period_days: Optional[int] = None
     trial_period_days: Optional[int] = None
     working_hours_per_week: Optional[float] = None
@@ -445,6 +447,39 @@ async def list_global_contracts(
             "offset": offset or 0,
         }
 
+
+@router.get("/api/v1/contracts/{contract_id}")
+async def get_single_contract(
+    contract_id: str,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Fetch a single contract by ID (with employee details) for form reload hydration."""
+    require_permission(session, "hr.contracts_read")
+    pool = get_db_pool()
+    try:
+        c_uuid = uuid.UUID(contract_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid contract UUID.")
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT c.id, c.employee_id, c.contract_reference, c.title, c.start_date, c.end_date,
+                   c.wage_base, c.currency, c.status, c.notice_period_days, c.trial_period_days,
+                   c.working_hours_per_week, c.terms_notes, c.organization_id, c.created_at, c.updated_at,
+                   c.created_by, c.submitted_by, c.approved_by, c.approved_at, c.approval_status,
+                   c.amendment_of_id, c.amendment_reason, c.revision_number,
+                   c.grade_id, g.name AS grade_name, g.code AS grade_code,
+                   e.full_name AS employee_name, e.employee_number, e.job_title, e.department_id AS department
+            FROM employee_contracts c
+            JOIN employees e ON c.employee_id = e.id
+            LEFT JOIN employee_grades g ON c.grade_id = g.id
+            WHERE c.id = $1;
+        """, c_uuid)
+        if not row:
+            raise HTTPException(status_code=404, detail="Contract not found.")
+        verify_record_tenant(row["organization_id"], session)
+        return mask_contract_payload(serialize_row(dict(row)), session)
+
 # ==============================================================================
 # EMPLOYEE-SPECIFIC CONTRACTS LIFECYCLE ENDPOINTS
 # ==============================================================================
@@ -472,13 +507,16 @@ async def get_employee_contracts(
         verify_record_tenant(emp["organization_id"], session)
 
         contracts_rows = await conn.fetch("""
-            SELECT id, employee_id, contract_reference, title, start_date, end_date,
-                   wage_base, currency, status, notice_period_days, trial_period_days,
-                   working_hours_per_week, terms_notes, organization_id, created_at, updated_at,
-                   created_by, submitted_by, approved_by, approved_at, approval_status
-            FROM employee_contracts
-            WHERE employee_id = $1
-            ORDER BY start_date DESC, created_at DESC;
+            SELECT c.id, c.employee_id, c.contract_reference, c.title, c.start_date, c.end_date,
+                   c.wage_base, c.currency, c.status, c.notice_period_days, c.trial_period_days,
+                   c.working_hours_per_week, c.terms_notes, c.organization_id, c.created_at, c.updated_at,
+                   c.created_by, c.submitted_by, c.approved_by, c.approved_at, c.approval_status,
+                   c.amendment_of_id, c.amendment_reason, c.revision_number,
+                   c.grade_id, g.name AS grade_name, g.code AS grade_code
+            FROM employee_contracts c
+            LEFT JOIN employee_grades g ON c.grade_id = g.id
+            WHERE c.employee_id = $1
+            ORDER BY c.start_date DESC, c.created_at DESC;
         """, emp_uuid)
 
         contracts = []
@@ -592,25 +630,26 @@ async def create_employee_contract(
             initial_status = "draft" if payload.status == "active" else (payload.status or "draft")
             initial_approval = "pending_approval" if payload.status == "active" else "draft"
 
+            # Look up employee's grade_id and determine contract grade
+            emp_grade_id = await conn.fetchval("SELECT grade_id FROM employees WHERE id = $1;", emp_uuid)
+            contract_grade_id = payload.grade_id or emp_grade_id
+
             await conn.execute("""
                 INSERT INTO employee_contracts (
                     id, employee_id, contract_reference, title, start_date, end_date,
                     wage_base, currency, status, notice_period_days, trial_period_days,
                     working_hours_per_week, terms_notes, organization_id,
-                    created_by, approval_status
+                    created_by, approval_status, grade_id
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
                 );
             """,
                 new_contract_id, emp_uuid, ref, payload.title.strip(), start_d, end_d,
                 wage_base, payload.currency or "QAR", initial_status,
                 payload.notice_period_days or 30, payload.trial_period_days or 90,
                 payload.working_hours_per_week or 40.0, payload.terms_notes, org_id,
-                creator_uid, initial_approval
+                creator_uid, initial_approval, contract_grade_id
             )
-
-            # Look up employee's grade_id
-            emp_grade_id = await conn.fetchval("SELECT grade_id FROM employees WHERE id = $1;", emp_uuid)
 
             # Insert benefit lines if provided
             for line in (payload.benefit_lines or []):
@@ -624,10 +663,10 @@ async def create_employee_contract(
                 if calc_type == "grade_based" or rule["calculation_type"] == "grade_based":
                     calc_type = "grade_based"
                     grade_rate = None
-                    if emp_grade_id:
+                    if contract_grade_id:
                         grade_rate = await conn.fetchval(
                             "SELECT amount FROM salary_rule_grade_rates WHERE rule_id = $1 AND grade_id = $2;",
-                            line.rule_id, emp_grade_id
+                            line.rule_id, contract_grade_id
                         )
                     if grade_rate is not None:
                         amt_val = float(grade_rate)
@@ -645,13 +684,20 @@ async def create_employee_contract(
                     ) VALUES ($1, $2, $3, $4, $5, $6);
                 """, uuid.uuid4(), new_contract_id, line.rule_id, calc_type, amt_val, computed)
 
-            # If active, keep employee base salary synchronized
+            # If active, keep employee base salary (and grade) synchronized
             if payload.status == "active":
-                await conn.execute("""
-                    UPDATE employees
-                    SET base_salary = $1, currency = $2, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = $3;
-                """, wage_base, payload.currency or "QAR", emp_uuid)
+                if payload.grade_id:
+                    await conn.execute("""
+                        UPDATE employees
+                        SET base_salary = $1, currency = $2, grade_id = $3, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = $4;
+                    """, wage_base, payload.currency or "QAR", payload.grade_id, emp_uuid)
+                else:
+                    await conn.execute("""
+                        UPDATE employees
+                        SET base_salary = $1, currency = $2, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = $3;
+                    """, wage_base, payload.currency or "QAR", emp_uuid)
 
             # Audit trail logging
             client_ip = get_client_ip(request)
@@ -697,11 +743,11 @@ async def update_contract(
             raise HTTPException(status_code=404, detail="Contract not found.")
         verify_record_tenant(existing["organization_id"], session)
 
-        # SOX 404 / ISO 27001 Immutability Guard
+        # Immutability Guard
         if existing["status"] in ("active", "approved", "posted"):
             raise HTTPException(
                 status_code=400,
-                detail=f"SOX 404 / ISO 27001 Violation: Contract {existing['contract_reference']} is {existing['status']} and immutable. Direct modification of approved/active terms is prohibited. Use the Contract Amendment workflow (POST /api/v1/contracts/{contract_id}/amend) to create a linked revision."
+                detail=f"Contract {existing['contract_reference']} is {existing['status']} and cannot be edited directly. Use the Contract Amendment action to create a revision."
             )
 
         emp_uuid = existing["employee_id"]
@@ -780,6 +826,22 @@ async def update_contract(
             audit_note = f"Updated contract {ref}."
             if wage_or_package_altered:
                 audit_note += f" Compensation modified: base={wage_base} {currency}."
+            contract_diffs = {}
+            for f_key, old_v, new_v in [
+                ("contract_reference", existing["contract_reference"], ref),
+                ("title", existing["title"], title),
+                ("start_date", str(existing["start_date"] or ""), str(start_d or "")),
+                ("end_date", str(existing["end_date"] or ""), str(end_d or "")),
+                ("wage_base", float(existing["wage_base"] or 0), wage_base),
+                ("currency", existing["currency"], currency),
+                ("status", existing["status"], status_val),
+                ("notice_period_days", existing["notice_period_days"], notice_days),
+                ("trial_period_days", existing["trial_period_days"], trial_days),
+                ("working_hours_per_week", float(existing["working_hours_per_week"] or 0), hours),
+                ("terms_notes", existing["terms_notes"], notes),
+            ]:
+                if str(old_v or "") != str(new_v or ""):
+                    contract_diffs[f_key] = {"old": old_v or None, "new": new_v or None}
             await log_contract_audit(
                 conn=conn,
                 contract_id=str(c_uuid),
@@ -787,7 +849,7 @@ async def update_contract(
                 note=audit_note,
                 session=session,
                 client_ip=client_ip,
-                changes={"wage_base": wage_base, "status": status_val}
+                changes=contract_diffs or {"status": {"old": existing["status"], "new": status_val}}
             )
 
         updated = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", c_uuid)
@@ -825,16 +887,16 @@ async def activate_contract(
             except Exception:
                 pass
 
-        # SOX 404 Maker-Checker Dual Control Hard Guard
+        # Dual Control Hard Guard
         if contract["created_by"] and user_id and str(user_id) == str(contract["created_by"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="SOX 404 Maker-Checker Violation: You cannot activate/approve a contract that you created. Dual control requires an independent checker."
+                detail="You cannot approve or activate a contract that you created. Approval requires another reviewer."
             )
         if contract["submitted_by"] and user_id and str(user_id) == str(contract["submitted_by"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="SOX 404 Maker-Checker Violation: You cannot activate/approve a contract that you submitted for approval. Dual control requires an independent checker."
+                detail="You cannot approve or activate a contract that you submitted. Approval requires another reviewer."
             )
 
         emp_uuid = contract["employee_id"]
@@ -858,12 +920,19 @@ async def activate_contract(
                 WHERE id = $1;
             """, c_uuid, user_id)
 
-            # 3. Synchronize employee record base salary and currency
-            await conn.execute("""
-                UPDATE employees
-                SET base_salary = $1, currency = $2, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $3;
-            """, float(contract["wage_base"]), contract["currency"], emp_uuid)
+            # 3. Synchronize employee record base salary, currency, and grade
+            if contract.get("grade_id"):
+                await conn.execute("""
+                    UPDATE employees
+                    SET base_salary = $1, currency = $2, grade_id = $3, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $4;
+                """, float(contract["wage_base"]), contract["currency"], contract["grade_id"], emp_uuid)
+            else:
+                await conn.execute("""
+                    UPDATE employees
+                    SET base_salary = $1, currency = $2, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $3;
+                """, float(contract["wage_base"]), contract["currency"], emp_uuid)
 
             # Audit trail logging
             client_ip = get_client_ip(request)
@@ -871,7 +940,7 @@ async def activate_contract(
                 conn=conn,
                 contract_id=str(c_uuid),
                 action="ACTIVATE",
-                note=f"Activated and approved contract {contract['contract_reference']} under SOX 404 Dual Control.",
+                note=f"Activated and approved contract {contract['contract_reference']}.",
                 session=session,
                 client_ip=client_ip,
                 changes={"status": "active", "approval_status": "approved", "approved_by": str(user_id) if user_id else None}
@@ -996,7 +1065,7 @@ async def reject_contract(
             conn=conn,
             contract_id=str(c_uuid),
             action="REJECT",
-            note=f"Rejected contract {contract['contract_reference']} under SOX 404 Dual Control review.",
+            note=f"Rejected contract {contract['contract_reference']}.",
             session=session,
             client_ip=client_ip,
             changes={"approval_status": "rejected"}
@@ -1030,11 +1099,11 @@ async def add_contract_benefit(
             raise HTTPException(status_code=404, detail="Contract not found.")
         verify_record_tenant(contract["organization_id"], session)
 
-        # SOX 404 / ISO 27001 Immutability Guard
+        # Immutability Guard
         if contract["status"] in ("active", "approved", "posted"):
             raise HTTPException(
                 status_code=400,
-                detail=f"SOX 404 / ISO 27001 Violation: Contract {contract['contract_reference']} is {contract['status']} and immutable. Cannot attach benefit lines directly. Use the Contract Amendment workflow."
+                detail=f"Contract {contract['contract_reference']} is {contract['status']} and cannot be modified directly. Use the Contract Amendment action."
             )
 
         emp_uuid = contract["employee_id"]
@@ -1120,7 +1189,7 @@ async def delete_contract_benefit(
         if c_status in ("active", "approved", "posted"):
             raise HTTPException(
                 status_code=400,
-                detail=f"SOX 404 / ISO 27001 Violation: Contract is {c_status} and immutable. Cannot remove benefit lines directly. Use the Contract Amendment workflow."
+                detail=f"Contract is {c_status} and cannot be modified directly. Use the Contract Amendment action."
             )
 
         # Check rule details for audit trail
@@ -1172,7 +1241,7 @@ async def delete_contract(
         if contract["status"] in ("active", "approved", "posted"):
             raise HTTPException(
                 status_code=400,
-                detail=f"SOX 404 / ISO 27001 Violation: Cannot delete contract {contract['contract_reference']} with status '{contract['status']}'. Approved/active records are immutable. Use the cancellation state transition (POST /api/v1/contracts/{contract_id}/cancel)."
+                detail=f"Cannot delete contract {contract['contract_reference']} with status '{contract['status']}'. Use the Cancel Contract action instead."
             )
 
         client_ip = get_client_ip(request)
@@ -1206,7 +1275,7 @@ async def amend_contract(
 
     clean_reason = (payload.amendment_reason or "").strip()
     if not clean_reason:
-        raise HTTPException(status_code=400, detail="An auditable amendment_reason is required by SOX 404 compliance.")
+        raise HTTPException(status_code=400, detail="An amendment reason is required.")
 
     pool = get_db_pool()
     try:
@@ -1237,7 +1306,8 @@ async def amend_contract(
             new_ref = f"{base_ref}-AMD{next_rev}"
 
             new_contract_id = uuid7()
-            start_d = parse_date(payload.start_date) if payload.start_date is not None else existing["start_date"]
+            start_d = parse_date(payload.start_date) if payload.start_date is not None else datetime.date.today()
+            prior_end_d = start_d - datetime.timedelta(days=1)
             end_d = parse_date(payload.end_date) if payload.end_date is not None else existing["end_date"]
             wage_base = float(payload.wage_base) if payload.wage_base is not None else float(existing["wage_base"])
             currency = payload.currency or existing["currency"]
@@ -1247,14 +1317,17 @@ async def amend_contract(
             hours = payload.working_hours_per_week if payload.working_hours_per_week is not None else float(existing["working_hours_per_week"])
             notes = payload.terms_notes if payload.terms_notes is not None else existing["terms_notes"]
 
-            # 2. Transition original contract to 'amended' (core terms preserved)
+            # 2. Transition original contract to 'amended' (setting end_date = prior_end_d)
             upd_res = await conn.execute("""
                 UPDATE employee_contracts
-                SET status = 'amended', updated_at = CURRENT_TIMESTAMP
+                SET status = 'amended', end_date = $2, updated_at = CURRENT_TIMESTAMP
                 WHERE id = $1 AND status IN ('active', 'approved');
-            """, c_uuid)
+            """, c_uuid, prior_end_d)
             if upd_res == "UPDATE 0":
                 raise HTTPException(status_code=409, detail="Contract status was concurrently modified.")
+
+            # Grade determination: payload.grade_id -> existing.grade_id -> employee.grade_id
+            new_grade_id = payload.grade_id or existing.get("grade_id") or (emp["grade_id"] if emp else None)
 
             # 3. Insert newly issued revision contract
             await conn.execute("""
@@ -1262,18 +1335,17 @@ async def amend_contract(
                     id, employee_id, contract_reference, title, start_date, end_date,
                     wage_base, currency, status, notice_period_days, trial_period_days,
                     working_hours_per_week, terms_notes, organization_id,
-                    amendment_of_id, amendment_reason, revision_number
+                    amendment_of_id, amendment_reason, revision_number, grade_id
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $12, $13, $14, $15, $16
+                    $1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $12, $13, $14, $15, $16, $17
                 );
             """,
                 new_contract_id, emp_uuid, new_ref, title, start_d, end_d,
                 wage_base, currency, notice_days, trial_days, hours, notes,
-                existing["organization_id"], c_uuid, clean_reason, next_rev
+                existing["organization_id"], c_uuid, clean_reason, next_rev, new_grade_id
             )
 
             # 4. Attach benefit lines
-            emp_grade_id = emp["grade_id"] if emp else None
             if payload.benefit_lines is not None:
                 lines_to_add = payload.benefit_lines
             else:
@@ -1288,10 +1360,10 @@ async def amend_contract(
                 if calc_type == "grade_based" or (rule and rule["calculation_type"] == "grade_based"):
                     calc_type = "grade_based"
                     grade_rate = None
-                    if emp_grade_id:
+                    if new_grade_id:
                         grade_rate = await conn.fetchval(
                             "SELECT amount FROM salary_rule_grade_rates WHERE rule_id = $1 AND grade_id = $2;",
-                            line.rule_id, emp_grade_id
+                            line.rule_id, new_grade_id
                         )
                     if grade_rate is not None:
                         amt_val = float(grade_rate)
@@ -1309,12 +1381,19 @@ async def amend_contract(
                     ) VALUES ($1, $2, $3, $4, $5, $6);
                 """, uuid.uuid4(), new_contract_id, line.rule_id, calc_type, amt_val, computed)
 
-            # 5. Synchronize employee record base salary
-            await conn.execute("""
-                UPDATE employees
-                SET base_salary = $1, currency = $2, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $3;
-            """, wage_base, currency, emp_uuid)
+            # 5. Synchronize employee record base salary and grade_id
+            if payload.grade_id:
+                await conn.execute("""
+                    UPDATE employees
+                    SET base_salary = $1, currency = $2, grade_id = $3, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $4;
+                """, wage_base, currency, payload.grade_id, emp_uuid)
+            else:
+                await conn.execute("""
+                    UPDATE employees
+                    SET base_salary = $1, currency = $2, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $3;
+                """, wage_base, currency, emp_uuid)
 
             # 6. Cryptographically chained audit logging
             client_ip = get_client_ip(request)
@@ -1334,10 +1413,15 @@ async def amend_contract(
                 note=f"Issued contract amendment {new_ref} (Revision {next_rev}) for {emp['full_name'] if emp else 'Employee'}. Reason: {clean_reason}",
                 session=session,
                 client_ip=client_ip,
-                changes={"amendment_of": str(c_uuid), "revision_number": next_rev, "wage_base": wage_base, "currency": currency}
+                changes={"amendment_of": str(c_uuid), "revision_number": next_rev, "wage_base": wage_base, "currency": currency, "grade_id": new_grade_id}
             )
 
-            created_row = await conn.fetchrow("SELECT * FROM employee_contracts WHERE id = $1;", new_contract_id)
+            created_row = await conn.fetchrow("""
+                SELECT c.*, g.name AS grade_name, g.code AS grade_code
+                FROM employee_contracts c
+                LEFT JOIN employee_grades g ON c.grade_id = g.id
+                WHERE c.id = $1;
+            """, new_contract_id)
             c_dict = serialize_row(dict(created_row))
             benefit_rows = await conn.fetch("""
                 SELECT b.*, r.name AS rule_name, r.category AS rule_category, r.wps_code
@@ -1363,7 +1447,7 @@ async def cancel_contract(
     require_permission(session, "hr.contracts_manage")
     clean_reason = (payload.cancellation_reason or "").strip()
     if not clean_reason:
-        raise HTTPException(status_code=400, detail="An auditable cancellation_reason is required by SOX 404 compliance.")
+        raise HTTPException(status_code=400, detail="A cancellation reason is required.")
 
     pool = get_db_pool()
     try:

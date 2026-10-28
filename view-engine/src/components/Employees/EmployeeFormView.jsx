@@ -28,12 +28,14 @@ import {
 import { EmployeeDocumentsTab } from './EmployeeDocumentsTab';
 import { EmployeeContractsTab } from './EmployeeContractsTab';
 import { RecordChatter } from '../common/RecordChatter';
+import { getUrlParam, syncViewUrlParams } from '../../utils/urlState';
 import { SendEmailModal } from '../common/SendEmailModal';
 import { SendMessageModal } from '../common/SendMessageModal';
 import { DeleteBlockedModal } from '../common/DeleteBlockedModal';
 import { useAccessControl } from '../../context/AccessControlContext';
 import { useAuth } from '../../context/AuthContext';
 import { useChat } from '../../context/ChatContext';
+import { useSystemLookups } from '../../services/lookupService';
 
 export const EmployeeFormView = forwardRef(function EmployeeFormView({
   employee = null,
@@ -57,6 +59,7 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
     '';
 
   const { openChat } = useChat();
+  const { countries, currencies, getCountryName, getCountryCode } = useSystemLookups();
   const [employeeGrades, setEmployeeGrades] = useState([]);
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
@@ -140,12 +143,20 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
     ...(canReadContracts
       ? [{ id: 'contracts', label: 'Contracts & Compensation', icon: FileText }]
       : []),
-    { id: 'immigration', label: 'Immigration & Compliance', icon: ShieldCheck },
-    { id: 'banking', label: 'Banking & WPS', icon: CreditCard },
+    { id: 'immigration', label: 'ID & Documents', icon: ShieldCheck },
+    { id: 'banking', label: 'Bank Details', icon: CreditCard },
     { id: 'documents', label: 'Documents', icon: FileText },
   ];
 
-  const [activeTab, setActiveTab] = useState('general');
+  const [activeTab, setActiveTab] = useState(() => {
+    const t = getUrlParam('tab');
+    const valid = ['general', 'employment', 'contracts', 'immigration', 'banking', 'documents'];
+    return t && valid.includes(t) ? t : 'general';
+  });
+
+  useEffect(() => {
+    syncViewUrlParams({ tab: activeTab === 'general' ? null : activeTab });
+  }, [activeTab]);
   const [formData, setFormData] = useState({
     employee_number: '',
     first_name: '',
@@ -155,7 +166,7 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
     gender: 'Male',
     date_of_birth: '',
     marital_status: 'Single',
-    nationality: 'Qatar',
+    nationality: 'QA',
 
     job_title: '',
     department_id: 'Operations',
@@ -208,7 +219,7 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
         gender: employee.gender || 'Male',
         date_of_birth: employee.date_of_birth || '',
         marital_status: employee.marital_status || 'Single',
-        nationality: employee.nationality || 'Qatar',
+        nationality: employee.nationality || 'QA',
 
         job_title: employee.job_title || '',
         department_id: employee.department_id || 'Operations',
@@ -255,7 +266,7 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
         gender: 'Male',
         date_of_birth: '',
         marital_status: 'Single',
-        nationality: 'Qatar',
+        nationality: 'QA',
 
         job_title: '',
         department_id: 'Operations',
@@ -349,7 +360,7 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
         gender: employee.gender || 'Male',
         date_of_birth: employee.date_of_birth || '',
         marital_status: employee.marital_status || 'Single',
-        nationality: employee.nationality || 'Qatar',
+        nationality: employee.nationality || 'QA',
 
         job_title: employee.job_title || '',
         department_id: employee.department_id || 'Operations',
@@ -496,7 +507,7 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
               </span>
               <span className="text-xs text-slate-500 dark:text-slate-400 hidden sm:inline">
                 {employee?.is_active === false
-                  ? 'Preserved in historical reporting and statutory compliance.'
+                  ? 'Archived record.'
                   : 'Active workforce member.'}
               </span>
             </div>
@@ -651,15 +662,27 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
 
                     <div>
                       <label className="ui-label text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5 block">
-                        Nationality
+                        Nationality / Country
                       </label>
-                      <input
-                        type="text"
-                        value={formData.nationality}
-                        onChange={(e) => handleChange('nationality', e.target.value)}
-                        placeholder="e.g. Qatar, United Kingdom, India, Egypt"
-                        className="ui-input h-[42px] min-h-[42px] text-[15px] font-normal text-slate-900 dark:text-slate-100 placeholder:text-slate-400 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3.5 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600 transition w-full"
-                      />
+                      <select
+                        value={getCountryCode(formData.nationality) || formData.nationality}
+                        onChange={(e) => {
+                          const code = e.target.value;
+                          handleChange('nationality', code);
+                          const matching = countries.find((c) => c.code === code);
+                          if (matching?.phone_code && (!formData.phone_country_code || formData.phone_country_code === '+974')) {
+                            handleChange('phone_country_code', matching.phone_code);
+                          }
+                        }}
+                        className="ui-input h-[42px] min-h-[42px] text-[15px] font-normal text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3.5 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600 transition w-full cursor-pointer"
+                      >
+                        <option value="">Select Nationality / Country...</option>
+                        {countries.map((c) => (
+                          <option key={c.code} value={c.code}>
+                            {c.name} ({c.code})
+                          </option>
+                        ))}
+                      </select>
                     </div>
 
                     <div>
@@ -700,7 +723,7 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
                       />
                     </div>
 
-                    <div>
+                    <div className="min-w-0">
                       <label className="ui-label text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5 block">
                         Work Email <span className="text-rose-500">*</span>
                       </label>
@@ -719,28 +742,36 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
                       )}
                     </div>
 
-                    <div>
+                    <div className="min-w-0">
                       <label className="ui-label text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5 block">
-                        Phone Number
+                        Mobile / Phone Number
                       </label>
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
+                      <div className="flex items-center gap-2 min-w-0 w-full">
+                        <select
                           value={formData.phone_country_code}
                           onChange={(e) => handleChange('phone_country_code', e.target.value)}
-                          className="w-24 ui-input h-[42px] min-h-[42px] text-[15px] font-mono text-center text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
-                        />
+                          aria-label="Country Dialing Code"
+                          className="w-[108px] shrink-0 h-[42px] min-h-[42px] text-[13px] font-mono text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 focus:outline-none focus:ring-2 focus:ring-blue-600 transition cursor-pointer"
+                        >
+                          {countries.map((c) => (
+                            <option key={c.code} value={c.phone_code}>
+                              {c.code} ({c.phone_code})
+                            </option>
+                          ))}
+                        </select>
                         <input
-                          type="text"
+                          type="tel"
+                          inputMode="tel"
                           value={formData.phone_number}
                           onChange={(e) => handleChange('phone_number', e.target.value)}
                           placeholder="55123456"
-                          className="flex-1 ui-input h-[42px] min-h-[42px] text-[15px] font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3.5 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
+                          aria-label="Mobile or Phone Number"
+                          className="flex-1 min-w-0 h-[42px] min-h-[42px] text-[15px] font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3.5 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
                         />
                       </div>
                     </div>
 
-                    <div>
+                    <div className="min-w-0">
                       <label className="ui-label text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5 block">
                         Personal Email
                       </label>
@@ -1009,9 +1040,9 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
                   <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300">
                     <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5 text-amber-500" />
                     <div>
-                      <h4 className="text-xs font-bold">Immigration Expiry Alert Triggered</h4>
+                      <h4 className="text-xs font-bold">Document Expiry Notice</h4>
                       <p className="text-xs mt-0.5 opacity-90">
-                        One or more statutory documents for this expat employee are expiring within 30 days. Please initiate renewal with the Ministry of Interior / Labour promptly.
+                        One or more identification or permit documents are expiring within 30 days.
                       </p>
                     </div>
                   </div>
@@ -1157,25 +1188,10 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
             )}
 
             {/* ------------------------------------------------------------------- */}
-            {/* Tab 5: Banking & WPS                                                */}
+            {/* Tab 5: Bank Details                                                 */}
             {/* ------------------------------------------------------------------- */}
             {activeTab === 'banking' && (
               <div className="space-y-6">
-                <div className="flex items-center justify-between p-4 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-700 dark:text-blue-300">
-                  <div className="flex items-center gap-3">
-                    <CreditCard className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />
-                    <div>
-                      <h4 className="text-xs font-bold">Wages Protection System (WPS) Profile</h4>
-                      <p className="text-xs text-blue-600/80 dark:text-blue-300/80 mt-0.5">
-                        Enforces Qatar Central Bank statutory electronic salary compliance via authorized local clearing accounts.
-                      </p>
-                    </div>
-                  </div>
-                  <span className="hidden sm:inline-flex text-[11px] font-mono font-bold px-2.5 py-1 rounded-md bg-blue-600 text-white shadow-xs">
-                    WPS VERIFIED
-                  </span>
-                </div>
-
                 {/* Section 1: Compensation & Payroll */}
                 <div className="bg-slate-50/70 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/60 rounded-xl p-4 sm:p-5 space-y-4">
                   <h3 className="ui-h3 text-[15px] font-semibold text-slate-900 dark:text-white flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-slate-700/60">
@@ -1185,9 +1201,14 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
-                      <label className="ui-label text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5 block">
-                        Monthly Base Salary
-                      </label>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="ui-label text-[13px] font-medium text-slate-700 dark:text-slate-300">
+                          Monthly Base Salary
+                        </label>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800/60">
+                          Derived from Active Contract
+                        </span>
+                      </div>
                       {!canReadSalary ? (
                         <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/80 text-slate-400">
                           <span className="font-mono font-bold">•••••• {formData.currency}</span>
@@ -1196,19 +1217,32 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
                           </span>
                         </div>
                       ) : (
-                        <div className="relative">
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={formData.base_salary}
-                            disabled={!canManageSalary}
-                            onChange={(e) => handleChange('base_salary', parseFloat(e.target.value) || 0)}
-                            className={`ui-input h-[42px] min-h-[42px] text-[15px] pl-3.5 pr-14 font-mono font-bold text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 transition w-full ${!canManageSalary ? 'opacity-60 cursor-not-allowed bg-slate-100 dark:bg-slate-800/60' : ''
-                              }`}
-                          />
-                          <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">
-                            {formData.currency}
-                          </span>
+                        <div className="space-y-1.5">
+                          <div className="relative">
+                            <input
+                              type="text"
+                              readOnly
+                              value={
+                                formData.base_salary !== null && formData.base_salary !== undefined
+                                  ? Number(formData.base_salary).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                                  : '0.00'
+                              }
+                              className="ui-input h-[42px] min-h-[42px] text-[15px] pl-3.5 pr-14 font-mono font-bold text-slate-800 dark:text-slate-200 bg-slate-100/80 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg cursor-not-allowed w-full select-all"
+                            />
+                            <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400 font-mono">
+                              {formData.currency}
+                            </span>
+                          </div>
+                          {canReadContracts && (
+                            <button
+                              type="button"
+                              onClick={() => setActiveTab('contracts')}
+                              className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 inline-flex items-center gap-1 transition-colors cursor-pointer group"
+                            >
+                              <span>Manage in Contracts & Compensation</span>
+                              <span className="transition-transform group-hover:translate-x-0.5">→</span>
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1221,14 +1255,13 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
                         value={formData.currency}
                         disabled={!canManageSalary}
                         onChange={(e) => handleChange('currency', e.target.value)}
-                        className="ui-input h-[42px] min-h-[42px] text-[15px] font-mono text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3.5 focus:outline-none focus:ring-2 focus:ring-blue-600 transition w-full"
+                        className="ui-input h-[42px] min-h-[42px] text-[15px] font-mono text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3.5 focus:outline-none focus:ring-2 focus:ring-blue-600 transition w-full cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        <option value="QAR">QAR - Qatari Riyal</option>
-                        <option value="USD">USD - US Dollar</option>
-                        <option value="EUR">EUR - Euro</option>
-                        <option value="GBP">GBP - British Pound</option>
-                        <option value="AED">AED - UAE Dirham</option>
-                        <option value="SAR">SAR - Saudi Riyal</option>
+                        {currencies.map((curr) => (
+                          <option key={curr.code} value={curr.code}>
+                            {curr.code} — {curr.name} ({curr.symbol})
+                          </option>
+                        ))}
                       </select>
                     </div>
 
@@ -1241,7 +1274,7 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
                         onChange={(e) => handleChange('payment_method', e.target.value)}
                         className="ui-input h-[42px] min-h-[42px] text-[15px] font-normal text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3.5 focus:outline-none focus:ring-2 focus:ring-blue-600 transition w-full"
                       >
-                        <option value="Bank Transfer / WPS">Bank Transfer / WPS</option>
+                        <option value="Bank Transfer / WPS">Bank Transfer</option>
                         <option value="Direct Deposit">Direct Deposit</option>
                         <option value="Cheque">Cheque</option>
                         <option value="Cash">Cash in Hand</option>
@@ -1374,7 +1407,7 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
                 {formData.department_id || 'Operations'}
               </div>
               <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                {formData.employment_type} • {formData.nationality}
+                {formData.employment_type} • {getCountryName(formData.nationality) || formData.nationality}
               </div>
               {selectedGrade && (
                 <span className="inline-block mt-1 text-[10px] font-bold font-mono px-1.5 py-0.2 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800">
@@ -1412,7 +1445,7 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
                 <span>Nationality</span>
               </span>
               <span className="font-medium text-slate-800 dark:text-slate-200">
-                {formData.nationality || '—'}
+                {getCountryName(formData.nationality) || formData.nationality || '—'}
               </span>
             </div>
 
@@ -1476,14 +1509,13 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
           )}
         </div>
 
-        {/* 2. Expat Compliance Status Widget in clean key-value format */}
+        {/* 2. Document & Bank Status Widget */}
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
             <h3 className="ui-h3 text-[15px] font-semibold text-slate-900 dark:text-white flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-              <span>Statutory Compliance</span>
+              <span>Document Status</span>
             </h3>
-            <span className="text-[11px] font-mono text-slate-400">MoI / Labour</span>
           </div>
 
           {/* Compliance Items: QID, Visa, Passport, WPS */}
@@ -1573,11 +1605,11 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
               </div>
             </div>
 
-            {/* WPS Banking Readiness */}
+            {/* Bank Account Readiness */}
             <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-800/80 space-y-1.5">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                  WPS Banking
+                  Bank Account
                 </span>
                 {formData.bank_iban ? (
                   <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-400 dark:border-emerald-800 flex items-center gap-1">
@@ -1610,7 +1642,7 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
           recordModel="hr.employee"
           recordId={String(employee.id)}
           defaultToEmail={formData.work_email || ''}
-          defaultSubject={`Apex Global HR: Notice regarding employee ${formData.full_name} (${formData.employee_number || 'ID'})`}
+          defaultSubject={`Notice regarding ${formData.full_name} (${formData.employee_number || 'ID'})`}
           recordData={{
             employee_name: formData.full_name,
             employee_number: formData.employee_number,
@@ -1638,7 +1670,7 @@ export const EmployeeFormView = forwardRef(function EmployeeFormView({
             employee_number: formData.employee_number,
             department: formData.department_id,
             job_title: formData.job_title,
-            phone: formData.phone || formData.mobile || '+974 5599 8877',
+            phone: `${formData.phone_country_code || '+974'} ${formData.phone_number || ''}`.trim() || '+974 5599 8877',
           }}
           defaultChannel="whatsapp"
         />

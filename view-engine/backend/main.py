@@ -371,6 +371,29 @@ async def get_system_status():
             "user_count": user_count or 0
         }
 
+
+@app.get("/api/v1/system/countries")
+async def get_system_countries():
+    """
+    Returns standardized ISO-3166 system countries with code, name, and phone dialing code.
+    """
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT code, name, phone_code FROM system_countries ORDER BY name ASC")
+        return {"countries": [dict(r) for r in rows]}
+
+
+@app.get("/api/v1/system/currencies")
+async def get_system_currencies():
+    """
+    Returns standardized ISO-4217 system currencies with code, name, and currency symbol.
+    """
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT code, name, symbol FROM system_currencies ORDER BY code ASC")
+        return {"currencies": [dict(r) for r in rows]}
+
+
 @app.post("/api/v1/setup/init")
 async def setup_init(req: SetupInitRequest, request: Request):
     """
@@ -931,7 +954,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         if row["status"] == "pending_deletion":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="This account is queued for GDPR right-to-be-forgotten deletion."
+                detail="This account is scheduled for deletion."
             )
             
         if row["status"] in ["inactive", "suspended"]:
@@ -1637,6 +1660,19 @@ async def update_user(
            req.guardian_name, req.guardian_email, new_idle,
            new_upn, new_sam, new_provider, new_auto_sso)
 
+        user_changes = {}
+        tracked_user_fields = [
+            ("full_name", existing["full_name"], req.full_name if req.full_name is not None else existing["full_name"]),
+            ("email", existing["email"], req.email if req.email is not None else existing["email"]),
+            ("status", existing["status"], status_val),
+            ("department", existing["department"], req.department if req.department is not None else existing["department"]),
+            ("allowed_cidrs", existing["allowed_cidrs"], cidrs),
+            ("auth_provider", existing.get("auth_provider") or "local", new_provider),
+        ]
+        for k, old_v, new_v in tracked_user_fields:
+            if str(old_v or "") != str(new_v or ""):
+                user_changes[k] = {"old": old_v, "new": new_v}
+
         await log_audit_event(
             conn=conn,
             entity_type="users",
@@ -1645,13 +1681,7 @@ async def update_user(
             session=session,
             client_ip=client_ip,
             note=f"Updated user profile for {existing['email']} ({req.full_name or existing['full_name']}).",
-            changes={
-                "full_name": req.full_name,
-                "email": req.email,
-                "status": status_val,
-                "role_id": role_id,
-                "department": req.department
-            }
+            changes=user_changes or None
         )
            
         return {"status": "success", "message": "User updated successfully."}
@@ -1775,9 +1805,9 @@ async def toggle_archive_user(user_id: str, session: Dict[str, Any] = Depends(ge
 # ==============================================================================
 @app.get("/api/v1/iam/sod/matrix")
 async def get_sod_matrix(session: Dict[str, Any] = Depends(get_current_user_session)):
-    """Returns the declarative Segregation of Duties (SoD) Conflict Matrix for SOX 404 compliance."""
+    """Returns the declarative Segregation of Duties (SoD) Conflict Matrix."""
     return {
-        "framework": "SOX Section 404 / ISO 27001",
+        "framework": "Internal Access Controls",
         "rules": SOD_CONFLICT_RULES,
         "total": len(SOD_CONFLICT_RULES),
     }
@@ -2072,22 +2102,27 @@ async def revoke_api_key(
 async def get_tenancy_data(session: Dict[str, Any] = Depends(get_current_user_session)):
     """
     Returns organizations and branches from PostgreSQL.
-    Superadmins and users with wildcard permissions see ALL organizations and branches.
-    Otherwise, returns organizations and branches matching user's organization_id, branch_id, or allowed_company_ids.
+    Superadmins and users with organization management/read permissions see ALL organizations and branches (including archived).
+    Otherwise, returns active organizations and branches matching user's organization_id, branch_id, or allowed_company_ids.
     """
     pool = get_db_pool()
     is_superadmin = bool(session.get("is_superadmin"))
-    has_wildcard = (
+    can_view_all_orgs = (
         is_superadmin or
         "*" in session.get("security_groups", []) or
         check_permission(session, "*") or
-        check_permission(session, "org.manage")
+        check_permission(session, "org.manage") or
+        check_permission(session, "org.read")
     )
 
     async with pool.acquire() as conn:
-        if is_superadmin or has_wildcard:
-            org_rows = await conn.fetch("SELECT * FROM organizations WHERE is_active = true ORDER BY created_at ASC")
-            branch_rows = await conn.fetch("SELECT * FROM branches WHERE is_active = true ORDER BY created_at ASC")
+        if can_view_all_orgs:
+            org_rows = await conn.fetch(
+                "SELECT * FROM organizations ORDER BY COALESCE(is_active, true) DESC, created_at ASC"
+            )
+            branch_rows = await conn.fetch(
+                "SELECT * FROM branches ORDER BY COALESCE(is_active, true) DESC, created_at ASC"
+            )
         else:
             allowed_org_ids = set()
             if session.get("organization_id"):
@@ -2104,11 +2139,11 @@ async def get_tenancy_data(session: Dict[str, Any] = Depends(get_current_user_se
 
             if valid_org_uuids:
                 org_rows = await conn.fetch(
-                    "SELECT * FROM organizations WHERE id = ANY($1::uuid[]) AND is_active = true ORDER BY created_at ASC",
+                    "SELECT * FROM organizations WHERE id = ANY($1::uuid[]) AND COALESCE(is_active, true) = true ORDER BY created_at ASC",
                     valid_org_uuids
                 )
                 branch_rows = await conn.fetch(
-                    "SELECT * FROM branches WHERE organization_id = ANY($1::uuid[]) AND is_active = true ORDER BY created_at ASC",
+                    "SELECT * FROM branches WHERE organization_id = ANY($1::uuid[]) AND COALESCE(is_active, true) = true ORDER BY created_at ASC",
                     valid_org_uuids
                 )
             else:
@@ -2123,6 +2158,7 @@ async def get_tenancy_data(session: Dict[str, Any] = Depends(get_current_user_se
                 "base_currency": r["base_currency"],
                 "default_timezone": r["default_timezone"],
                 "default_locale": r["default_locale"],
+                "is_active": bool(r.get("is_active")) if r.get("is_active") is not None else True,
             }
             for r in org_rows
         ]
@@ -2135,6 +2171,7 @@ async def get_tenancy_data(session: Dict[str, Any] = Depends(get_current_user_se
                 "code": r["code"],
                 "city": r["city"],
                 "ip_allowlist": json.loads(r["ip_allowlist"]) if isinstance(r["ip_allowlist"], str) else (r["ip_allowlist"] or ["127.0.0.1/32"]),
+                "is_active": bool(r.get("is_active")) if r.get("is_active") is not None else True,
             }
             for r in branch_rows
         ]
@@ -2214,13 +2251,15 @@ async def create_organization(
                 "base_currency": req.base_currency or "QAR",
                 "default_timezone": req.default_timezone or "Asia/Qatar",
                 "default_locale": req.default_locale or "en",
+                "is_active": True,
             },
             "branch": {
                 "id": str(new_branch_id),
                 "organization_id": str(new_org_id),
                 "name": primary_branch_name,
                 "code": "MAIN",
-                "city": "Doha"
+                "city": "Doha",
+                "is_active": True,
             }
         }
 
@@ -2245,16 +2284,21 @@ async def delete_organization(
     client_ip = get_client_ip(request) if request else "127.0.0.1"
 
     async with pool.acquire() as conn:
-        total_orgs = await conn.fetchval("SELECT COUNT(*) FROM organizations WHERE is_active = true;")
-        if total_orgs <= 1:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot delete the last remaining organization in the database."
-            )
-
-        org_name = await conn.fetchval("SELECT legal_name FROM organizations WHERE id = $1;", o_uuid)
-        if not org_name:
+        org_row = await conn.fetchrow(
+            "SELECT legal_name, COALESCE(is_active, true) AS is_active FROM organizations WHERE id = $1;",
+            o_uuid
+        )
+        if not org_row:
             raise HTTPException(status_code=404, detail="Organization not found.")
+
+        org_name = org_row["legal_name"]
+        if org_row["is_active"]:
+            active_orgs = await conn.fetchval("SELECT COUNT(*) FROM organizations WHERE COALESCE(is_active, true) = true;")
+            if active_orgs <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot delete the last active company."
+                )
 
         # Relational Dependency Guard
         violation = await inspect_dependencies(conn, "organizations", o_uuid, org_name)
@@ -2284,12 +2328,19 @@ async def toggle_archive_organization(org_id: str, session: Dict[str, Any] = Dep
     require_permission(session, "org.manage")
     pool = get_db_pool()
     async with pool.acquire() as conn:
-        current = await conn.fetchval("SELECT is_active FROM organizations WHERE id = $1::uuid;", org_id)
+        current = await conn.fetchval("SELECT COALESCE(is_active, true) FROM organizations WHERE id = $1::uuid;", org_id)
         if current is None:
             raise HTTPException(status_code=404, detail="Organization not found.")
+        if bool(current):
+            active_count = await conn.fetchval("SELECT COUNT(*) FROM organizations WHERE COALESCE(is_active, true) = true;")
+            if active_count <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot archive the last active company. At least one active company must remain."
+                )
         new_state = not bool(current)
         await conn.execute("UPDATE organizations SET is_active = $1 WHERE id = $2::uuid;", new_state, org_id)
-        return {"status": "success", "is_active": new_state, "message": "Company archived." if not new_state else "Company unarchived."}
+        return {"status": "success", "is_active": new_state, "message": "Company archived." if not new_state else "Company restored."}
 
 class UpdateOrganizationRequest(BaseModel):
     legal_name: str
@@ -2363,6 +2414,7 @@ async def update_organization(
             "base_currency": row["base_currency"],
             "default_timezone": row["default_timezone"],
             "default_locale": row["default_locale"],
+            "is_active": bool(row.get("is_active")) if row.get("is_active") is not None else True,
         }
 
 @app.post("/api/v1/iam/branches")
@@ -2413,6 +2465,7 @@ async def create_branch(
             "code": req.code.strip().upper(),
             "city": req.city or "Doha",
             "ip_allowlist": cidrs,
+            "is_active": True,
         }
 
 @app.put("/api/v1/iam/branches/{branch_id}")
@@ -2475,13 +2528,20 @@ async def delete_branch(
     client_ip = get_client_ip(request) if request else "127.0.0.1"
 
     async with pool.acquire() as conn:
-        count = await conn.fetchval("SELECT count(*) FROM branches WHERE is_active = true")
-        if count <= 1:
-            raise HTTPException(status_code=400, detail="Cannot delete the primary operating branch.")
-            
-        branch_info = await conn.fetchrow("SELECT name, code FROM branches WHERE id = $1", b_uuid)
+        branch_info = await conn.fetchrow(
+            "SELECT name, code, organization_id, COALESCE(is_active, true) AS is_active FROM branches WHERE id = $1",
+            b_uuid
+        )
         if not branch_info:
             raise HTTPException(status_code=404, detail="Branch not found.")
+
+        if branch_info["is_active"]:
+            count = await conn.fetchval(
+                "SELECT count(*) FROM branches WHERE organization_id = $1 AND COALESCE(is_active, true) = true",
+                branch_info["organization_id"]
+            )
+            if count <= 1:
+                raise HTTPException(status_code=400, detail="Cannot delete the last active branch of this company.")
 
         # Relational Dependency Guard
         violation = await inspect_dependencies(conn, "branches", b_uuid, branch_info["name"])
@@ -2600,6 +2660,125 @@ async def save_system_setting(
                 updated_at = CURRENT_TIMESTAMP;
         """, clean_key, json.dumps(payload.value))
     return {"status": "success", "key": config_key, "value": payload.value}
+
+
+DEFAULT_PAPER_FORMAT = {
+    "page_size": "A4",
+    "default_orientation": "portrait",
+    "default_mode": "blank",
+    "letterhead_top_margin_mm": 40,
+    "letterhead_bottom_margin_mm": 25,
+    "letterhead_top_margin_pt": 114,
+    "letterhead_bottom_margin_pt": 70,
+    "top_margin_mm": 15,
+    "bottom_margin_mm": 15,
+    "top_margin_pt": 42,
+    "bottom_margin_pt": 42,
+    "left_margin_pt": 42,
+    "right_margin_pt": 42,
+    "company_name": "Larea Industrial & Contracting W.L.L.",
+    "company_name_ar": "شركة لاريا للصناعة والمقاولات ذ.م.م",
+    "cr_number": "QA-3849102-CR",
+    "tax_id": "VAT-100293848",
+    "wps_establishment_id": "10293847",
+    "logo_url": "",
+    "header_layout": "left_logo_right_details",
+    "address": "Tower 4, West Bay Financial District, P.O. Box 24891, Doha, Qatar",
+    "po_box": "P.O. Box 24891",
+    "email": "support@larea.qa",
+    "phone": "+974 4499 8000",
+    "display_page_numbers": True,
+    "include_security_watermark": True
+}
+
+
+@app.get("/api/v1/system/paper-format")
+async def get_system_paper_format(
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Retrieves paper and letterhead document layout configuration."""
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        val = await conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:paper_format';")
+        if not val:
+            return {"status": "success", "config": DEFAULT_PAPER_FORMAT}
+        try:
+            cfg = json.loads(val) if isinstance(val, str) else dict(val)
+            merged = dict(DEFAULT_PAPER_FORMAT)
+            merged.update(cfg)
+            return {"status": "success", "config": merged}
+        except Exception:
+            return {"status": "success", "config": DEFAULT_PAPER_FORMAT}
+
+
+@app.post("/api/v1/system/paper-format")
+@app.put("/api/v1/system/paper-format")
+async def save_system_paper_format(
+    payload: Dict[str, Any],
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Persists paper and letterhead document layout configuration into system_metadata."""
+    require_permission(session, "org.manage")
+    pool = get_db_pool()
+    mm_pt = 72.0 / 25.4
+    cfg = dict(payload)
+
+    # Automatically derive points from millimeters for ReportLab engine
+    if "letterhead_top_margin_mm" in cfg:
+        cfg["letterhead_top_margin_pt"] = round(float(cfg["letterhead_top_margin_mm"]) * mm_pt)
+    if "letterhead_bottom_margin_mm" in cfg:
+        cfg["letterhead_bottom_margin_pt"] = round(float(cfg["letterhead_bottom_margin_mm"]) * mm_pt)
+    if "top_margin_mm" in cfg:
+        cfg["top_margin_pt"] = round(float(cfg["top_margin_mm"]) * mm_pt)
+    if "bottom_margin_mm" in cfg:
+        cfg["bottom_margin_pt"] = round(float(cfg["bottom_margin_mm"]) * mm_pt)
+    if "left_margin_mm" in cfg:
+        cfg["left_margin_pt"] = round(float(cfg["left_margin_mm"]) * mm_pt)
+    if "right_margin_mm" in cfg:
+        cfg["right_margin_pt"] = round(float(cfg["right_margin_mm"]) * mm_pt)
+
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO system_metadata (key, value, updated_at)
+            VALUES ('cfg:paper_format', $1, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET
+                value = EXCLUDED.value,
+                updated_at = CURRENT_TIMESTAMP;
+        """, json.dumps(cfg))
+
+    return {"status": "success", "config": cfg}
+
+
+@app.get("/api/v1/system/paper-format/test-pdf")
+@app.post("/api/v1/system/paper-format/test-pdf")
+async def get_alignment_test_pdf(
+    payload: Optional[Dict[str, Any]] = None,
+    session: Dict[str, Any] = Depends(get_current_user_session)
+):
+    """Generates and downloads a physical letterhead alignment calibration grid PDF."""
+    from backend.core.report_engine import generate_alignment_test_pdf
+    pool = get_db_pool()
+    cfg = dict(DEFAULT_PAPER_FORMAT)
+    if payload:
+        cfg.update(payload)
+    else:
+        async with pool.acquire() as conn:
+            val = await conn.fetchval("SELECT value FROM system_metadata WHERE key = 'cfg:paper_format';")
+            if val:
+                try:
+                    cfg.update(json.loads(val) if isinstance(val, str) else dict(val))
+                except Exception:
+                    pass
+
+    pdf_bytes = generate_alignment_test_pdf(cfg)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": "inline; filename=Letterhead_Alignment_Test.pdf",
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        }
+    )
 
 # ==============================================================================
 # 6. SERVER-DRIVEN UI METADATA ENDPOINT
@@ -2780,27 +2959,21 @@ async def get_view_schema(
 # ==============================================================================
 class GDPRDeletionRequest(BaseModel):
     user_id: str
-    reason: Optional[str] = "Data subject requested right-to-be-forgotten under GDPR Art. 17"
+    reason: Optional[str] = "User requested account deletion"
     confirm_purge: bool
 
 class GDPRCancelDeletionRequest(BaseModel):
     user_id: str
 
 VERIFIED_BUSINESS_DETAILS = {
-    "legal_entity_name": "Apex Global Enterprises Q.P.S.C.",
+    "legal_entity_name": "Apex Global Enterprises",
     "cr_number": "QA-90281726-CR",
     "tax_id": "VAT-100293848",
-    "jurisdiction": "State of Qatar & GCC Regional Cloud Zone",
-    "registered_address": "Tower 4, West Bay Financial District, P.O. Box 24891, Doha, Qatar",
+    "jurisdiction": "Doha, Qatar",
+    "registered_address": "Tower 4, West Bay, P.O. Box 24891, Doha, Qatar",
     "official_support_contact": "support@apexglobal.com",
-    "data_protection_officer": "dpo@apexglobal.com",
     "phone": "+974 4499 8000",
-    "compliance_frameworks": [
-        "ISO/IEC 27001:2022",
-        "SOC 2 Type II",
-        "GDPR (EU 2016/679)",
-        "Qatar Personal Data Privacy Law (PDPL Law No. 13 of 2016)"
-    ]
+    "compliance_frameworks": []
 }
 
 _gdpr_deletion_registry: Dict[str, Dict[str, Any]] = {}
@@ -2917,12 +3090,12 @@ async def request_data_deletion(
     req: GDPRDeletionRequest,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
-    """GDPR Article 17: Right-to-be-Forgotten / Data Purge."""
+    """Account deletion request."""
     caller_id = str(session.get("user_id") or session.get("id") or "")
     if not session.get("is_superadmin") and caller_id != str(req.user_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: Cannot submit GDPR deletion request for another user."
+            detail="Access denied: Cannot submit an account deletion request for another user."
         )
 
     if not req.confirm_purge:
@@ -2981,7 +3154,7 @@ async def cancel_data_deletion(
     if not session.get("is_superadmin") and caller_id != str(req.user_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: Cannot cancel GDPR deletion request for another user."
+            detail="Access denied: Cannot cancel an account deletion request for another user."
         )
 
     found = False
@@ -3018,12 +3191,12 @@ async def get_deletion_status(
     user_id: str,
     session: Dict[str, Any] = Depends(get_current_user_session)
 ):
-    """Checks the GDPR right-to-be-forgotten status of a given user."""
+    """Checks the account deletion status of a given user."""
     caller_id = str(session.get("user_id") or session.get("id") or "")
     if not session.get("is_superadmin") and caller_id != str(user_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: Cannot view GDPR deletion status for another user."
+            detail="Access denied: Cannot view account deletion status for another user."
         )
 
     if user_id in _gdpr_deletion_registry:

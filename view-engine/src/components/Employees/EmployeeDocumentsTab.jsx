@@ -14,16 +14,17 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { notifyRecordChatterUpdated } from '../../utils/urlState';
 
 const DOCUMENT_TYPES = [
   'National ID / QID / Iqama',
   'Passport Copy',
   'Visa & Residence Permit',
   'Employment Contract',
-  'WPS Banking Certificate',
+  'Bank Confirmation Letter',
   'Educational Credentials',
   'Medical Fitness Report',
-  'Other Statutory Document',
+  'Other Document',
 ];
 
 export function EmployeeDocumentsTab({ employeeId, employeeName }) {
@@ -125,10 +126,11 @@ export function EmployeeDocumentsTab({ employeeId, employeeName }) {
       }
 
       setFeedbackMessage({
-        text: `Document '${file.name}' encrypted with AES-256-GCM and saved to vault.`,
+        text: `Document '${file.name}' uploaded successfully.`,
         type: 'success',
       });
       if (fileInputRef.current) fileInputRef.current.value = '';
+      notifyRecordChatterUpdated(employeeId, 'employees');
       await fetchDocuments();
     } catch (err) {
       setFeedbackMessage({ text: err.message, type: 'error' });
@@ -158,9 +160,10 @@ export function EmployeeDocumentsTab({ employeeId, employeeName }) {
       });
       if (res.ok) {
         setFeedbackMessage({
-          text: `Document '${filename}' purged from storage.`,
+          text: `Document '${filename}' deleted.`,
           type: 'success',
         });
+        notifyRecordChatterUpdated(employeeId, 'employees');
         await fetchDocuments();
       } else {
         const err = await res.json();
