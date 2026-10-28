@@ -1,5 +1,79 @@
-# Logs
-logs
+# ==============================================================================
+# Larea ERP - Comprehensive Git Ignore (view-engine)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Python & Bytecode Caches
+# ------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ------------------------------------------------------------------------------
+# 2. Python Virtual Environments
+# ------------------------------------------------------------------------------
+.venv/
+.venv*/
+venv/
+venv*/
+env/
+env*/
+ENV/
+env.bak/
+venv.bak/
+
+# ------------------------------------------------------------------------------
+# 3. Testing, Coverage & Linters
+# ------------------------------------------------------------------------------
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# ------------------------------------------------------------------------------
+# 4. Node.js & Frontend (Vite / React)
+# ------------------------------------------------------------------------------
+node_modules/
+dist/
+dist-ssr/
+*.local
+.npm/
+.eslintcache
+.stylelintcache
+.turbo/
+.vite/
+
+# ------------------------------------------------------------------------------
+# 5. Logs & Temporary Output
+# ------------------------------------------------------------------------------
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -7,28 +81,58 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist/
-dist-ssr
-*.local
+# ------------------------------------------------------------------------------
+# 6. Environment Configurations & Secrets
+# ------------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
 
-# Editor directories and files
+# ------------------------------------------------------------------------------
+# 7. Local Storage, Media & Database Files
+# ------------------------------------------------------------------------------
+storage/
+**/storage/*
+!**/storage/.gitkeep
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+dump.rdb
+*.pid
+*.seed
+*.pid.lock
+scratch/
+
+# ------------------------------------------------------------------------------
+# 8. Editor & IDE Directories
+# ------------------------------------------------------------------------------
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
+!.vscode/settings.json
+.idea/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
-.venv*
-venv
-__pycache__/
-*.pyc
-*.py[cod]
-.env
+*~
 nul
 
-# Storage
-storage/
+# ------------------------------------------------------------------------------
+# 9. Operating System Files
+# ------------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
